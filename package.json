@@ -23,7 +23,8 @@
     "build": "tsc && chmod +x dist/cli.js 2>/dev/null || true",
     "test": "node --test dist/**/*.test.js",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "prepublishOnly": "npm run clean && npm run build"
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",
