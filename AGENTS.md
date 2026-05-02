@@ -75,31 +75,14 @@ RELAY_ALLOWED_ROOTS= node --test dist/**/*.test.js   # skip env-gated tests
 6. **`tsc --noEmit` is authoritative for compile claims.** Subagents miss split files. Always verify with the compiler.
 7. **Check worker state before retrying a "failed" dispatch.** `ps aux | grep <provider>`, `tail ~/.relay-mcp/run-*.log`, `ls ~/.relay/sessions/` — the worker may be alive even when the MCP tool returned an error.
 
-## Dispatching to LM Studio — concurrent invocation rules
+## Dispatching workers
 
-Validated by peer session 2026-04-09 (24 tasks across 3 batches, 83% success). See
-`docs/findings/2026-05-02-extract-session-learnings.md` for full evidence.
+LM Studio concurrent rules + parallel dispatch patterns: see `docs/parallel.md`.
+Headline: `isolation: "worktree"` + every prompt ends with `git add && git commit`. Without the commit, files are lost on merge.
 
-- **Always** use `isolation: "worktree"` for parallel LM Studio dispatch. `isolation: "none"` serializes through workdir mutex even when `delegate_parallel` is used.
-- **Every task prompt MUST end with**:
-  ```
-  Do not build. Do not run tests. Do not run npm. Do not modify any config file.
-  git add <output-file> && git commit -m '<message>'
-  ```
-  Without the commit, files in the worktree are LOST when the worktree merges back.
-- 1 file in, 1 file out. No multi-file wiring (timeouts).
-- Include all API method signatures inline. Don't make the worker discover them by reading files (#1 timeout cause).
-- `timeout_ms: 360000` if heavy context, `180000` floor for tight tasks.
-- `context_mode: "minimal"` to keep prefill < 2K tokens; full context with 8 lanes saturates and all tasks time out at 180s with token_estimate=0.
+## Extraction history
 
-## Extraction methodology (this codebase came from a monorepo)
-
-If you ever need to fork another part of relay-mcp into a new distro:
-
-- **Whitelist > exclude.** Tightly-coupled codebases cascade on every drop. Default to writing an INCLUDE list, not an EXCLUDE list.
-- **Leaf vs orchestration.** Leaf modules (types, utilities, single-purpose stores) extract cleanly. Orchestration (dispatchers, entry points, runners) is faster to write fresh than to fix transitive deps. If a file imports > 3 modules from outside its own subsystem, treat it as orchestration.
-- **Switch tactics at the residual.** Bulk drops while error count drops ≥5/cycle. At ≤3/cycle, switch to surgical fixes or fresh writes.
-- **Test files in a separate pass.** After source code compiles, triage test files separately. Tests that depend on dropped modules go away — don't "fix later", they rot.
+This repo was extracted from `relay-mcp` on 2026-05-02. If you need that context: `docs/findings/2026-05-02-extract-session-learnings.md`.
 
 ## What must not regress
 
