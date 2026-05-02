@@ -1,6 +1,6 @@
 # Parallel dispatch
 
-Relay can fan a single bounded task out to N workers running concurrently. v0.1.0 ships memory + single-task delegation only — parallel dispatch arrives in v0.2.
+Relay fans a single bounded task out to N workers running concurrently via `relay parallel <spec.json> --max-concurrency N`.
 
 ## Why parallel
 
@@ -8,7 +8,7 @@ Relay can fan a single bounded task out to N workers running concurrently. v0.1.
 - Cost: $0 for local models (LM Studio).
 - Variety: dispatch the same task to multiple frontier models (claude / deepseek-r1 / gemini) and pick the best.
 
-## Routing rules (v0.2 design)
+## Routing rules
 
 Relay's routing follows the rules from the relay-mcp parent:
 
@@ -28,7 +28,7 @@ Relay's `delegate_parallel` accepts an `isolation` field:
 
 **Critical:** with `isolation: worktree`, every task prompt MUST end with a git commit instruction. Otherwise files written in the worktree are LOST when the worktree merges back.
 
-## Spec discipline (v0.2 design, validated 2026-04-09 across 24 tasks)
+## Spec discipline (validated 2026-04-09 across 24 tasks)
 
 For LM Studio workers (GLM, Qwen):
 
@@ -47,25 +47,13 @@ For LM Studio workers (GLM, Qwen):
 
 Wall time is bounded by the longest single task, NOT the sum.
 
-## Workaround for v0.1.0
-
-Until `relay parallel` ships, you can dispatch parallel work via the existing relay-mcp tooling:
-
-```bash
-# Drop the current Relay session, fall back to relay-mcp's CLI:
-cd /path/to/relay-mcp
-relay-mcp parallel --tasks-file tasks.json --workdir . --isolation worktree --json
-```
-
-The relay-mcp parent project still has the full delegate_parallel surface. Relay v0.2 will port it slim.
-
 ## Failure modes (proven)
 
 - **Context saturation** (8+ lanes with full AGENTS.md injection): all tasks return token_estimate: 0, timeout at 180s. **Fix:** use `context_mode: minimal` OR raise timeout to 360s.
 - **Worktree merge-back conflict** on auto-generated files (STATE.md, AGENTS.md, AGENTS-COMPACT.md modified by post-commit hooks). **Fix:** for doc-only edits, use `isolation: none` with `max_concurrency: 1` (serial, slower but no conflict). For source files where you need true parallel, use `isolation: worktree` and accept occasional retries.
 
-## Future (v0.2+)
+## Future
 
-- `relay parallel <task-spec.json> --workdir . --isolation worktree`
 - `relay run --parallel N "<task>" --provider lmstudio` (fan one task to N workers, return best)
 - `relay diverge <run_id>` (run divergence analysis across parallel results)
+- worktree isolation in `relay parallel` (currently same-workdir bounded concurrency only)

@@ -8,7 +8,7 @@ Relay dispatches tasks to one of these workers:
 | lmstudio | HTTP (OpenAI-compatible) | $0 (local) | Parallel test generation, mechanical edits |
 | openrouter | HTTP (chat-completions) | per-model API price | Frontier models for one-shot reasoning |
 
-Note: Relay v0.1.0 dropped the Anthropic native worker (returns later when tool-use loop is reimplemented). For Claude tasks, route via OpenRouter using `--model anthropic/claude-...`.
+Anthropic native worker shipped in v0.1.0 as a slim Messages API client (text-only, no tool-use loop). For agentic Claude with tool-use, route via OpenRouter using `--model anthropic/claude-...`.
 
 ## Codex setup
 

@@ -1,27 +1,3 @@
-<!-- layer:worker_constraints hash:16df65d2 chars:755 -->
-## Relay Worker Constraints (enforced by orchestrator — non-negotiable)
-
-You are a bounded relay worker. Your orchestrator has already provided all context you need.
-
-DO NOT:
-- Load `using-superpowers`, `tdd-guide`, or any other skill — your orchestrator controls skills
-- Run `npm run build`, `npm test`, or any test suite unless the task explicitly requires it
-- Call `relay remember`, `relay recall`, or any memory tools
-- Read files outside of what the task specifies
-- Follow TDD, security review, or any autonomous workflow not given in this task
-
-DO:
-- Execute exactly what the task says — no more, no less
-- Write exactly the files the task specifies
-- Commit with the exact message given (if a commit is required)
-- Stop when the task is complete
-
-Write ONE file. Commit. Stop.
-
-File: docs/recipes/morning-startup.md
-
-Write a daily-workflow recipe for a solo Relay user, ~80-120 lines.
-
 # Recipe: Morning startup
 
 The 5-command sequence to start a productive coding session with Relay.
@@ -93,17 +69,8 @@ Now every new CC session in this project auto-receives your top lessons via the 
 
 ## When something feels stale
 
-```bash
-relay memory lint
-```
-
-Detects duplicates, contradictions, stale auto-entries. Run weekly.
+`relay memory lint` and `relay memory gc` are deferred to v0.2. For now, query directly:
 
 ```bash
-relay memory gc --max-age-days 90
+sqlite3 ~/.relay/relay.db "SELECT memory_id, content FROM memories WHERE last_accessed_at < datetime('now', '-90 days') AND pinned = 0;"
 ```
-
-Soft-deletes pinned entries not accessed in 90 days. Keeps the store tight.
-
-Do not build. Do not run tests. Do not run npm. Do not modify any config file.
-git add docs/recipes/morning-startup.md && git commit -m 'docs(recipes): morning startup workflow'

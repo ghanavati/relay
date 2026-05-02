@@ -112,4 +112,4 @@ This repo was extracted from `relay-mcp` on 2026-05-02. If you need that context
 
 ## Provenance
 
-Extracted from `github.com/ghanavati/relay-mcp` on 2026-05-02. See `docs/provenance.md` for the keep/lose list and extraction script.
+Extracted from `github.com/ghanavati/relay-mcp` on 2026-05-02. See `docs/findings/2026-05-02-extract-session-learnings.md` for the extraction methodology.

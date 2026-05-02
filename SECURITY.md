@@ -28,7 +28,7 @@ Response target: best-effort within 7 days. This is a solo project; no SLA.
 
 Provider API keys live in environment variables only:
 - `OPENROUTER_API_KEY` — OpenRouter API key
-- `ANTHROPIC_API_KEY` — not used in v0.1.0 (Anthropic worker deferred)
+- `ANTHROPIC_API_KEY` — required when using `--provider anthropic`
 - `LMSTUDIO_API_KEY` — only if LM Studio is behind a reverse proxy
 
 Relay does NOT log API keys. The redactSecrets utility (src/security/redaction.ts) strips:
@@ -72,4 +72,4 @@ The `RELAY_MEMORY_ALLOWED_WORKDIRS` env var allows you to restrict which workdir
 
 ## Audit trail
 
-Every `relay run` (when implemented in v0.2) creates a row in the `runs` table with the full input + output. This is your audit trail. It's not signed or tamper-evident in v0.1.0; trust the local filesystem.
+Every `relay run` and `relay parallel` creates a row in the `runs` table with the full input + output. This is your audit trail. It's not signed or tamper-evident in v0.1.0; trust the local filesystem.
