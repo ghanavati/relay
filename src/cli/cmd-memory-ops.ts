@@ -176,9 +176,18 @@ export async function executeMemoryToRulesCommand(
   const entry = `- [${memory.memory_type}] ${memory.content}\n`;
 
   const hasSection = existing.includes('## Promoted Memory Rules');
-  const updated = hasSection
-    ? existing.replace(/(\n## Promoted Memory Rules\n\n)([\s\S]*?)(\n##|$)/, (_m, hdr, body, tail) => `${hdr}${body}${entry}${tail}`)
-    : existing + section + entry;
+  const alreadyPresent = existing.includes(entry);
+  const updated = alreadyPresent
+    ? existing
+    : hasSection
+      ? existing.replace(/(\n## Promoted Memory Rules\n\n)([\s\S]*?)(\n##|$)/, (_m, hdr, body, tail) => `${hdr}${body}${entry}${tail}`)
+      : existing + section + entry;
+
+  if (alreadyPresent) {
+    if (command.json) io.stdout(JSON.stringify({ promoted: command.memoryId, rules_file: rulesPath, skipped: 'already present' }) + '\n');
+    else io.stdout(`Already present in ${rulesPath} — no change.\n`);
+    return 0;
+  }
 
   await mkdir(dirname(rulesPath), { recursive: true });
   await writeFile(rulesPath, updated, 'utf8');

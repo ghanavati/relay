@@ -30,13 +30,24 @@ interface ProviderProbe {
   detail: string;
 }
 
-const HOME = homedir();
-const RELAY_DIR = join(HOME, '.relay');
-const CONFIG_PATH = join(RELAY_DIR, 'config.json');
-const CC_MEMORY_PATH_CANDIDATE = join(
-  HOME,
-  '.claude/projects/-Users-ghanavati-ai-stack-Projects-relay-mcp/memory'
-);
+/**
+ * Resolve `~/.relay` lazily so tests can override `HOME` after module load.
+ * Without this, `const HOME = homedir()` at import-time freezes the path.
+ */
+function getRelayDir(): string { return join(homedir(), '.relay'); }
+function getConfigPath(): string { return join(getRelayDir(), 'config.json'); }
+
+/**
+ * Claude Code stores per-project memory at `~/.claude/projects/<hash>/memory/`
+ * where `<hash>` is the absolute project path with `/` replaced by `-` and a
+ * leading `-`. Example: `/Users/jo/repos/api` → `-Users-jo-repos-api`.
+ *
+ * Exported for unit testing — also called internally by `executeInitCommand`.
+ */
+export function ccMemoryPathFor(workdir: string): string {
+  const hash = workdir.replace(/\//g, '-');
+  return join(homedir(), '.claude', 'projects', hash, 'memory');
+}
 
 async function pathExists(p: string): Promise<boolean> {
   try { await stat(p); return true; } catch { return false; }
@@ -99,26 +110,28 @@ interface RelayConfig {
 
 async function readExistingConfig(): Promise<RelayConfig> {
   try {
-    return JSON.parse(await readFile(CONFIG_PATH, 'utf-8')) as RelayConfig;
+    return JSON.parse(await readFile(getConfigPath(), 'utf-8')) as RelayConfig;
   } catch {
     return {};
   }
 }
 
 async function writeConfig(config: RelayConfig): Promise<void> {
-  await mkdir(RELAY_DIR, { recursive: true });
-  await writeFile(CONFIG_PATH, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+  await mkdir(getRelayDir(), { recursive: true });
+  await writeFile(getConfigPath(), JSON.stringify(config, null, 2) + '\n', 'utf-8');
 }
 
 export async function executeInitCommand(args: InitArgs, io: CliIO): Promise<number> {
-  await mkdir(RELAY_DIR, { recursive: true });
+  const relayDir = getRelayDir();
+  const configPath = getConfigPath();
+  await mkdir(relayDir, { recursive: true });
 
   if (args.quick) {
     await writeConfig({});
     if (args.json) {
-      io.stdout(JSON.stringify({ ok: true, mode: 'quick', config_path: CONFIG_PATH }) + '\n');
+      io.stdout(JSON.stringify({ ok: true, mode: 'quick', config_path: configPath }) + '\n');
     } else {
-      io.stdout(`Created ${RELAY_DIR}/ with empty config. Done.\n`);
+      io.stdout(`Created ${relayDir}/ with empty config. Done.\n`);
     }
     return 0;
   }
@@ -127,7 +140,8 @@ export async function executeInitCommand(args: InitArgs, io: CliIO): Promise<num
   const [codex, lmstudio] = await Promise.all([probeCodex(), probeLmStudio()]);
   const openrouter = probeEnvKey('OPENROUTER_API_KEY', 'openrouter');
   const anthropic = probeEnvKey('ANTHROPIC_API_KEY', 'anthropic');
-  const ccMemory = await pathExists(CC_MEMORY_PATH_CANDIDATE);
+  const ccMemoryPath = ccMemoryPathFor(io.cwd);
+  const ccMemory = await pathExists(ccMemoryPath);
 
   const config = await readExistingConfig();
   const providers: NonNullable<RelayConfig['providers']> = config.providers ?? {};
@@ -139,7 +153,7 @@ export async function executeInitCommand(args: InitArgs, io: CliIO): Promise<num
       const status = p.available ? '[OK]' : '[--]';
       io.stdout(`  ${p.name.padEnd(12)} ${status} ${p.detail}\n`);
     }
-    io.stdout(`  cc-memory    ${ccMemory ? '[OK]' : '[--]'} ${ccMemory ? CC_MEMORY_PATH_CANDIDATE : 'not found at default path'}\n\n`);
+    io.stdout(`  cc-memory    ${ccMemory ? '[OK]' : '[--]'} ${ccMemory ? ccMemoryPath : `not found at ${ccMemoryPath}`}\n\n`);
   }
 
   const isInteractive = !args.auto && !args.json && stdin.isTTY;
@@ -171,13 +185,29 @@ export async function executeInitCommand(args: InitArgs, io: CliIO): Promise<num
 
   if (installHook) {
     const { executeMemoryHookCommand } = await import('./cmd-memory-ops.js');
-    await executeMemoryHookCommand({ install: true, json: false }, io, io.cwd);
+    // In --json mode, route the hook's stdout to a discard sink so init's final
+    // JSON object is the only thing on stdout (single parseable object).
+    // In human mode, init prints its own confirmation lines and the hook's
+    // human stdout is fine to interleave.
+    const hookIo: CliIO = args.json
+      ? { cwd: io.cwd, stdout: () => {}, stderr: io.stderr }
+      : io;
+    // Wrap in try/catch — a read-only or non-existent .claude/ path should not
+    // crash init. Init's primary job is config; the hook is best-effort.
+    try {
+      await executeMemoryHookCommand({ install: true, json: false }, hookIo, io.cwd);
+    } catch (err) {
+      installHook = false;
+      if (!args.json) {
+        io.stderr(`(skipped hook install: ${(err as Error).message})\n`);
+      }
+    }
   }
 
   // CC memory migration offer
   let migrateMemory = false;
   if (rl && ccMemory) {
-    migrateMemory = await ask(rl, `\nFound Claude Code auto-memory at ${CC_MEMORY_PATH_CANDIDATE}. Migrate to Relay's memory store?`);
+    migrateMemory = await ask(rl, `\nFound Claude Code auto-memory at ${ccMemoryPath}. Migrate to Relay's memory store?`);
   }
 
   if (migrateMemory) {
@@ -195,14 +225,14 @@ export async function executeInitCommand(args: InitArgs, io: CliIO): Promise<num
     io.stdout(
       JSON.stringify({
         ok: true,
-        config_path: CONFIG_PATH,
+        config_path: configPath,
         providers: { default: providers.default, available: availableProviders },
         hook_installed: installHook,
         cc_memory_found: ccMemory,
       }) + '\n'
     );
   } else {
-    io.stdout(`\n✓ Wrote ${CONFIG_PATH}\n`);
+    io.stdout(`\n✓ Wrote ${configPath}\n`);
     io.stdout(`✓ Default provider: ${providers.default}\n`);
     io.stdout(`\nTry: relay run "what is 2+2? answer in one word" --provider ${providers.default}${providers.default !== 'codex' ? ' --model <id>' : ''}\n`);
     io.stdout(`     relay history\n`);
