@@ -57,13 +57,25 @@ store.upsert({
 });
 ```
 
-## Build & test
+## Dev environment tips
 
 ```bash
-npm run build                                  # tsc + chmod
-node --test dist/**/*.test.js                  # full suite
-RELAY_ALLOWED_ROOTS= node --test dist/**/*.test.js   # skip env-gated tests
+npm install                                    # better-sqlite3 + zod + typescript
+npm run build                                  # tsc + chmod dist/cli.js
+npm link                                       # makes 'relay' available globally for testing
 ```
+
+Node >= 20 required (better-sqlite3 native module). On macOS install Xcode CLT first.
+
+## Testing instructions
+
+```bash
+npm test                                       # node --test dist/**/*.test.js
+RELAY_ALLOWED_ROOTS= npm test                  # skip env-gated tests
+npm run typecheck                              # fast tsc, no dist output
+```
+
+Add or update tests for the code you change. v0.1.0 inherited tests from relay-mcp; many depend on dropped modules and need triage (see [Unreleased] in CHANGELOG.md).
 
 ## Recurrent failure patterns (across many sessions)
 
@@ -91,13 +103,12 @@ This repo was extracted from `relay-mcp` on 2026-05-02. If you need that context
 - `delegate.ts` stays focused — extract logic to helpers.
 - Tests are the spec — preserve behavior through refactoring.
 
-## Commit format
+## PR instructions
 
-```
-<type>: <description>
-```
-
-Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`. Commit per discrete task.
+- **Commit format:** `<type>(<scope>): <description>` — types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`. Commit per discrete task.
+- **Title format:** match the first commit subject.
+- **Before committing:** `npm run build && npm test`.
+- **CHANGELOG:** every shipped change updates `[Unreleased]` (or the right milestone bucket).
 
 ## Provenance
 
