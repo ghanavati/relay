@@ -1,5 +1,4 @@
-<!-- layer:worker_constraints hash:16df65d2 chars:755 -->
-## Troubleshooting
+# Troubleshooting
 
 ### LM Studio: 'No models loaded'
 
