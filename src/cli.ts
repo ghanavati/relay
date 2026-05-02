@@ -129,7 +129,7 @@ GENERAL
   relay --version, -V                      Show version
 
 NOT YET IMPLEMENTED IN v0.1.0
-  relay parallel, relay compare, relay init, relay budget — see CHANGELOG.md.
+  relay parallel, relay budget, relay corpus — see CHANGELOG.md.
 
 DOCS
   https://github.com/ghanavati/relay/tree/main/docs
@@ -214,6 +214,32 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
       createdAfter: createdAfter ? Number.parseInt(createdAfter, 10) : undefined,
       createdBefore: createdBefore ? Number.parseInt(createdBefore, 10) : undefined,
       file: lastOption(flags, 'file'),
+      json: isBool(flags, 'json'),
+    }, io);
+  }
+
+  if (action === 'show-context') {
+    const query = flags.positionals.slice(1).join(' ').trim();
+    if (!query) { io.stderr('relay memory show-context requires <query>\n'); return 2; }
+    const validTypes = ['lesson', 'decision', 'fact', 'context', 'state', 'handoff', 'session'] as const;
+    type T = typeof validTypes[number];
+    const rawTypes = allOptions(flags, 'type');
+    const types: T[] = rawTypes.length > 0
+      ? rawTypes.map(t => {
+          if (!(validTypes as readonly string[]).includes(t)) {
+            throw new Error(`--type must be one of: ${validTypes.join(', ')}`);
+          }
+          return t as T;
+        })
+      : ['lesson', 'decision'];
+    const tokenBudgetRaw = lastOption(flags, 'token-budget');
+    const tokenBudget = tokenBudgetRaw ? Number.parseInt(tokenBudgetRaw, 10) : 800;
+    const { executeMemoryShowContextCommand } = await import('./cli/cmd-memory-ops.js');
+    return executeMemoryShowContextCommand({
+      query,
+      types,
+      tokenBudget,
+      workdir: lastOption(flags, 'workdir'),
       json: isBool(flags, 'json'),
     }, io);
   }
