@@ -2,38 +2,41 @@ import type { WorkerTask, WorkerResult } from "./types.js";
 import { makeError } from "../errors.js";
 import type { WorkerRunner } from "./runner.js";
 
+/**
+ * Slim Anthropic Messages API runner. Text-only (no agentic tool-loop in v0.2).
+ * For Claude with tool-use, route via OpenRouter using --model anthropic/claude-...
+ */
 export class AnthropicRunner implements WorkerRunner {
   readonly capabilities = { agentic: false } as const;
 
   async run(task: WorkerTask): Promise<WorkerResult> {
-    const apiKey = process.env["ANTHROPIC_API_KEY"] ?? "";
-    const error = makeError("ANTHROPIC_API_KEY");
+    const startedAt = Date.now();
+    const apiKey = process.env["ANTHROPIC_API_KEY"];
 
     if (!apiKey) {
       return {
         status: "error",
         output: "",
         duration_ms: 0,
-        exit_code: 1,
-        error: { code: "PROVIDER_NOT_CONFIGURED", message: error.message },
+        exit_code: null,
+        error: makeError("PROVIDER_NOT_CONFIGURED", "ANTHROPIC_API_KEY is not set", false),
       };
     }
-
     if (!task.model) {
       return {
         status: "error",
         output: "",
         duration_ms: 0,
-        exit_code: 1,
-        error: { code: "INVALID_ARGS", message: "model is required" },
+        exit_code: null,
+        error: makeError("INVALID_ARGS", "model is required when provider is anthropic", false),
       };
     }
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), task.timeout_ms);
+    const timer = setTimeout(() => controller.abort(), task.timeout_ms);
 
     try {
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
           "x-api-key": apiKey,
@@ -47,74 +50,66 @@ export class AnthropicRunner implements WorkerRunner {
         }),
         signal: controller.signal,
       });
+      clearTimeout(timer);
 
-      clearTimeout(timeoutId);
+      const duration_ms = Date.now() - startedAt;
 
-      if (!response.ok) {
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
         return {
           status: "error",
-          output: "",
-          duration_ms: 0,
-          exit_code: 1,
-          error: { code: "PROVIDER_ERROR", message: "Anthropic API request failed" },
+          output: text,
+          duration_ms,
+          exit_code: null,
+          error: makeError("PROVIDER_ERROR", `Anthropic returned ${res.status}: ${text.slice(0, 500)}`, true),
         };
       }
 
-      const data = await response.json();
+      const data = (await res.json()) as {
+        content?: Array<{ type: string; text?: string }>;
+        usage?: { input_tokens?: number; output_tokens?: number };
+      };
 
-      if (!data.content || data.content.length === 0) {
+      const block = data.content?.[0];
+      if (!block || block.type !== "text" || typeof block.text !== "string") {
         return {
           status: "error",
-          output: "",
-          duration_ms: 0,
-          exit_code: 1,
-          error: { code: "PROVIDER_ERROR", message: "Invalid response from Anthropic API" },
+          output: JSON.stringify(data),
+          duration_ms,
+          exit_code: null,
+          error: makeError("PROVIDER_ERROR", "Anthropic response missing text content block", true),
         };
       }
 
-      const content = data.content[0];
-
-      if (content.type !== "text") {
-        return {
-          status: "error",
-          output: "",
-          duration_ms: 0,
-          exit_code: 1,
-          error: { code: "PROVIDER_ERROR", message: "Expected text content from Anthropic API" },
-        };
-      }
-
-      const usage = data.usage;
-      const startTime = Date.now();
-
+      const inputTokens = data.usage?.input_tokens ?? 0;
+      const outputTokens = data.usage?.output_tokens ?? 0;
       return {
         status: "success",
-        output: content.text,
-        duration_ms: Date.now() - startTime,
+        output: block.text,
+        duration_ms,
         exit_code: 0,
-        token_usage: (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0),
-        prompt_tokens: usage?.input_tokens ?? 0,
-        completion_tokens: usage?.output_tokens ?? 0,
+        token_usage: inputTokens + outputTokens,
+        prompt_tokens: inputTokens,
+        completion_tokens: outputTokens,
       };
     } catch (err) {
-      clearTimeout(timeoutId);
-
-      if (err instanceof Error && err.name === "AbortError") {
+      clearTimeout(timer);
+      const duration_ms = Date.now() - startedAt;
+      if (controller.signal.aborted) {
         return {
           status: "timeout",
           output: "",
-          duration_ms: task.timeout_ms,
-          exit_code: 1,
-          error: { code: "TIMEOUT", message: "Request timeout" },
+          duration_ms,
+          exit_code: null,
+          error: makeError("TIMEOUT", `Anthropic request timed out after ${task.timeout_ms}ms`, true),
         };
       }
-
       return {
         status: "error",
         output: "",
-        duration_ms: 0,
-        exit_code: 1,
-        error: { code: "PROVIDER_ERROR", message: err instanceof Error ? err.message : "Unknown error" },
+        duration_ms,
+        exit_code: null,
+        error: makeError("PROVIDER_ERROR", err instanceof Error ? err.message : String(err), true),
       };
     }
   }

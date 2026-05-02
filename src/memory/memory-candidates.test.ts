@@ -1,11 +1,17 @@
 process.env['RELAY_DB_PATH'] = ':memory:';
 
-import { test, describe } from 'node:test';
+import { test, describe, beforeEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { MemoryStore } from './memory-store.js';
+import { getDb } from '../runtime/store/db.js';
 
 describe('MemoryStore.getCandidates()', () => {
   const store = new MemoryStore();
+
+  beforeEach(() => {
+    // Isolate this file's tests from cross-file FTS pollution
+    getDb().prepare('DELETE FROM memories').run();
+  });
 
   test('returns all non-superseded entries with no filters', () => {
     const now = Date.now();

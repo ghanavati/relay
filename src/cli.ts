@@ -110,10 +110,14 @@ MEMORY COMMANDS
 
 DELEGATION COMMANDS
   relay run <task>                         Delegate a task to a worker
-    [--provider codex|lmstudio|openrouter] (default: codex)
+    [--provider codex|lmstudio|openrouter|anthropic] (default: codex)
     [--model <id>] (required for HTTP providers)
     [--workdir <path>]
     [--timeout-ms <N>]                     (default: 300000)
+    [--json]
+
+  relay parallel <spec.json>               Dispatch N tasks concurrently
+    [--max-concurrency <N>]                (default: 4)
     [--json]
 
   relay doctor [--json]                    Probe provider + DB health
@@ -128,8 +132,8 @@ GENERAL
   relay --help, -h                         Show this help
   relay --version, -V                      Show version
 
-NOT YET IMPLEMENTED IN v0.1.0
-  relay parallel, relay budget, relay corpus — see CHANGELOG.md.
+NOT YET IMPLEMENTED
+  relay budget, relay corpus — see CHANGELOG.md.
 
 DOCS
   https://github.com/ghanavati/relay/tree/main/docs
@@ -143,9 +147,9 @@ async function dispatchRun(rest: readonly string[]): Promise<number> {
     io.stderr('relay run requires a task. Try: relay run "fix the failing test"\n');
     return 2;
   }
-  const provider = (lastOption(flags, 'provider') ?? 'codex') as 'codex' | 'openrouter' | 'lmstudio';
-  if (!['codex', 'openrouter', 'lmstudio'].includes(provider)) {
-    io.stderr(`unsupported --provider: ${provider}. Try codex / openrouter / lmstudio.\n`);
+  const provider = (lastOption(flags, 'provider') ?? 'codex') as 'codex' | 'openrouter' | 'lmstudio' | 'anthropic';
+  if (!['codex', 'openrouter', 'lmstudio', 'anthropic'].includes(provider)) {
+    io.stderr(`unsupported --provider: ${provider}. Try codex / openrouter / lmstudio / anthropic.\n`);
     return 2;
   }
   const timeoutMsRaw = lastOption(flags, 'timeout-ms');
@@ -329,8 +333,21 @@ async function main(): Promise<number> {
     const { executeCompareCommand } = await import('./cli/cmd-compare.js');
     return executeCompareCommand({ runA, runB, json: isBool(flags, 'json') }, io);
   }
+  if (cmd === 'parallel') {
+    const flags = parseFlags(rest);
+    const specPath = flags.positionals[0];
+    if (!specPath) { io.stderr('relay parallel requires <spec.json>\n'); return 2; }
+    const maxConcurrencyRaw = lastOption(flags, 'max-concurrency');
+    const { executeParallelCommand } = await import('./cli/cmd-parallel.js');
+    return executeParallelCommand({
+      specPath,
+      maxConcurrency: maxConcurrencyRaw ? Number.parseInt(maxConcurrencyRaw, 10) : 4,
+      json: isBool(flags, 'json'),
+    }, io);
+  }
+
   // v0.2+ stubs
-  const futureCmds = ['parallel', 'corpus', 'budget'];
+  const futureCmds = ['corpus', 'budget'];
   if (cmd && futureCmds.includes(cmd)) {
     io.stderr(`relay ${cmd}: not implemented in v0.1.0. See CHANGELOG.md.\n`);
     return 64;
