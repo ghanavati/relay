@@ -9,10 +9,10 @@ export async function executeDoctorCommand(args: DoctorArgs, io: CliIO): Promise
   // 1. codex CLI check
   try {
     const { execFile } = await import('node:child_process');
-    const { stdout } = await new Promise((resolve, reject) => {
+    const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) => {
       execFile('codex', ['--version'], { encoding: 'utf-8' }, (err, stdout) => {
         if (err) reject(err);
-        else resolve({ stdout });
+        else resolve({ stdout: stdout as string });
       });
     });
     const version = stdout.trim();
@@ -43,8 +43,8 @@ export async function executeDoctorCommand(args: DoctorArgs, io: CliIO): Promise
     clearTimeout(timeoutId);
 
     if (response.ok) {
-      const data = await response.json();
-      const modelCount = data?.length ?? 0;
+      const data = (await response.json()) as { data?: unknown[] };
+      const modelCount = Array.isArray(data?.data) ? data.data.length : 0;
       checks.push({ name: 'lmstudio', status: 'ok', detail: `${lmstudioEndpoint} (${modelCount} models)` });
       summary.ok++;
     } else {
@@ -70,9 +70,10 @@ export async function executeDoctorCommand(args: DoctorArgs, io: CliIO): Promise
   try {
     const { getDb } = await import('../runtime/store/db.js');
     const db = getDb();
-    const result = db.prepare('SELECT COUNT(*) FROM runs').get();
-    const runCount = result?.['COUNT(*)'] ?? 0;
-    checks.push({ name: 'db', status: 'ok', detail: `${db.path} (${runCount} runs)` });
+    const result = db.prepare('SELECT COUNT(*) AS n FROM runs').get() as { n: number } | undefined;
+    const runCount = result?.n ?? 0;
+    const dbPath = process.env['RELAY_DB_PATH'] ?? '~/.relay/relay.db';
+    checks.push({ name: 'db', status: 'ok', detail: `${dbPath} (${runCount} runs)` });
     summary.ok++;
   } catch {
     checks.push({ name: 'db', status: 'failed', detail: 'Database check failed' });

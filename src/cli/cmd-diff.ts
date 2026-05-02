@@ -8,7 +8,7 @@ export async function executeDiffCommand(args: DiffArgs, io: CliIO): Promise<num
 
 	const run = store.getRun(args.runId);
 	if (!run) {
-		io.stderr.write(`Error: Run '${args.runId}' not found\n`);
+		io.stderr(`Error: Run '${args.runId}' not found\n`);
 		return 1;
 	}
 
@@ -25,32 +25,32 @@ export async function executeDiffCommand(args: DiffArgs, io: CliIO): Promise<num
 			files_changed: files,
 			diffs: diffs.map(d => ({ file_path: d.file_path, diff_text: d.diff_text })),
 		};
-		io.stdout.write(JSON.stringify(output, null, 2) + '\n');
+		io.stdout(JSON.stringify(output, null, 2) + '\n');
 		return 0;
 	}
 
 	if (files.length === 0 && diffs.length === 0) {
-		io.stdout.write(`No filesystem changes recorded for this run.\n`);
+		io.stdout(`No filesystem changes recorded for this run.\n`);
 		return 0;
 	}
 
-	io.stdout.write(`run ${run.run_id.slice(0, 7)}... (${statusText}, ${durationText})\n`);
+	io.stdout(`run ${run.run_id.slice(0, 7)}... (${statusText}, ${durationText})\n`);
 
 	if (files.length > 0) {
-		io.stdout.write(`  ${files.length} files changed:\n`);
+		io.stdout(`  ${files.length} files changed:\n`);
 		for (const file of files) {
-			io.stdout.write(`    M  ${file}\n`);
+			io.stdout(`    M  ${file}\n`);
 		}
 	}
 
 	if (files.length > 0 && diffs.length === 0) {
-		io.stdout.write(`Diffs not stored — only file paths captured.\n`);
+		io.stdout(`Diffs not stored — only file paths captured.\n`);
 	}
 
 	if (diffs.length > 0) {
 		for (const diff of diffs) {
-			io.stdout.write(`\n=== ${diff.file_path} ===\n`);
-			io.stdout.write(diff.diff_text);
+			io.stdout(`\n=== ${diff.file_path} ===\n`);
+			io.stdout(diff.diff_text);
 		}
 	}
 
