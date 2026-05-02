@@ -86,7 +86,7 @@ export function executeGetMemoryCommand(
   return 0;
 }
 
-export const HOOK_SCRIPT = 'relay-mcp recall --token-budget 800 --type lesson --type fact --type decision --json 2>/dev/null || true';
+export const HOOK_SCRIPT = 'relay memory recall --token-budget 800 --type lesson --type fact --type decision --json 2>/dev/null || true';
 const HOOK_ID = 'relay-memory-session-start';
 
 /** Install or remove a SessionStart hook that injects recalled memories into every new CC session. */

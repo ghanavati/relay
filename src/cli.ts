@@ -108,13 +108,24 @@ MEMORY COMMANDS
   relay memory to-rules <memory_id>        Promote a memory to .claude/CLAUDE.md
     [--rules-file <path>]
 
+DELEGATION COMMANDS
+  relay run <task>                         Delegate a task to a worker
+    [--provider codex|lmstudio|openrouter] (default: codex)
+    [--model <id>] (required for HTTP providers)
+    [--workdir <path>]
+    [--timeout-ms <N>]                     (default: 300000)
+    [--json]
+
+  relay doctor [--json]                    Probe provider + DB health
+  relay history [--limit N] [--provider P] [--status S] [--json]
+  relay diff <run_id> [--json]             Show files_changed + diffs for a run
+
 GENERAL
   relay --help, -h                         Show this help
   relay --version, -V                      Show version
 
 NOT YET IMPLEMENTED IN v0.1.0
-  relay run, relay parallel, relay history, relay diff, relay compare,
-  relay init, relay doctor, relay budget — see ROADMAP.md.
+  relay parallel, relay compare, relay init, relay budget — see CHANGELOG.md.
 
 DOCS
   https://github.com/ghanavati/relay/tree/main/docs
@@ -252,14 +263,35 @@ async function main(): Promise<number> {
     return dispatchMemory(rest);
   }
 
-  if (cmd === 'run') {
-    return dispatchRun(rest);
+  if (cmd === 'run') return dispatchRun(rest);
+  if (cmd === 'doctor') {
+    const flags = parseFlags(rest);
+    const { executeDoctorCommand } = await import('./cli/cmd-doctor.js');
+    return executeDoctorCommand({ json: isBool(flags, 'json') }, io);
+  }
+  if (cmd === 'history') {
+    const flags = parseFlags(rest);
+    const limitRaw = lastOption(flags, 'limit');
+    const { executeHistoryCommand } = await import('./cli/cmd-history.js');
+    return executeHistoryCommand({
+      limit: limitRaw ? Number.parseInt(limitRaw, 10) : 10,
+      provider: lastOption(flags, 'provider'),
+      status: lastOption(flags, 'status'),
+      json: isBool(flags, 'json'),
+    }, io);
+  }
+  if (cmd === 'diff') {
+    const flags = parseFlags(rest);
+    const runId = flags.positionals[0];
+    if (!runId) { io.stderr('relay diff requires <run_id>\n'); return 2; }
+    const { executeDiffCommand } = await import('./cli/cmd-diff.js');
+    return executeDiffCommand({ runId, json: isBool(flags, 'json') }, io);
   }
 
   // v0.2+ stubs
-  const futureCmds = ['parallel', 'history', 'diff', 'compare', 'init', 'doctor', 'budget', 'corpus'];
+  const futureCmds = ['parallel', 'compare', 'init', 'budget', 'corpus'];
   if (cmd && futureCmds.includes(cmd)) {
-    io.stderr(`relay ${cmd}: not implemented in v0.1.0. See ROADMAP.md.\n`);
+    io.stderr(`relay ${cmd}: not implemented in v0.1.0. See CHANGELOG.md.\n`);
     return 64;
   }
 
