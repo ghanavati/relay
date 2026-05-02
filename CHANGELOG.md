@@ -7,24 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Planned for 0.2.0
-- `relay run <task>` — single-task delegation to codex / lmstudio / openrouter workers
-- `relay parallel <spec>` — parallel dispatch with isolation:worktree
-- `relay history` — browse past runs
-- `relay diff <run_id>` — show filesystem diff for a run
-- `relay compare <run_a> <run_b>` — compare two runs side-by-side
-- `relay init` — interactive setup wizard
-- `relay doctor` — provider health probe
+### Turn 1 (next, ~45 min)
+- `relay doctor` — probe codex CLI / OPENROUTER_API_KEY / LM Studio reachability / DB writable
+- `relay history` — list past runs from SQLite (filterable, JSON-able)
+- `relay diff <run_id>` — show files_changed + diffs for a run
+- Fix `HOOK_SCRIPT` in cmd-memory-ops.ts:89 (still says `relay-mcp recall`, should be `relay memory recall`)
+
+### Turn 2 (~90 min)
+- `relay init` — interactive wizard (provider detection, env setup, hook install, optional CC memory migration)
 - `relay budget set/show` — per-provider monthly cap
-- Anthropic worker (text-only first, tool-loop later)
-- Per-provider `~/.relay/secrets` keystore
-- npm publish to public registry
+- `relay compare <run_a> <run_b>` — side-by-side run diff
+
+### Turn 3 (~60 min)
+- 4 recipes (morning startup, parallel-with-lmstudio, migrating-cc-memory, architecture)
+- Test suite trim (delete tests with broken imports from dropped modules)
+- npm pack verified, prepublishOnly script
+- README badges + 90-second quickstart
+
+### Tag v0.1.0 after Turn 3
+
+### Beyond v0.1.0
+- v0.2.0: `relay parallel` (isolation:worktree, peer-session-validated pattern), Anthropic worker, test suite reinstated
+- v0.3.0: TUI visual layer (Ink) for history + live run progress + cost dashboard
+- v0.4.0: skill packs (slim), `relay run --pipe`, `relay queue cron`, `relay watch <dir>`
+- v1.0.0: stable surface, brew formula, public if not already
 
 ## [0.1.0] - 2026-05-02
 
 Initial extract from the relay-mcp monorepo. Solo CLI distro focused on memory + delegation infrastructure. Dropped ~60% of relay-mcp scope (compliance, hosted, multi-tenant, regulatory reports) for a single-user surface.
 
 ### Added
+- `relay run <task>` — single-task delegation to codex / lmstudio / openrouter, with audit-trail run row + run-events captured to SQLite. Smoke tested end-to-end (LM Studio GLM-4.7-Flash returning correct output, run row complete with token_usage).
 - AGPL-3.0 license
 - `relay memory remember <content>` — save a fact / decision / lesson with optional tags, pinned flag, expiry
 - `relay memory recall [<query>]` — FTS5 + recency-fallback recall with token budget
