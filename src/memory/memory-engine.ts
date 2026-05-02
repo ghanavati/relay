@@ -1,0 +1,159 @@
+/**
+ * Memory Engine — relevance scoring, token budgeting, temporal decay.
+ *
+ * Pure functions. No database access. No side effects.
+ * All state comes in as parameters, results come out as return values.
+ */
+
+import type { Memory, MemoryType, ScoredMemory, RecallQuery, RecallResult } from './types.js';
+import { TYPE_WEIGHTS, DECAY_HALF_LIFE_DAYS } from './types.js';
+
+const MS_PER_DAY = 86_400_000;
+
+/**
+ * Estimate token count from text content.
+ * Uses the standard ~4 chars per token heuristic.
+ * Good enough to prevent bloat — not meant for billing precision.
+ */
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/**
+ * Compute temporal decay based on time since last access.
+ *
+ * Uses exponential decay: score = exp(-t / halfLife)
+ * - At t = 0:        score = 1.0
+ * - At t = halfLife: score ≈ 0.37
+ * - At t = 2×halfLife: score ≈ 0.14
+ */
+function computeRecency(accessedAt: number, now: number, memoryType: MemoryType): number {
+  const daysSinceAccess = Math.max(0, (now - accessedAt) / MS_PER_DAY);
+  const halfLife = DECAY_HALF_LIFE_DAYS[memoryType] ?? 7;
+  return Math.exp(-daysSinceAccess / halfLife);
+}
+
+/**
+ * Compute tag overlap between query tags and memory tags.
+ * Returns 0-1. Uses Jaccard-like similarity: intersection / union.
+ * Returns 0 if either set is empty (no tag filtering).
+ */
+function computeTagScore(memoryTags: readonly string[], queryTags: readonly string[]): number {
+  if (queryTags.length === 0 || memoryTags.length === 0) return 0;
+
+  const memSet = new Set(memoryTags);
+  let intersection = 0;
+  for (const tag of queryTags) {
+    if (memSet.has(tag)) intersection++;
+  }
+
+  const union = new Set([...memoryTags, ...queryTags]).size;
+  return union > 0 ? intersection / union : 0;
+}
+
+/**
+ * Compute keyword match score between query text and memory content.
+ * Returns 0-1. Splits query into words, checks presence in content (case-insensitive).
+ * Simple but effective — no NLP, no embeddings, no dependencies.
+ */
+function computeContentScore(content: string, query: string | undefined): number {
+  if (!query || query.trim().length === 0) return 0;
+
+  const contentLower = content.toLowerCase();
+  const words = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+  if (words.length === 0) return 0;
+
+  let matches = 0;
+  for (const word of words) {
+    if (contentLower.includes(word)) matches++;
+  }
+
+  return matches / words.length;
+}
+
+/**
+ * Score a single memory against a query.
+ *
+ * Combined score formula:
+ *   score = tag_match × 0.35
+ *         + content_match × 0.15
+ *         + recency × 0.25
+ *         + type_weight × 0.15
+ *         + pin_bonus × 0.10
+ *
+ * Returns 0.0 to ~1.5 (pinned facts with perfect tag+content match).
+ */
+export function scoreMemory(memory: Memory, query: RecallQuery, now: number): number {
+  const tagScore = computeTagScore(memory.tags, query.tags ?? []);
+  const contentScore = computeContentScore(memory.content, query.query);
+  const recencyScore = computeRecency(memory.accessed_at, now, memory.memory_type as MemoryType);
+  const typeWeight = TYPE_WEIGHTS[memory.memory_type as MemoryType] ?? 0.5;
+  const pinBonus = memory.pinned ? 0.5 : 0;
+  // SHIP-67 — trust-tier bonus replaces raw recallBonus. trust_level is derived from
+  // memory_source + success_recall_count + pinned (see computeTrustLevel in memory-store.ts).
+  const trustBonus = memory.trust_level === 'trusted'     ? 0.15
+                   : memory.trust_level === 'provisional' ? 0.05
+                                                          : 0;
+  // Continuous outcome signal: each successful recall adds 0.04, capped at 0.20.
+  // Complements the discrete trust tier — a memory recalled 5 times outranks one recalled once,
+  // even if both are 'trusted'. Drives memories that proved useful to the top of results.
+  const successBonus = Math.min((memory.success_recall_count ?? 0) * 0.04, 0.20);
+
+  // If no query text AND no tags provided, weight recency and type more heavily
+  const hasQuery = (query.query && query.query.trim().length > 0) || (query.tags && query.tags.length > 0);
+  if (!hasQuery) {
+    // Pure recency + type mode — useful for get_session_context with no specific query
+    return recencyScore * 0.45 + typeWeight * 0.35 + pinBonus * 0.20 + trustBonus + successBonus;
+  }
+
+  return tagScore * 0.35 + contentScore * 0.15 + recencyScore * 0.25 + typeWeight * 0.15 + pinBonus * 0.10 + trustBonus + successBonus;
+}
+
+/**
+ * Select the highest-scoring memories that fit within a token budget.
+ *
+ * This is the core algorithm that prevents context bloat:
+ * 1. Score all candidates
+ * 2. Sort by score DESC
+ * 3. Greedily pack into budget
+ * 4. Return what fits + how much was omitted
+ *
+ * Never exceeds the budget. If a single memory exceeds the remaining budget,
+ * it's skipped (not truncated) — we trade completeness for coherence.
+ */
+export function budgetedRecall(memories: readonly Memory[], query: RecallQuery, now: number): RecallResult {
+  const scored: ScoredMemory[] = memories.map(m => ({
+    ...m,
+    score: scoreMemory(m, query, now),
+  }));
+
+  // Sort by score DESC, then by accessed_at DESC for tiebreaking
+  scored.sort((a, b) => b.score - a.score || b.accessed_at - a.accessed_at);
+
+  const MIN_RELEVANCE_SCORE = 0.15;
+
+  // Filter out low-relevance memories when a real query is present
+  const hasSearchCriteria = (query.query && query.query.trim().length > 0) || (query.tags && query.tags.length > 0);
+  const candidates = hasSearchCriteria ? scored.filter(m => m.pinned || m.score >= MIN_RELEVANCE_SCORE) : scored;
+
+  const selected: ScoredMemory[] = [];
+  let totalTokens = 0;
+  // Count threshold-excluded memories so omitted_count reflects ALL exclusions
+  let omittedCount = scored.length - candidates.length;
+
+  for (const memory of candidates) {
+    if (totalTokens + memory.token_count <= query.token_budget) {
+      selected.push(memory);
+      totalTokens += memory.token_count;
+    } else {
+      omittedCount++;
+    }
+  }
+
+  return {
+    memories: selected,
+    total_tokens: totalTokens,
+    budget_remaining: query.token_budget - totalTokens,
+    omitted_count: omittedCount,
+  };
+}

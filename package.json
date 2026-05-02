@@ -1,0 +1,37 @@
+{
+  "name": "relay",
+  "version": "0.1.0",
+  "description": "Solo CLI for delegating bounded coding tasks to AI workers (Codex, OpenRouter, LM Studio, Anthropic) with audit trail, memory, and parallel dispatch.",
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "author": "Ghanavati",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "relay": "dist/cli.js"
+  },
+  "files": [
+    "dist/",
+    "bin/",
+    "README.md",
+    "LICENSE",
+    "AGENTS.md"
+  ],
+  "scripts": {
+    "build": "tsc && chmod +x dist/cli.js 2>/dev/null || true",
+    "test": "node --test dist/**/*.test.js",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3"
+  }
+}
