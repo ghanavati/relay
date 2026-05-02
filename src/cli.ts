@@ -121,6 +121,33 @@ DOCS
 `);
 }
 
+async function dispatchRun(rest: readonly string[]): Promise<number> {
+  const flags = parseFlags(rest);
+  const task = flags.positionals.join(' ').trim();
+  if (!task) {
+    io.stderr('relay run requires a task. Try: relay run "fix the failing test"\n');
+    return 2;
+  }
+  const provider = (lastOption(flags, 'provider') ?? 'codex') as 'codex' | 'openrouter' | 'lmstudio';
+  if (!['codex', 'openrouter', 'lmstudio'].includes(provider)) {
+    io.stderr(`unsupported --provider: ${provider}. Try codex / openrouter / lmstudio.\n`);
+    return 2;
+  }
+  const timeoutMsRaw = lastOption(flags, 'timeout-ms');
+  const timeoutMs = timeoutMsRaw ? Number.parseInt(timeoutMsRaw, 10) : 300_000;
+
+  const { executeRunCommand } = await import('./cli/cmd-run.js');
+  return executeRunCommand({
+    task,
+    provider,
+    model: lastOption(flags, 'model'),
+    workdir: lastOption(flags, 'workdir') ?? io.cwd,
+    timeoutMs,
+    reasoningEffort: lastOption(flags, 'reasoning-effort'),
+    json: isBool(flags, 'json'),
+  }, io);
+}
+
 async function dispatchMemory(rest: readonly string[]): Promise<number> {
   const flags = parseFlags(rest);
   const action = flags.positionals[0];
@@ -225,8 +252,12 @@ async function main(): Promise<number> {
     return dispatchMemory(rest);
   }
 
+  if (cmd === 'run') {
+    return dispatchRun(rest);
+  }
+
   // v0.2+ stubs
-  const futureCmds = ['run', 'parallel', 'history', 'diff', 'compare', 'init', 'doctor', 'budget', 'corpus'];
+  const futureCmds = ['parallel', 'history', 'diff', 'compare', 'init', 'doctor', 'budget', 'corpus'];
   if (cmd && futureCmds.includes(cmd)) {
     io.stderr(`relay ${cmd}: not implemented in v0.1.0. See ROADMAP.md.\n`);
     return 64;
