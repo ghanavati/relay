@@ -119,6 +119,10 @@ DELEGATION COMMANDS
   relay doctor [--json]                    Probe provider + DB health
   relay history [--limit N] [--provider P] [--status S] [--json]
   relay diff <run_id> [--json]             Show files_changed + diffs for a run
+  relay compare <run_a> <run_b> [--json]   Side-by-side diff of two runs
+
+SETUP
+  relay init [--auto|--quick] [--json]     Interactive setup wizard
 
 GENERAL
   relay --help, -h                         Show this help
@@ -287,9 +291,20 @@ async function main(): Promise<number> {
     const { executeDiffCommand } = await import('./cli/cmd-diff.js');
     return executeDiffCommand({ runId, json: isBool(flags, 'json') }, io);
   }
-
+  if (cmd === 'init') {
+    const flags = parseFlags(rest);
+    const { executeInitCommand } = await import('./cli/cmd-init.js');
+    return executeInitCommand({ auto: isBool(flags, 'auto'), quick: isBool(flags, 'quick'), json: isBool(flags, 'json') }, io);
+  }
+  if (cmd === 'compare') {
+    const flags = parseFlags(rest);
+    const [runA, runB] = flags.positionals;
+    if (!runA || !runB) { io.stderr('relay compare requires <run_a> <run_b>\n'); return 2; }
+    const { executeCompareCommand } = await import('./cli/cmd-compare.js');
+    return executeCompareCommand({ runA, runB, json: isBool(flags, 'json') }, io);
+  }
   // v0.2+ stubs
-  const futureCmds = ['parallel', 'compare', 'init', 'budget', 'corpus'];
+  const futureCmds = ['parallel', 'corpus', 'budget'];
   if (cmd && futureCmds.includes(cmd)) {
     io.stderr(`relay ${cmd}: not implemented in v0.1.0. See CHANGELOG.md.\n`);
     return 64;

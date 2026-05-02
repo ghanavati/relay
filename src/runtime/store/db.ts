@@ -257,7 +257,7 @@ const DELETE_TAINTED_VERIFICATIONS_SQL =
 
 export function getDb(): Database.Database {
   if (_db) return _db;
-  const dbPath = process.env['RELAY_DB_PATH'] ?? join(homedir(), '.relay-mcp', 'relay.db');
+  const dbPath = process.env['RELAY_DB_PATH'] ?? join(homedir(), '.relay', 'relay.db');
   if (dbPath !== ':memory:') {
     mkdirSync(path.dirname(dbPath), { recursive: true });
   }
