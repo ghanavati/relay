@@ -18,7 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Initial extract from the relay-mcp monorepo. Solo CLI distro focused on memory + delegation infrastructure. Dropped ~60% of relay-mcp scope (compliance, hosted, multi-tenant, regulatory reports) for a single-user surface.
 
 ### Added
-- `relay run <task>` — single-task delegation to codex / lmstudio / openrouter, with audit-trail run row + run-events captured to SQLite. Smoke tested end-to-end (LM Studio GLM-4.7-Flash returning correct output, run row complete with token_usage).
+- `relay run <task>` — single-task delegation to codex / lmstudio / openrouter / **anthropic**, with audit-trail run row + run-events captured to SQLite.
+- `relay parallel <spec.json>` — dispatch N tasks concurrently with bounded concurrency. JSON spec format documented in docs/recipes/parallel-with-lmstudio.md. Defaults: `--max-concurrency 4`.
+- AnthropicRunner — slim Messages API runner, text-only (no tool-loop). For Claude with tool-use, route via OpenRouter `--model anthropic/claude-...`.
+- Stable test suite (360/360, verified 7/7 stability runs with `--test-concurrency=1`).
 - AGPL-3.0 license
 - `relay memory remember <content>` — save a fact / decision / lesson with optional tags, pinned flag, expiry
 - `relay memory recall [<query>]` — FTS5 + recency-fallback recall with token budget
@@ -44,9 +47,7 @@ Initial extract from the relay-mcp monorepo. Solo CLI distro focused on memory +
 - 15 regulatory report generators (SR 11-7, RTS 6, IEC 62304, EU AI Act Annex IV, EBA, EIOPA, DORA, etc.)
 
 ### Known limitations
-- 1 transient test failure under parallel execution (359/360 pass, 99.7%) — root cause not yet diagnosed.
-- `relay parallel`, `relay budget`, `relay corpus` commands deferred to v0.2.
-- Anthropic worker deferred (route to OpenRouter with `--model anthropic/claude-...` for Claude tasks).
+- `relay budget`, `relay corpus` commands deferred to v0.2 (BudgetStore needs per-provider scope; corpus is unused without QMD integration).
 
 [Unreleased]: https://github.com/ghanavati/relay/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/ghanavati/relay/releases/tag/v0.1.0

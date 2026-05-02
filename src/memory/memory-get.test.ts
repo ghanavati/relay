@@ -1,10 +1,16 @@
 process.env['RELAY_DB_PATH'] = ':memory:';
 
-import { test, describe } from 'node:test';
+import { test, describe, beforeEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { MemoryStore } from './memory-store.js';
+import { getDb } from '../runtime/store/db.js';
 
 describe('MemoryStore.getMemory()', () => {
+  beforeEach(() => {
+    // Isolate from cross-file pollution in shared :memory: singleton
+    getDb().prepare('DELETE FROM memories').run();
+  });
+
   test('returns null for non-existent id', () => {
     const store = new MemoryStore();
     const result = store.getMemory('non-existent-id');
