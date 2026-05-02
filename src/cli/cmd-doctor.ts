@@ -1,4 +1,5 @@
 import type { CliIO } from './commands.js';
+import { c, statusBadge } from './colors.js';
 
 export interface DoctorArgs { json: boolean; }
 
@@ -82,14 +83,19 @@ export async function executeDoctorCommand(args: DoctorArgs, io: CliIO): Promise
 
   // Output
   if (args.json) {
-    io.stdout(JSON.stringify({ checks, summary }, null, 2));
+    io.stdout(JSON.stringify({ checks, summary }) + '\n');
   } else {
-    io.stdout('relay doctor\n\n');
+    io.stdout(c.bold('relay doctor') + '\n\n');
     checks.forEach(check => {
-      const status = check.status === 'ok' ? '[OK]' : check.status === 'failed' ? '[!!]' : '[--]';
-      io.stdout(`${check.name.padEnd(12)} ${status} ${check.detail}\n`);
+      io.stdout(`${check.name.padEnd(12)} ${statusBadge(check.status)} ${c.dim(check.detail)}\n`);
     });
-    io.stdout(`\nAll checks passed.\n`);
+    if (summary.failed === 0 && summary.missing === 0) {
+      io.stdout(`\n${c.green('All checks passed.')}\n`);
+    } else if (summary.failed > 0) {
+      io.stdout(`\n${c.red(`${summary.failed} check${summary.failed === 1 ? '' : 's'} failed`)}, ${summary.missing} missing, ${summary.ok} ok.\n`);
+    } else {
+      io.stdout(`\n${c.green(`${summary.ok} ok`)}, ${c.gray(`${summary.missing} missing (informational)`)}.\n`);
+    }
   }
 
   return summary.failed > 0 ? 1 : 0;

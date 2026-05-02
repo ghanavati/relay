@@ -1,23 +1,15 @@
 #!/usr/bin/env node
 /**
- * Relay solo CLI v0.1.0 — entry point.
+ * Relay solo CLI — entry point.
  *
- * Surface (v0.1.0):
- *   relay memory remember <content> [--type ...] [--tag ...] [--pinned] [--json]
- *   relay memory recall [<query>] [--type ...] [--tag ...] [--token-budget N] [--json]
- *   relay memory show-context <query> [--type ...] [--token-budget N] [--json]
- *   relay memory get <memory_id> [--json]
- *   relay memory hook --install | --uninstall [--json]
- *   relay memory to-rules <memory_id> [--rules-file path]
- *   relay --help
- *   relay --version
- *
- * Future (v0.2+): relay run, relay parallel, relay history, relay diff,
- * relay compare, relay init, relay doctor, relay budget.
+ * v0.1.0 surface: memory + run + parallel + history + diff + compare + doctor +
+ * init + completion. See `relay --help` for the full menu, or the README for
+ * commands and flags.
  */
 
-import { argv, exit, cwd, env } from 'node:process';
+import { argv, exit, cwd } from 'node:process';
 import type { CliIO } from './cli/commands.js';
+import { setColorMode, type ColorMode } from './cli/colors.js';
 
 const VERSION = '0.1.0';
 
@@ -127,12 +119,14 @@ DELEGATION COMMANDS
 
 SETUP
   relay init [--auto|--quick] [--json]     Interactive setup wizard
+  relay completion <bash|zsh|fish>         Emit shell completion script
 
 GENERAL
   relay --help, -h                         Show this help
   relay --version, -V                      Show version
+  --color=auto|always|never                Force color (overrides NO_COLOR)
 
-NOT YET IMPLEMENTED
+DEFERRED TO v0.2
   relay budget, relay corpus — see CHANGELOG.md.
 
 DOCS
@@ -279,8 +273,41 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
   return 2;
 }
 
+const VALID_COLOR_MODES = new Set<ColorMode>(['auto', 'always', 'never']);
+
+function isColorMode(v: string): v is ColorMode {
+  return VALID_COLOR_MODES.has(v as ColorMode);
+}
+
+function applyColorFlag(args: readonly string[]): readonly string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === '--color' && args[i + 1]) {
+      const v = args[++i]!;
+      if (!isColorMode(v)) {
+        io.stderr(`--color must be one of auto|always|never (got: ${v})\n`);
+        exit(2);
+      }
+      setColorMode(v);
+      continue;
+    }
+    if (a.startsWith('--color=')) {
+      const v = a.slice('--color='.length);
+      if (!isColorMode(v)) {
+        io.stderr(`--color must be one of auto|always|never (got: ${v})\n`);
+        exit(2);
+      }
+      setColorMode(v);
+      continue;
+    }
+    out.push(a);
+  }
+  return out;
+}
+
 async function main(): Promise<number> {
-  const args = argv.slice(2);
+  const args = applyColorFlag(argv.slice(2));
   if (args.length === 0 || args[0] === '--help' || args[0] === '-h' || args[0] === 'help') {
     printHelp();
     return 0;
@@ -345,19 +372,26 @@ async function main(): Promise<number> {
       json: isBool(flags, 'json'),
     }, io);
   }
+  if (cmd === 'completion') {
+    const flags = parseFlags(rest);
+    const shell = flags.positionals[0];
+    if (!shell || !['bash', 'zsh', 'fish'].includes(shell)) {
+      io.stderr('relay completion requires <bash|zsh|fish>\n');
+      return 2;
+    }
+    const { executeCompletionCommand } = await import('./cli/cmd-completion.js');
+    return executeCompletionCommand({ shell: shell as 'bash' | 'zsh' | 'fish' }, io);
+  }
 
-  // v0.2+ stubs
   const futureCmds = ['corpus', 'budget'];
   if (cmd && futureCmds.includes(cmd)) {
-    io.stderr(`relay ${cmd}: not implemented in v0.1.0. See CHANGELOG.md.\n`);
+    io.stderr(`relay ${cmd}: deferred to v0.2. See CHANGELOG.md.\n`);
     return 64;
   }
 
   io.stderr(`relay: unknown command '${cmd}'. Run 'relay --help'.\n`);
   return 2;
 }
-
-void env; // shut up unused-import warning if env trims later
 
 main().then(
   code => exit(code),

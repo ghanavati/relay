@@ -7,11 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Beyond v0.1.0
-- v0.2.0: `relay parallel` (isolation:worktree, peer-session-validated pattern), Anthropic worker, test suite reinstated
+### Added
+- `relay completion <bash|zsh|fish>` — emit a shell completion script for the named shell. Pipe into the shell's completion location, or `eval "$(relay completion zsh)"`.
+- ANSI color support across `doctor` and `history`. Honors `NO_COLOR`, `CI`, `TERM=dumb`, and stdout-not-a-TTY auto-detection. Override with `--color=always|never` flag or `RELAY_COLOR` env.
+
+### Fixed
+- `relay doctor` no longer prints "All checks passed." when checks failed. Now conditional: green "All checks passed." when truly clean, red "N checks failed, M missing, K ok" on failure, gray "K ok, M missing (informational)" when only optional providers absent.
+- `relay doctor --json` emits compact one-line JSON (was pretty-printed `null, 2`).
+- `relay init` no longer hardcodes `-Users-ghanavati-ai-stack-Projects-relay-mcp` as the CC memory probe path. Derives `~/.claude/projects/<hash>/memory` dynamically from `io.cwd`. Now works for any user, any project.
+- `relay memory to-rules` no longer appends duplicate entries when invoked twice with the same memory_id. Returns "already present" on duplicate.
+- `relay history --json` emits NDJSON (one row per line) instead of a single wrapped `{runs: [...]}` object — pipe-friendly for `jq -c`.
+- `cmd-history.ts:48` removed double `.padEnd(28).slice(0,28).padEnd(28)` no-op chain. Removed `as any[]` cast — defines `RunRow` interface.
+- `cmd-history.ts` `formatDuration` no longer declares unused `ms` variable; uses `<1000ms` short-form.
+
+### Beyond v0.2 (planned)
 - v0.3.0: TUI visual layer (Ink) for history + live run progress + cost dashboard
-- v0.4.0: skill packs (slim), `relay run --pipe`, `relay queue cron`, `relay watch <dir>`
-- v1.0.0: stable surface, brew formula, public if not already
+- v0.4.0: skill packs (slim), `relay run --pipe`, `relay queue cron`, `relay watch <dir>`, brew formula
+- v1.0.0: stable surface, public if not already
 
 ## [0.1.0] - 2026-05-02
 
