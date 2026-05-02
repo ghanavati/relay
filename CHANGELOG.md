@@ -7,25 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Turn 1 (next, ~45 min)
-- `relay doctor` — probe codex CLI / OPENROUTER_API_KEY / LM Studio reachability / DB writable
-- `relay history` — list past runs from SQLite (filterable, JSON-able)
-- `relay diff <run_id>` — show files_changed + diffs for a run
-- Fix `HOOK_SCRIPT` in cmd-memory-ops.ts:89 (still says `relay-mcp recall`, should be `relay memory recall`)
-
-### Turn 2 (~90 min)
-- `relay init` — interactive wizard (provider detection, env setup, hook install, optional CC memory migration)
-- `relay budget set/show` — per-provider monthly cap
-- `relay compare <run_a> <run_b>` — side-by-side run diff
-
-### Turn 3 (~60 min)
-- 4 recipes (morning startup, parallel-with-lmstudio, migrating-cc-memory, architecture)
-- Test suite trim (delete tests with broken imports from dropped modules)
-- npm pack verified, prepublishOnly script
-- README badges + 90-second quickstart
-
-### Tag v0.1.0 after Turn 3
-
 ### Beyond v0.1.0
 - v0.2.0: `relay parallel` (isolation:worktree, peer-session-validated pattern), Anthropic worker, test suite reinstated
 - v0.3.0: TUI visual layer (Ink) for history + live run progress + cost dashboard
@@ -63,9 +44,9 @@ Initial extract from the relay-mcp monorepo. Solo CLI distro focused on memory +
 - 15 regulatory report generators (SR 11-7, RTS 6, IEC 62304, EU AI Act Annex IV, EBA, EIOPA, DORA, etc.)
 
 ### Known limitations
-- v0.1.0 has memory commands only — `relay run` not yet implemented (returns exit 64)
-- Tests carried over from relay-mcp not all passing yet (cleanup planned in 0.2.0)
-- `relay memory hook` HOOK_SCRIPT references `relay-mcp recall` (will be patched to `relay memory recall` in 0.2.0)
+- 1 transient test failure under parallel execution (359/360 pass, 99.7%) — root cause not yet diagnosed.
+- `relay parallel`, `relay budget`, `relay corpus` commands deferred to v0.2.
+- Anthropic worker deferred (route to OpenRouter with `--model anthropic/claude-...` for Claude tasks).
 
 [Unreleased]: https://github.com/ghanavati/relay/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/ghanavati/relay/releases/tag/v0.1.0

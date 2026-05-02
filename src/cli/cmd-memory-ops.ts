@@ -86,6 +86,32 @@ export function executeGetMemoryCommand(
   return 0;
 }
 
+export async function executeMemoryShowContextCommand(
+  command: {
+    query: string;
+    types: ('lesson' | 'decision' | 'fact' | 'context' | 'state' | 'handoff' | 'session')[];
+    tokenBudget: number;
+    workdir?: string;
+    json: boolean;
+  },
+  io: CliIO
+): Promise<number> {
+  const { loadRecalledLessonsContent } = await import('../context/layers.js');
+  const workdir = command.workdir ?? io.cwd;
+  const content = await loadRecalledLessonsContent(workdir, command.query, undefined, {
+    types: command.types,
+    tokenBudget: command.tokenBudget,
+  });
+  if (command.json) {
+    io.stdout(JSON.stringify({ content, query: command.query, types: command.types, token_budget: command.tokenBudget, workdir }) + '\n');
+  } else if (content === null) {
+    io.stdout('No relevant lessons found for this query.\n');
+  } else {
+    io.stdout(content + '\n');
+  }
+  return 0;
+}
+
 export const HOOK_SCRIPT = 'relay memory recall --token-budget 800 --type lesson --type fact --type decision --json 2>/dev/null || true';
 const HOOK_ID = 'relay-memory-session-start';
 

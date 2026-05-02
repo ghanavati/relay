@@ -14,10 +14,10 @@
   },
   "files": [
     "dist/",
-    "bin/",
     "README.md",
     "LICENSE",
-    "AGENTS.md"
+    "AGENTS.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc && chmod +x dist/cli.js 2>/dev/null || true",
