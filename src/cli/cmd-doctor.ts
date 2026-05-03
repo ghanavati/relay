@@ -1,84 +1,40 @@
 import type { CliIO } from './commands.js';
 import { c, statusBadge } from './colors.js';
+import { probeCodex, probeLmStudio, probeEnvKey, type ProviderProbe } from './probes.js';
 
 export interface DoctorArgs { json: boolean; }
 
 export async function executeDoctorCommand(args: DoctorArgs, io: CliIO): Promise<number> {
-  const checks = [];
+  const checks: ProviderProbe[] = [];
   let summary = { ok: 0, missing: 0, failed: 0 };
 
-  // 1. codex CLI check
-  try {
-    const { execFile } = await import('node:child_process');
-    const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) => {
-      execFile('codex', ['--version'], { encoding: 'utf-8' }, (err, stdout) => {
-        if (err) reject(err);
-        else resolve({ stdout: stdout as string });
-      });
-    });
-    const version = stdout.trim();
-    checks.push({ name: 'codex', status: 'ok', detail: `codex-cli ${version}` });
-    summary.ok++;
-  } catch {
-    checks.push({ name: 'codex', status: 'failed', detail: 'codex not found or not accessible' });
-    summary.failed++;
+  function record(probe: ProviderProbe): void {
+    checks.push(probe);
+    summary[probe.status]++;
   }
+
+  // 1. codex CLI check
+  record(await probeCodex());
 
   // 2. OPENROUTER_API_KEY check
-  const openrouterKey = process.env.OPENROUTER_API_KEY;
-  if (openrouterKey) {
-    checks.push({ name: 'openrouter', status: 'ok', detail: 'OPENROUTER_API_KEY set' });
-    summary.ok++;
-  } else {
-    checks.push({ name: 'openrouter', status: 'missing', detail: 'OPENROUTER_API_KEY not set' });
-    summary.missing++;
-  }
+  record(probeEnvKey('OPENROUTER_API_KEY', 'openrouter'));
 
   // 3. LM Studio check with 3-second timeout
-  try {
-    const lmstudioEndpoint = process.env.LMSTUDIO_ENDPOINT ?? 'http://localhost:1234';
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000);
-
-    const response = await fetch(`${lmstudioEndpoint}/v1/models`, { signal: controller.signal });
-    clearTimeout(timeoutId);
-
-    if (response.ok) {
-      const data = (await response.json()) as { data?: unknown[] };
-      const modelCount = Array.isArray(data?.data) ? data.data.length : 0;
-      checks.push({ name: 'lmstudio', status: 'ok', detail: `${lmstudioEndpoint} (${modelCount} models)` });
-      summary.ok++;
-    } else {
-      checks.push({ name: 'lmstudio', status: 'failed', detail: 'LM Studio endpoint not reachable' });
-      summary.failed++;
-    }
-  } catch {
-    checks.push({ name: 'lmstudio', status: 'failed', detail: 'LM Studio endpoint not reachable' });
-    summary.failed++;
-  }
+  record(await probeLmStudio());
 
   // 4. Anthropic API key check
-  const anthropicKey = process.env.ANTHROPIC_API_KEY;
-  if (anthropicKey) {
-    checks.push({ name: 'anthropic', status: 'ok', detail: 'ANTHROPIC_API_KEY set' });
-    summary.ok++;
-  } else {
-    checks.push({ name: 'anthropic', status: 'missing', detail: 'ANTHROPIC_API_KEY not set' });
-    summary.missing++;
-  }
+  record(probeEnvKey('ANTHROPIC_API_KEY', 'anthropic'));
 
-  // 5. DB check
+  // 5. DB check (doctor-specific — not extracted to probes.ts)
   try {
     const { getDb } = await import('../runtime/store/db.js');
     const db = getDb();
     const result = db.prepare('SELECT COUNT(*) AS n FROM runs').get() as { n: number } | undefined;
     const runCount = result?.n ?? 0;
     const dbPath = process.env['RELAY_DB_PATH'] ?? '~/.relay/relay.db';
-    checks.push({ name: 'db', status: 'ok', detail: `${dbPath} (${runCount} runs)` });
-    summary.ok++;
+    record({ name: 'db', status: 'ok', detail: `${dbPath} (${runCount} runs)` });
   } catch {
-    checks.push({ name: 'db', status: 'failed', detail: 'Database check failed' });
-    summary.failed++;
+    record({ name: 'db', status: 'failed', detail: 'Database check failed' });
   }
 
   // Output
