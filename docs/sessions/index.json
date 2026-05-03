@@ -1,0 +1,10 @@
+[
+  {
+    "session_id": "caa5d0cc-b24e-4e53-b19d-bc03fa559441",
+    "date": "2026-05-03",
+    "file": "/Users/ghanavati/ai-stack/Projects/Relay/docs/sessions/2026-05-03-caa5d0cc.md",
+    "user_turns": 16,
+    "tool_calls": 10,
+    "summary": "How to do this with LM studio: The /model picker now lists models from your gateway's /v1/models endpoint when ANTHROPIC_BASE_URL points at an Anthropic-compatible gateway"
+  }
+]
