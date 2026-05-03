@@ -132,19 +132,27 @@ export async function executeMemoryHookCommand(
   const hooks = (settings['hooks'] ?? {}) as Record<string, unknown>;
   const sessionStart = (Array.isArray(hooks['SessionStart']) ? hooks['SessionStart'] : []) as Array<Record<string, unknown>>;
 
+  // Strip any stale relay hook entries: legacy { id, run } shape AND any current-format
+  // entry whose inner hooks[] contains our HOOK_SCRIPT. Makes install idempotent and
+  // also self-heals settings.json files written by a prior buggy version.
+  const cleaned = sessionStart.filter(h => {
+    if (h['id'] === HOOK_ID) return false;
+    const inner = (Array.isArray(h['hooks']) ? h['hooks'] : []) as Array<Record<string, unknown>>;
+    if (inner.some(i => i['command'] === HOOK_SCRIPT)) return false;
+    return true;
+  });
+
   if (command.install) {
-    const alreadyPresent = sessionStart.some(h => h['id'] === HOOK_ID);
-    if (!alreadyPresent) {
-      sessionStart.push({ id: HOOK_ID, run: HOOK_SCRIPT });
-    }
-    hooks['SessionStart'] = sessionStart;
+    // CC hook schema: each SessionStart entry is { hooks: [{ type, command }] }, optionally with matcher.
+    cleaned.push({ hooks: [{ type: 'command', command: HOOK_SCRIPT }] });
+    hooks['SessionStart'] = cleaned;
     settings['hooks'] = hooks;
     await mkdir(dirname(settingsPath), { recursive: true });
     await writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
     if (command.json) io.stdout(JSON.stringify({ installed: true, path: settingsPath }) + '\n');
     else io.stdout(`SessionStart hook installed in ${settingsPath}\nRelay will inject recalled memories at the start of every new CC session.\n`);
   } else {
-    hooks['SessionStart'] = sessionStart.filter(h => h['id'] !== HOOK_ID);
+    hooks['SessionStart'] = cleaned;
     settings['hooks'] = hooks;
     await writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
     if (command.json) io.stdout(JSON.stringify({ installed: false, path: settingsPath }) + '\n');

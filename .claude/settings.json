@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "relay memory recall --token-budget 800 --type lesson --type fact --type decision --json 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}
