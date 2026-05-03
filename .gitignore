@@ -7,3 +7,6 @@ dist/
 *.log
 .env
 .env.local
+
+# Session transcripts contain verbatim user prompts + tool I/O — local-only
+docs/sessions/
