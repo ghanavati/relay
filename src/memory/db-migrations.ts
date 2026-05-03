@@ -7,7 +7,12 @@
 
 import type Database from 'better-sqlite3';
 
-const MEMORY_DDL: readonly string[] = [
+/**
+ * Tables created up-front. Indexes/triggers that depend on optional columns
+ * (e.g. `entity_key`) live in POST_ALTER_DDL — they must run AFTER ALTERs that
+ * add those columns to old DBs.
+ */
+const PRE_ALTER_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS memories (
     memory_id TEXT PRIMARY KEY,
     memory_type TEXT NOT NULL,
@@ -29,6 +34,10 @@ const MEMORY_DDL: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_memories_workdir ON memories(workdir)`,
   `CREATE INDEX IF NOT EXISTS idx_memories_accessed ON memories(accessed_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC)`,
+];
+
+const POST_ALTER_DDL: readonly string[] = [
+  // Index that needs entity_key column — must run AFTER PRAGMA-ALTERs.
   `CREATE INDEX IF NOT EXISTS idx_memories_entity_key ON memories(entity_key, workdir)`,
   // FTS5 semantic search — content table reads from memories, rowid-mapped
   `CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
@@ -48,11 +57,12 @@ const MEMORY_DDL: readonly string[] = [
 ];
 
 export function migrateMemoryTables(db: Database.Database): void {
-  for (const stmt of MEMORY_DDL) {
+  // 1. Tables + non-conditional indexes (independent of optional columns).
+  for (const stmt of PRE_ALTER_DDL) {
     db.prepare(stmt).run();
   }
 
-  // PRAGMA-guarded ALTERs for existing databases that predate these columns.
+  // 2. PRAGMA-guarded ALTERs for existing databases that predate these columns.
   const existingCols = new Set(
     (db.prepare('PRAGMA table_info(memories)').all() as Array<{ name: string }>).map(r => r.name)
   );
@@ -80,6 +90,11 @@ export function migrateMemoryTables(db: Database.Database): void {
   }
   if (!existingCols.has('files_json')) {
     db.prepare("ALTER TABLE memories ADD COLUMN files_json TEXT NOT NULL DEFAULT '[]'").run();
+  }
+
+  // 3. Indexes/triggers that depend on the columns added in step 2.
+  for (const stmt of POST_ALTER_DDL) {
+    db.prepare(stmt).run();
   }
 
   // Populate FTS index for any memories that existed before this migration.
