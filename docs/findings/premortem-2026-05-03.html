@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Premortem · Relay v0.1 · 2026-05-03</title>
+<style>
+  :root {
+    --bg: #0a0e1a;
+    --card: #131826;
+    --card-2: #1a2033;
+    --text: #e6e9f0;
+    --subtle: #8892a8;
+    --rule: #232b40;
+    --hi: #ef4444;
+    --med: #f59e0b;
+    --c1: #ff6b6b;
+    --c2: #4ecdc4;
+    --c3: #ffe66d;
+    --c4: #c084fc;
+    --c5: #fb7185;
+    --c6: #60a5fa;
+    --c7: #a78bfa;
+    --c8: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+    padding: 0;
+  }
+  .container { max-width: 1100px; margin: 0 auto; padding: 56px 32px 80px; }
+  header { border-bottom: 1px solid var(--rule); padding-bottom: 28px; margin-bottom: 36px; }
+  header h1 { margin: 0 0 12px; font-size: 32px; font-weight: 700; letter-spacing: -0.02em; }
+  header .lede { color: var(--subtle); font-size: 14px; max-width: 720px; }
+  header .frame {
+    margin-top: 18px; padding: 12px 16px;
+    background: rgba(239, 68, 68, 0.08);
+    border-left: 3px solid var(--hi);
+    color: var(--text);
+    font-size: 14px;
+  }
+  h2 { margin: 0 0 20px; font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
+  h3 { margin: 32px 0 14px; font-size: 16px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--subtle); }
+  .synthesis { margin-bottom: 56px; }
+  .top-grid {
+    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px;
+  }
+  @media (max-width: 820px) { .top-grid { grid-template-columns: 1fr; } }
+  .top-card {
+    background: var(--card); border-radius: 8px; padding: 22px;
+    border-top: 3px solid var(--c2);
+  }
+  .top-card.likely { border-top-color: var(--c2); }
+  .top-card.dangerous { border-top-color: var(--c1); }
+  .top-card.hidden { border-top-color: var(--c3); }
+  .top-card .label {
+    display: block; font-size: 11px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--subtle); margin-bottom: 10px;
+  }
+  .top-card .title { font-size: 17px; font-weight: 700; margin-bottom: 10px; line-height: 1.35; }
+  .top-card .body { font-size: 14px; color: var(--text); line-height: 1.6; }
+  .revised, .checklist {
+    background: var(--card); border-radius: 8px; padding: 24px 28px;
+    margin-top: 8px;
+  }
+  .revised ol, .checklist ol { margin: 0; padding-left: 22px; }
+  .revised li, .checklist li { margin-bottom: 12px; line-height: 1.6; }
+  .revised li strong { color: var(--c2); font-weight: 600; }
+  .checklist li strong { color: var(--c8); font-weight: 600; }
+  .agents { margin-top: 56px; }
+  .agents .meta { color: var(--subtle); font-size: 13px; margin-bottom: 24px; }
+  .cards { display: grid; gap: 18px; grid-template-columns: 1fr 1fr; }
+  @media (max-width: 820px) { .cards { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--card); border-radius: 8px; padding: 22px;
+    border-left: 3px solid var(--rule);
+    position: relative;
+  }
+  .card.c1 { border-left-color: var(--c1); }
+  .card.c2 { border-left-color: var(--c2); }
+  .card.c3 { border-left-color: var(--c3); }
+  .card.c4 { border-left-color: var(--c4); }
+  .card.c5 { border-left-color: var(--c5); }
+  .card.c6 { border-left-color: var(--c6); }
+  .card.c7 { border-left-color: var(--c7); }
+  .card.c8 { border-left-color: var(--c8); }
+  .card .head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 16px; margin-bottom: 12px;
+  }
+  .card .num { font-size: 12px; color: var(--subtle); letter-spacing: 0.1em; text-transform: uppercase; }
+  .card .title { font-size: 16px; font-weight: 700; line-height: 1.3; flex: 1; }
+  .sev {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+    font-weight: 700; vertical-align: middle;
+  }
+  .sev.hi { background: rgba(239, 68, 68, 0.15); color: var(--hi); }
+  .sev.med { background: rgba(245, 158, 11, 0.15); color: var(--med); }
+  .card h5 {
+    font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--subtle); margin: 16px 0 6px; font-weight: 700;
+  }
+  .card .story p { margin: 0 0 10px; font-size: 13.5px; line-height: 1.65; }
+  .card .assumption {
+    background: var(--card-2); padding: 10px 14px; border-radius: 4px;
+    font-style: italic; font-size: 13.5px; color: var(--text); line-height: 1.5;
+  }
+  .card .signs { margin: 0; padding-left: 18px; }
+  .card .signs li { font-size: 13.5px; line-height: 1.55; margin-bottom: 6px; color: var(--text); }
+  footer {
+    margin-top: 64px; padding-top: 24px; border-top: 1px solid var(--rule);
+    color: var(--subtle); font-size: 12px; text-align: center;
+  }
+  code {
+    background: var(--card-2); padding: 1px 6px; border-radius: 3px;
+    font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <h1>Premortem · Relay v0.1.0</h1>
+  <p class="lede">A solo CLI for delegating coding tasks to AI workers (Codex / OpenRouter / LM Studio / Anthropic) — extracted from <code>relay-mcp</code> on 2026-05-02. Today: 2026-05-03.</p>
+  <div class="frame"><strong>Frame:</strong> It is 2026-11-03. Six months have passed. Relay has failed. "Failed" means at least one of: (1) you're still using <code>relay-mcp</code> as your daily driver, not Relay; (2) Relay never made it to npm, OR shipped to npm but has ≤20 actual users / no traction signal; (3) the engine fragmented or rotted before D became a viable path.</div>
+</header>
+
+<section class="synthesis">
+  <h2>Synthesis</h2>
+
+  <div class="top-grid">
+    <div class="top-card likely">
+      <span class="label">Most Likely Failure</span>
+      <div class="title">#2 · You never actually dogfood Relay</div>
+      <div class="body">Structural and immediate. <code>.claude/CLAUDE.md</code> in <code>relay-mcp</code> already mandates <code>mcp__relay-mcp__delegate_parallel</code> for ≥2-file batches. 200+ memory entries (LM Studio profiles, GLM/Qwen routing, Berry quirks) live in <code>~/.relay-mcp/</code>. Muscle memory fires daily from day 1. Without an explicit migration, this is what happens by default — and it cascades: no dogfood → no battle-testing → no engine quality → A ships rough → A fails.</div>
+    </div>
+    <div class="top-card dangerous">
+      <span class="label">Most Dangerous Failure</span>
+      <div class="title">#1 · Inherited test suite reports green while silently skipping</div>
+      <div class="body">Less likely than #2 but causes worse damage if it lands. AGENTS.md flags it explicitly: tests inherited from <code>relay-mcp</code> import from dropped modules. <code>node:test</code> reports skipped-on-load files as <code>0 ok, 0 fail</code> — looks like pass. Path to disaster: silent skips → data-loss bug ships → user posts <em>"relay just ate my work"</em> on HN → reputation tag sticks permanently. Recovery curve is brutal.</div>
+    </div>
+    <div class="top-card hidden">
+      <span class="label">Hidden Assumption (cross-agent)</span>
+      <div class="title">"Extracting from <code>relay-mcp</code> creates a separate-but-equal product."</div>
+      <div class="body">Across #2, #6, #7, #8 the same load-bearing belief: that the value lives in the engine, so extracting the engine extracts the product. But Relay's value lives in the <em>ecosystem</em> — the memory entries, AGENTS rules, learned LM Studio profiles, Berry integration paths, audit-trail-as-compliance. Without that, the engine is a commodity competing against claude-code/aider/codex CLI.</div>
+    </div>
+  </div>
+
+  <h3>Revised Plan — concrete actions, mapped to failure modes</h3>
+  <div class="revised">
+    <ol>
+      <li><strong>(#1) Test triage gate — this week.</strong> Run <code>npm test 2&gt;&amp;1 | tail -3</code> and compare total tests to <code>relay-mcp</code>'s ~1635 baseline. <code>grep -rE "from.*(compliance|oversight|billing|hosted|model-registry|validation|guardian)" src/</code> — every match in a test file is a silent-skip candidate. Delete or rewrite. Don't ship v0.2 until count is honest.</li>
+      <li><strong>(#2) 14-day dogfood test — starting today.</strong> Every routine task that triggers the ≥2-file auto-dispatch rule MUST go through <code>relay run</code>, not <code>mcp__relay-mcp__delegate_parallel</code>. Track invocations. If you hit 14 days with &lt;30 real <code>relay run</code> calls, Relay isn't usable for daily work — fix the gap or accept E is dead.</li>
+      <li><strong>(#3) License decision — within 7 days, before any external PR.</strong> Three options: (a) keep AGPL and document why, accepting it filters employed-developer audience and chokes D; (b) relicense to Apache-2.0 NOW while contributors=0; (c) dual-license. After PR #1 lands, option (b) becomes hard or impossible.</li>
+      <li><strong>(#4) Pre-publish gate — no HN/Twitter post until <code>npm install -g relay</code> works.</strong> 60-second magic moment in README. Pin Node version. Test on macOS clean install + Windows WSL2 + Linux by 3 strangers, not the author. <code>better-sqlite3</code> platform support documented honestly.</li>
+      <li><strong>(#5) Weekly hour cap.</strong> Decide a number you can defend. If &lt;4 hours/week, keep the repo private until your calendar opens — pretend-publishing burns reputation a starved project can't sustain.</li>
+      <li><strong>(#6) Replace the README hero — pain-first, not capability-first.</strong> Current line ("Solo CLI for delegating bounded coding tasks…") sounds identical to 8 competitors. Test 3 alternatives that lead with <em>what it saves you from</em>. Show 5 strangers; if they can't articulate the differentiator in 30 seconds, the pitch is wrong.</li>
+      <li><strong>(#7) Engine work must serve a visible artifact.</strong> Every engine improvement this quarter ships with one user-visible change: a screencast, a README hero update, a working <code>relay studio</code> demo (the "compare models side-by-side" dream). If 2 weeks pass with all commits in <code>src/runtime/</code> + <code>src/workers/</code> and zero in a surface, you're in the trap.</li>
+      <li><strong>(#8) Pick one canonical engine — within 30 days.</strong> Either Relay is your daily driver and <code>relay-mcp</code> downgrades to "compliance edition" (one-way port), or <code>relay-mcp</code> stays primary and Relay is archive/educational. "Two coequal engines maintained by one person" has no successful precedent.</li>
+    </ol>
+  </div>
+
+  <h3>Pre-Launch Checklist — verify ALL before public release</h3>
+  <div class="checklist">
+    <ol>
+      <li><strong>Test count parity.</strong> <code>npm test 2&gt;&amp;1 | tail -3</code> shows total tests within 80% of <code>relay-mcp</code>'s baseline (~1635) OR every removed test file is documented with reason. No silent skips. (Mitigates #1)</li>
+      <li><strong>14-day dogfood log.</strong> ≥50 real tasks dispatched via <code>relay run</code>, not <code>mcp__relay-mcp__*</code>. Below 50 = not ready. (Mitigates #2 + #5)</li>
+      <li><strong>License rationale in writing.</strong> <code>LICENSE-RATIONALE.md</code> answering: "if audience is mostly employed devs, why is AGPL OK?" (Mitigates #3)</li>
+      <li><strong>One-line install + 60-second magic moment.</strong> <code>npm install -g relay &amp;&amp; relay run "..."</code> works. Tested by 3 strangers on macOS / Windows WSL2 / Linux clean installs. (Mitigates #4)</li>
+      <li><strong>30-second pitch test.</strong> 5 strangers shown the README hero — at least 3 articulate the differentiator vs claude-code/aider without prompting. (Mitigates #6)</li>
+    </ol>
+  </div>
+</section>
+
+<section class="agents">
+  <h2>Failure Deep-Dives</h2>
+  <p class="meta">8 parallel investigators, each assigned one failure mode. Each output: failure story, underlying assumption, early warning signs.</p>
+  <div class="cards">
+
+    <div class="card c1">
+      <div class="head">
+        <div>
+          <div class="num">Failure #1</div>
+          <div class="title">Inherited test suite was never triaged</div>
+        </div>
+        <span class="sev hi">High</span>
+      </div>
+      <h5>Failure story</h5>
+      <div class="story">
+        <p>Two weeks in, the author tagged v0.2 with "tests passing" and shipped a parallel-dispatch fix that landed during a Codex spec session. What he didn't notice: the inherited tests for <code>recordRunDiff</code>, <code>acquireWorkdirMutex</code>, and the snapshot reconciler had been silently importing from dropped compliance modules. After the relay-mcp extraction, those imports failed at module-load time, and node:test reported them as "0 ok, 0 fail" — counted as pass. Coverage looked unchanged because the green column never moved.</p>
+        <p>Then someone on Hacker News tried it. They ran <code>relay delegate_parallel</code> against a real repo with eight isolated tasks; the worktree merge step deleted files that had been touched in two lanes because the conflict resolver never saw them. The user posted: "relay just ate three days of work." Two more reports came in within 48 hours. The author was mid-week on relay-mcp compliance work for a bank pilot and didn't respond for four days.</p>
+        <p>By then the GitHub issues had screenshots, the post had 200 upvotes, and the npm package (he'd just published v0.3 to npm) had its first 1-star reviews. He pulled it. Nobody trusted it after.</p>
+      </div>
+      <h5>Underlying assumption</h5>
+      <div class="assumption">That a test suite which compiles and reports green is actually exercising the code paths it claims to cover.</div>
+      <h5>Early warning signs</h5>
+      <ul class="signs">
+        <li><code>node --test dist/**/*.test.js</code> reports a total test count materially lower than relay-mcp's (~1635) without explicit removal — the delta IS the silent skips.</li>
+        <li>Any test file in <code>dist/</code> importing from a path containing <code>compliance/</code>, <code>oversight/</code>, <code>billing/</code>, <code>hosted/</code>, or <code>model-registry/</code> — those imports fail at load and the whole file vanishes silently.</li>
+      </ul>
+    </div>
+
+    <div class="card c2">
+      <div class="head">
+        <div>
+          <div class="num">Failure #2</div>
+          <div class="title">Author never actually dogfooded Relay</div>
+        </div>
+        <span class="sev hi">High</span>
+      </div>
+      <h5>Failure story</h5>
+      <div class="story">
+        <p>The migration never happened because the author's actual work doesn't fit Relay's scope. relay-mcp's MemoryStore had 200+ entries — Berry span format quirks, LM Studio preset gotchas, GLM-4.7-Flash 16-lane profile, qwen3-coder-next leash rules, the Onyx-blocks-OR incident. None of that lived in Relay's fresh <code>~/.relay/</code>. On 2026-05-04 the author opened a terminal to dispatch a ≥2-file test generation batch and reflexively typed <code>mcp__relay-mcp__delegate_parallel</code> because that's what the auto-dispatch rule says. Relay's CLI required re-learning flags and re-configuring providers. That five-minute friction, multiplied across ten dispatches a day, was unwinnable.</p>
+        <p>By mid-May the pattern locked in. Compliance work for the bank demo was happening in relay-mcp — Relay had explicitly dropped <code>sign_off</code>, <code>validate</code>, oversight assignments, the whole governance surface. Every medical-device IEC 62304 question routed to relay-mcp. Relay handled toy tasks; relay-mcp handled real work. Weekend commits to Relay tapered: 14 in May, 6 in June, 2 in July.</p>
+        <p>By month 4 the author told a friend Relay was "the clean version, experimental" — which was the obituary. With no daily-driver pressure, the install-from-source friction never became npm publication, and A had no engine to stand on.</p>
+      </div>
+      <h5>Underlying assumption</h5>
+      <div class="assumption">That extracting a clean engine creates a clean tool the author would naturally adopt — ignoring that relay-mcp's "bloat" (compliance, memory, oversight) is exactly what the author's paying work requires.</div>
+      <h5>Early warning signs</h5>
+      <ul class="signs">
+        <li>This week's terminal history: count <code>mcp__relay-mcp__*</code> + <code>relay-mcp</code> invocations vs <code>relay</code> invocations. If the ratio isn't shifting toward Relay within 7 days, it never will.</li>
+        <li>Whether the next ≥2-file LM Studio auto-dispatch (the rule fires multiple times per session) actually goes through Relay's CLI, or you fall back to <code>delegate_parallel</code> because the GLM/Qwen routing rules aren't ported yet.</li>
+      </ul>
+    </div>
+
+    <div class="card c3">
+      <div class="head">
+        <div>
+          <div class="num">Failure #3</div>
+          <div class="title">AGPL-3.0 strangled adoption</div>
+        </div>
+        <span class="sev med">Medium-High</span>
+      </div>
+      <h5>Failure story</h5>
+      <div class="story">
+        <p>The first AGPL warning came in week 2: a developer at a fintech opened an issue titled "license question" asking whether running Relay against their internal codebase would "infect" the codebase under AGPL. The author wrote a careful answer — AGPL applies to Relay itself, not the code it operates on — but the issue sat with no follow-up reply. That pattern repeated. By month 2, three separate Hacker News commenters argued the license rather than the tool. By month 4, the author noticed every fork on GitHub was a personal account with zero subsequent commits — people clicking fork to read code, not to contribute.</p>
+        <p>The audience that <em>did</em> engage was the wrong one: license maximalists who wanted to debate copyleft virtue, plus a handful of solo hobbyists who tried it once and never came back. Star count crawled from 12 to 38 over six months. Two PRs landed — both small, both now AGPL-encumbered.</p>
+        <p>When the author drafted a relicense to Apache-2.0 in October to unlock the npm/paid path (D), the contributor whose 40-line PR fixed a worktree bug went silent on the CLA request. Without unanimous consent, the author was stuck. The "engine for now, paid path preserved" stretch goal was now blocked by two PRs they couldn't unwind without a rewrite.</p>
+      </div>
+      <h5>Underlying assumption</h5>
+      <div class="assumption">That AGPL-3.0 was a neutral default for a CLI tool, when in practice it functions as a filter that excludes the employed-developer audience and contaminates the paid-distribution path the author wanted to preserve.</div>
+      <h5>Early warning signs</h5>
+      <ul class="signs">
+        <li>License-related issues or comments appearing before usage-related ones (ratio inverted from healthy OSS projects).</li>
+        <li>Forks on GitHub with zero downstream commits — readers, not contributors — outnumbering active users by week 4.</li>
+      </ul>
+    </div>
+
+    <div class="card c4">
+      <div class="head">
+        <div>
+          <div class="num">Failure #4</div>
+          <div class="title">Distribution friction killed casual evaluation</div>
+        </div>
+        <span class="sev hi">High</span>
+      </div>
+      <h5>Failure story</h5>
+      <div class="story">
+        <p>The HN comment landed on a Tuesday in late June: "anyone tried Relay? AGPL audit-trail wrapper around codex/aider." Two hundred curious devs clicked through. The README told them to <code>git clone</code>, <code>npm install</code>, <code>npm run build</code>, <code>npm link</code> — and the install died at <code>better-sqlite3</code> for the Windows users (~30%), for the macOS users without Xcode CLT (~20%), and for the Linux users on Node 22 vs the prebuilt binary's Node 20 (~15%). Of the survivors, most hit <code>relay run "fix this"</code> and got an error: no provider configured.</p>
+        <p>Three docs files later, they closed the tab. Total time invested: 12 minutes. Total successful first-delegations: maybe eight people. By August, the pattern was visible in the GitHub traffic graph: stars climbing on news cycles, clones following stars, but issues filed almost entirely about installation — never about behavior. No screenshots on Twitter. No "I switched from aider" posts.</p>
+        <p>By November, the author was still daily-driving it (E met). Real users beyond the author: roughly four, all friends who got walked through setup over Discord. Not on npm. A met at zero.</p>
+      </div>
+      <h5>Underlying assumption</h5>
+      <div class="assumption">That developers curious enough to read the README would be patient enough to compile a native module and configure a provider before seeing Relay do anything.</div>
+      <h5>Early warning signs</h5>
+      <ul class="signs">
+        <li>GitHub Issues skew toward "install failed" / "node-gyp error" / "which provider" rather than feature requests or behavior bugs — the funnel is dying at step 1.</li>
+        <li>Clone-to-star ratio inverts: people are cloning to try, not starring after trying. No external screenshots/gifs/"I tried Relay" posts in search within 2 weeks of any mention.</li>
+      </ul>
+    </div>
+
+    <div class="card c5">
+      <div class="head">
+        <div>
+          <div class="num">Failure #5</div>
+          <div class="title">Author's attention fragmented across too many projects</div>
+        </div>
+        <span class="sev hi">High</span>
+      </div>
+      <h5>Failure story</h5>
+      <div class="story">
+        <p>The first three weeks of May went well — Relay v0.1 → v0.2, a polished <code>relay run</code> flow, the SQLite audit projection working, two GitHub stars, a Hacker News mention that brought 14 first-time users. Then on May 28 a prospective bank asked relay-mcp for an SR 11-7 demo, and the author's calendar collapsed back into the compliance product. R-38 wasn't done. R-15 had drifted. The bank wanted artifacts by mid-June. Relay got squeezed to Saturday mornings — and most Saturdays were spent on gstack, where a skill the author actually used daily had broken after a Claude Code update.</p>
+        <p>By August, Relay was v0.2.4 — a single bug-fix release in 9 weeks. Two early users had filed "is this still maintained?" comments and migrated to aider; one wrote a polite blog post comparing Relay unfavorably to claude-code's native parallel dispatch (which shipped in July). The author tried a "Relay week" in September but spent four of five days fighting a regression from a Node 22 update.</p>
+        <p>By October, the README still said v0.2, npm showed a 6-week-old release, and the GitHub insights graph showed 11 commits in 30 days — 9 of them to relay-mcp. The premortem assumption that Relay was a "spinoff that runs on weekends" turned out to be the failure mode itself: weekends are where projects go to die when a solo developer has six of them.</p>
+      </div>
+      <h5>Underlying assumption</h5>
+      <div class="assumption">That a solo developer with one paying-attention project (relay-mcp's compliance roadmap) and five maintenance projects can also ship and support a public OSS tool on residual attention.</div>
+      <h5>Early warning signs</h5>
+      <ul class="signs">
+        <li>Two consecutive weekends pass without a Relay commit while relay-mcp/gstack/paul receive commits — attention is already allocated elsewhere by default, not exception.</li>
+        <li>A Relay issue or bug report sits unanswered for &gt;5 days while the author is active on GitHub in other repos — the response-latency gap is the public signal contributors use to decide "abandoned."</li>
+      </ul>
+    </div>
+
+    <div class="card c6">
+      <div class="head">
+        <div>
+          <div class="num">Failure #6</div>
+          <div class="title">Weak differentiation in a crowded space</div>
+        </div>
+        <span class="sev med">Medium</span>
+      </div>
+      <h5>Failure story</h5>
+      <div class="story">
+        <p>By July 2026, Relay had 47 GitHub stars, 12 npm weekly downloads, and three external users who'd tried it once. The pattern was consistent across HN, Reddit r/LocalLLaMA, and dev.to comment threads: "How is this different from aider?" The author wrote three iterations of the README — each clearer to him, each still leading with "delegate bounded coding tasks to AI workers." Aider's tagline was "AI pair programming in your terminal." Plandex's was "long-running agentic tasks." Cline had a polished VSCode extension. Relay sat in a sea of taglines that all sounded identical, and the SQLite audit trail — the actual moat — was buried in a "Features" bullet list at line 47.</p>
+        <p>The cruelest part: when users <em>did</em> hit hallucinations or destructive AI edits in the wild, they didn't think "I need an audit trail tool." They reached for git reflog, complained on Twitter, and moved on. Relay never inserted itself into that pain moment because the pitch didn't name the pain.</p>
+        <p>A late-September Show HN post got 4 upvotes and one comment: "isn't this just claude-code with extra steps?" The author tried pivoting the pitch to "forensic CLI for AI-generated code" in October, but by then the indexing was set — every directory listing, every awesome-list submission, every search result had Relay categorized as "another agent CLI." By November, two competitors had shipped audit-trail features as line items, and Relay's differentiator became a checkbox someone else owned.</p>
+      </div>
+      <h5>Underlying assumption</h5>
+      <div class="assumption">That capability-first positioning ("here's what it does") would convert in a category where ten tools already do roughly the same thing, when only pain-first positioning ("here's what it saves you from") cuts through.</div>
+      <h5>Early warning signs</h5>
+      <ul class="signs">
+        <li>First 5 friends/strangers shown the README cannot articulate, in their own words, how Relay differs from claude-code or aider within 30 seconds of skimming.</li>
+        <li>Inbound questions repeatedly ask "how is this different from X?" rather than "can it do Y?" The former means positioning failed; the latter means it landed.</li>
+      </ul>
+    </div>
+
+    <div class="card c7">
+      <div class="head">
+        <div>
+          <div class="num">Failure #7</div>
+          <div class="title">Engine-first trap — "for now" became "forever"</div>
+        </div>
+        <span class="sev hi">High</span>
+      </div>
+      <h5>Failure story</h5>
+      <div class="story">
+        <p>The author spent May through August on the engine: schema migration v3 → v4 for retention events, a circuit breaker rewrite in <code>RunnerDispatcher</code>, the memory store gaining recall-budget shaping, parallel dispatch surviving 16 lanes on GLM-4.7-flash. Each improvement was real, measurable, and invisible. By September, <code>relay run</code> and <code>relay delegate_parallel</code> from the CLI were genuinely better than anything the 8 competing agentic CLIs shipped — but no one outside the author could perceive it. The README in November read almost identically to May: "delegate coding tasks to AI workers with audit trail."</p>
+        <p>When a friend asked for a demo in October, the author screenshared a terminal running JSON output. The friend nodded politely. The dream from <code>project_relay_dreams.md</code> — "describe → multiple models execute simultaneously → compare/select visually" — sat in the planning folder for six months as <code>studio</code> module, status: scaffolded. It kept being the next phase, after just one more dispatch hardening pass.</p>
+        <p>By November, npm had 11 weekly downloads, all the author's machines. There was no screencast to tweet, no before/after magic moment, no surface a stranger could fall in love with in 30 seconds. The author's own memory file <code>project_engine_first_product_last.md</code> had warned, verbatim: <em>"Every backend capability must surface in UI in same phase. 24 invisible phases = no product."</em> Written in April. Ignored every week since.</p>
+      </div>
+      <h5>Underlying assumption</h5>
+      <div class="assumption">That a sufficiently good engine generates its own surface — that quality leaks upward into product visibility without dedicated UI work.</div>
+      <h5>Early warning signs</h5>
+      <ul class="signs">
+        <li>Two consecutive weeks where every commit touches <code>src/runtime/</code>, <code>src/workers/</code>, or <code>src/memory/</code> and zero commits touch a user-facing demo, screencast, README hero section, or <code>studio</code> module surface.</li>
+        <li>The author cannot answer "what's the 30-second demo?" without describing internal architecture — no visual artifact exists you could send to a non-technical friend.</li>
+      </ul>
+    </div>
+
+    <div class="card c8">
+      <div class="head">
+        <div>
+          <div class="num">Failure #8</div>
+          <div class="title">Split-brain with relay-mcp burned the maintainer</div>
+        </div>
+        <span class="sev med">Medium-High</span>
+      </div>
+      <h5>Failure story</h5>
+      <div class="story">
+        <p>Month 2, late June. The author is debugging a Codex worker in relay-mcp — a race between <code>acquireWorkdirMutex</code> and the snapshot diff logic. They fix it in <code>src/runtime/runner-dispatcher.ts</code>, write the test, ship it. The compliance work is hot: a bank pilot needs SR 11-7 sign-off artifacts by Friday. Relay v0.1.0 sits with the same bug, but no one is running 8 lanes against it because no one is running it for anything load-bearing. The author makes a mental note. The mental note evaporates by Tuesday.</p>
+        <p>Three weeks later, a hobbyist on npm files <code>relay#23</code>: "delegate_parallel hangs intermittently at 4+ workers." The author opens both repos side-by-side and discovers the dispatcher has drifted — Relay's slimmed engine removed the hosted/ telemetry hooks, so the file structure no longer matches. The cherry-pick fails. They hand-port. Two weeks after that, the same thing happens with the provider config schema. Then with retention logic, where <code>~/.relay/</code> and <code>~/.relay-mcp/</code> have diverged on TTL defaults.</p>
+        <p>By month 4, the author is keeping a private spreadsheet of "things fixed in relay-mcp that need backporting." By month 6, the spreadsheet has 14 rows, four are blocked on non-trivial conflicts, and the bank pilot wants a feature that requires touching the dispatcher again. Relay's last commit is from August.</p>
+      </div>
+      <h5>Underlying assumption</h5>
+      <div class="assumption">That a fork shared between a paid path and a free path can be maintained by one person without the paid path's gravity well silently starving the free one.</div>
+      <h5>Early warning signs</h5>
+      <ul class="signs">
+        <li>Within 2 weeks: any single bug fix touching <code>src/runtime/</code> or <code>src/workers/</code> in relay-mcp that does NOT also land in Relay the same day. The first un-backported fix is the one that establishes the pattern.</li>
+        <li>Within 4 weeks: the author writing the phrase "I'll port this later" in a commit message, session doc, or memory entry — once that sentence appears, the backport queue exists and is already growing.</li>
+      </ul>
+    </div>
+
+  </div>
+</section>
+
+<footer>
+  Generated 2026-05-03 · 8 parallel investigators · Klein-method premortem · Frame: 2026-11-03 retrospective on Relay v1.x failure
+</footer>
+
+</div>
+</body>
+</html>
