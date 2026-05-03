@@ -14,20 +14,14 @@ import type { CliIO } from './commands.js';
 import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { execFile } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
+import { probeCodex, probeLmStudio, probeEnvKey } from './probes.js';
 
 export interface InitArgs {
   auto: boolean;
   quick: boolean;
   json: boolean;
-}
-
-interface ProviderProbe {
-  name: string;
-  available: boolean;
-  detail: string;
 }
 
 /**
@@ -51,42 +45,6 @@ export function ccMemoryPathFor(workdir: string): string {
 
 async function pathExists(p: string): Promise<boolean> {
   try { await stat(p); return true; } catch { return false; }
-}
-
-async function probeCodex(): Promise<ProviderProbe> {
-  return new Promise<ProviderProbe>((resolve) => {
-    execFile('codex', ['--version'], { encoding: 'utf-8', timeout: 5000 }, (err, stdoutData) => {
-      if (err) {
-        resolve({ name: 'codex', available: false, detail: 'codex CLI not found on PATH' });
-      } else {
-        resolve({ name: 'codex', available: true, detail: (stdoutData as string).trim() });
-      }
-    });
-  });
-}
-
-function probeEnvKey(name: string, label: string): ProviderProbe {
-  const v = process.env[name];
-  return v
-    ? { name: label, available: true, detail: `${name} set` }
-    : { name: label, available: false, detail: `${name} not set` };
-}
-
-async function probeLmStudio(): Promise<ProviderProbe> {
-  const endpoint = process.env['LMSTUDIO_ENDPOINT'] ?? 'http://localhost:1234';
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 3000);
-  try {
-    const res = await fetch(`${endpoint}/v1/models`, { signal: controller.signal });
-    clearTimeout(timer);
-    if (!res.ok) return { name: 'lmstudio', available: false, detail: `${endpoint} returned ${res.status}` };
-    const json = (await res.json()) as { data?: unknown[] };
-    const count = Array.isArray(json.data) ? json.data.length : 0;
-    return { name: 'lmstudio', available: true, detail: `${endpoint} (${count} models)` };
-  } catch {
-    clearTimeout(timer);
-    return { name: 'lmstudio', available: false, detail: `${endpoint} unreachable` };
-  }
 }
 
 async function ask(rl: ReturnType<typeof createInterface>, question: string, defaultYes = true): Promise<boolean> {
@@ -150,8 +108,8 @@ export async function executeInitCommand(args: InitArgs, io: CliIO): Promise<num
     io.stdout('relay init — first-run setup\n\n');
     io.stdout('Detected providers:\n');
     for (const p of [codex, openrouter, lmstudio, anthropic]) {
-      const status = p.available ? '[OK]' : '[--]';
-      io.stdout(`  ${p.name.padEnd(12)} ${status} ${p.detail}\n`);
+      const badge = p.status === 'ok' ? '[OK]' : '[--]';
+      io.stdout(`  ${p.name.padEnd(12)} ${badge} ${p.detail}\n`);
     }
     io.stdout(`  cc-memory    ${ccMemory ? '[OK]' : '[--]'} ${ccMemory ? ccMemoryPath : `not found at ${ccMemoryPath}`}\n\n`);
   }
@@ -161,10 +119,10 @@ export async function executeInitCommand(args: InitArgs, io: CliIO): Promise<num
 
   // Pick default provider
   const availableProviders: string[] = [];
-  if (codex.available) availableProviders.push('codex');
-  if (lmstudio.available) availableProviders.push('lmstudio');
-  if (openrouter.available) availableProviders.push('openrouter');
-  if (anthropic.available) availableProviders.push('anthropic');
+  if (codex.status === 'ok') availableProviders.push('codex');
+  if (lmstudio.status === 'ok') availableProviders.push('lmstudio');
+  if (openrouter.status === 'ok') availableProviders.push('openrouter');
+  if (anthropic.status === 'ok') availableProviders.push('anthropic');
 
   if (availableProviders.length === 0) {
     if (rl) rl.close();
