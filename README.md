@@ -4,9 +4,17 @@ Solo CLI for delegating bounded coding tasks to AI workers (Codex, OpenRouter, L
 
 ## Install
 
+> Not published to npm. Install from source.
+
 ```bash
-npm install -g github:ghanavati/relay
+git clone https://github.com/ghanavati/relay.git
+cd relay
+npm install
+npm run build
+npm link        # makes 'relay' available globally from this checkout
 ```
+
+Requires Node >=20 and `better-sqlite3` (native module). On macOS install Xcode CLT first.
 
 ## Quickstart
 
