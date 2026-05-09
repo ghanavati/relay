@@ -96,7 +96,10 @@ MEMORY COMMANDS
   relay memory get <memory_id> [--json]    Inspect one memory entry
 
   relay memory hook --install              Install a CC SessionStart hook
+    [--global]                             Install into ~/.claude/settings.json
+                                           (default: project-local .claude/settings.json)
   relay memory hook --uninstall            Remove the CC SessionStart hook
+    [--global]                             Remove from ~/.claude/settings.json
 
   relay memory to-rules <memory_id>        Promote a memory to .claude/CLAUDE.md
     [--rules-file <path>]
@@ -292,8 +295,9 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
 
   if (action === 'hook') {
     const install = isBool(flags, 'install') || !isBool(flags, 'uninstall');
+    const global = isBool(flags, 'global');
     const { executeMemoryHookCommand } = await import('./cli/cmd-memory-ops.js');
-    return executeMemoryHookCommand({ install, json: isBool(flags, 'json') }, io, io.cwd);
+    return executeMemoryHookCommand({ install, global, json: isBool(flags, 'json') }, io, io.cwd);
   }
 
   if (action === 'to-rules') {
