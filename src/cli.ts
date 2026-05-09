@@ -108,6 +108,12 @@ MEMORY COMMANDS
     [--max-bytes <N>]                      (default: 32768)
     [--json]
 
+  relay memory wipe --workdir <path>       GDPR-style per-project memory wipe
+    [--hard]                                  hard-delete (default: soft)
+    [--tag <name>]                            narrow to memories carrying tag
+    --confirm "WIPE <path>"                   required confirmation phrase
+    [--json]                                  ("WIPE HARD <path>" with --hard)
+
 CONTEXT COMMANDS
   relay context emit --target <t>          Emit recalled memories in a per-LLM
                                            wrapper format (replaces hook jq pipeline)
@@ -323,7 +329,23 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     return 2;
   }
 
-  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract\n`);
+  if (action === 'wipe') {
+    const workdir = lastOption(flags, 'workdir');
+    if (!workdir) {
+      io.stderr('relay memory wipe requires --workdir <path>\n');
+      return 2;
+    }
+    const { executeWipeCommand } = await import('./cli/cmd-memory-ops.js');
+    return executeWipeCommand({
+      workdir,
+      hard: isBool(flags, 'hard'),
+      tag: lastOption(flags, 'tag'),
+      confirm: lastOption(flags, 'confirm'),
+      json: isBool(flags, 'json'),
+    }, io);
+  }
+
+  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract, wipe\n`);
   return 2;
 }
 

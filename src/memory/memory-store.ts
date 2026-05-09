@@ -637,6 +637,48 @@ export class MemoryStore {
   }
 
   /**
+   * T15 — GDPR-style per-project memory deletion.
+   *
+   * Soft delete (default): marks all active memories for `workdir` as superseded
+   * by 'wipe-workdir', preserving the audit trail. Pass `hard: true` to fully
+   * erase rows (DELETE removes both active + previously-superseded rows for the
+   * workdir, so the slate is fully clean).
+   *
+   * Optional `tag` filter narrows the wipe to memories carrying a specific tag —
+   * the tag is matched against the JSON array stored in tags_json.
+   *
+   * Returns counts so callers can report what happened.
+   */
+  wipeWorkdir(
+    workdir: string,
+    options: { hard?: boolean; tag?: string } = {}
+  ): { soft_deleted: number; hard_deleted: number } {
+    if (!workdir || workdir === '*') {
+      throw toRelayException(makeError(
+        'INVALID_ARGS',
+        `wipeWorkdir requires an explicit workdir path (got: ${workdir || '<empty>'})`,
+        false
+      ));
+    }
+    const tagClause = options.tag ? ` AND tags_json LIKE ?` : '';
+    const tagParam: unknown[] = options.tag ? [`%"${options.tag}"%`] : [];
+
+    if (options.hard) {
+      const result = this.db.prepare(
+        `DELETE FROM memories WHERE workdir = ?${tagClause}`
+      ).run(workdir, ...tagParam);
+      return { soft_deleted: 0, hard_deleted: result.changes };
+    }
+
+    const result = this.db.prepare(
+      `UPDATE memories
+       SET superseded_by = 'wipe-workdir'
+       WHERE workdir = ? AND superseded_by IS NULL${tagClause}`
+    ).run(workdir, ...tagParam);
+    return { soft_deleted: result.changes, hard_deleted: 0 };
+  }
+
+  /**
    * Get the most recent handoff memory for a workdir.
    */
   getLatestHandoff(workdir?: string): Memory | null {
