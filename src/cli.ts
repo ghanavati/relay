@@ -100,6 +100,10 @@ MEMORY COMMANDS
   relay memory to-rules <memory_id>        Promote a memory to .claude/CLAUDE.md
     [--rules-file <path>]
 
+  relay memory auto-extract --enable       Opt IN to auto-extraction (writes
+    [--allow-remote]                          .relay/auto-extract.json in workdir)
+    [--workdir <path>] [--json]
+
 DELEGATION COMMANDS
   relay run <task>                         Delegate a task to a worker
     [--provider codex|lmstudio|openrouter|anthropic] (default: codex)
@@ -269,7 +273,20 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     return executeMemoryToRulesCommand({ memoryId, rulesFile, json: isBool(flags, 'json') }, io, io.cwd);
   }
 
-  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules\n`);
+  if (action === 'auto-extract') {
+    if (!isBool(flags, 'enable')) {
+      io.stderr('relay memory auto-extract currently supports --enable [--allow-remote] (T13)\n');
+      return 2;
+    }
+    const { executeMemoryAutoExtractEnableCommand } = await import('./cli/cmd-memory-auto-extract-enable.js');
+    return executeMemoryAutoExtractEnableCommand({
+      allowRemote: isBool(flags, 'allow-remote'),
+      workdir: lastOption(flags, 'workdir') ?? io.cwd,
+      json: isBool(flags, 'json'),
+    }, io);
+  }
+
+  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract\n`);
   return 2;
 }
 
