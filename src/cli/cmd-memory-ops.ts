@@ -2,6 +2,7 @@ import type { CliIO } from './commands.js';
 import { handleGetMemory } from '../tools/get_memory.js';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
+import { homedir } from 'node:os';
 
 export async function executeRememberCommand(
   command: {
@@ -112,16 +113,32 @@ export async function executeMemoryShowContextCommand(
   return 0;
 }
 
-export const HOOK_SCRIPT = 'relay memory recall --token-budget 800 --type lesson --type fact --type decision --json 2>/dev/null || true';
+// Working SessionStart hook: pulls recall results, then jq-wraps them as
+// `{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:"..."}}`
+// so CC injects the recalled memories as additional context at session start.
+// `--workdir "${CLAUDE_PROJECT_DIR:-$PWD}"` scopes recall to the project CC opened in,
+// not wherever Relay's CWD happens to be — required for --global installs to work
+// correctly across every project the user opens.
+export const HOOK_SCRIPT =
+  'relay memory recall --token-budget 800 --type lesson --type fact --type decision --type context --workdir "${CLAUDE_PROJECT_DIR:-$PWD}" --json 2>/dev/null | jq -c \'{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:(if (.memories | length > 0) then "## Recalled memories\\n\\n" + (.memories | map("- " + .content) | join("\\n\\n")) else "" end)}}\' 2>/dev/null || true';
 const HOOK_ID = 'relay-memory-session-start';
+
+/** Resolve the settings.json path. `global=true` targets the user-wide
+ *  `~/.claude/settings.json` so the hook fires in every project; otherwise
+ *  the project-local `<cwd>/.claude/settings.json`. */
+export function resolveHookSettingsPath(cwd: string, global: boolean): string {
+  return global
+    ? join(homedir(), '.claude', 'settings.json')
+    : join(cwd, '.claude', 'settings.json');
+}
 
 /** Install or remove a SessionStart hook that injects recalled memories into every new CC session. */
 export async function executeMemoryHookCommand(
-  command: { install: boolean; json: boolean },
+  command: { install: boolean; json: boolean; global?: boolean },
   io: CliIO,
   cwd: string
 ): Promise<number> {
-  const settingsPath = join(cwd, '.claude', 'settings.json');
+  const settingsPath = resolveHookSettingsPath(cwd, command.global === true);
   let settings: Record<string, unknown> = {};
   try {
     settings = JSON.parse(await readFile(settingsPath, 'utf8')) as Record<string, unknown>;
