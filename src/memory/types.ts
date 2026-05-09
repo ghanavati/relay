@@ -95,6 +95,7 @@ export interface RecallQuery {
   readonly created_after?: number;   // epoch ms — lower bound on created_at
   readonly created_before?: number;  // epoch ms — upper bound on created_at
   readonly files?: readonly string[]; // SHIP-52: restrict to memories associated with these file paths
+  readonly min_trust?: TrustLevel;    // T2: minimum trust tier — 'unverified' (default, no filter), 'provisional' (excludes unverified), 'trusted' (only trusted)
 }
 
 /** Weights per memory type for relevance scoring — higher = more relevant by default. */
