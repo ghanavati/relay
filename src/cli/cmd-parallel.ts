@@ -149,7 +149,7 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
           run_id: run.run_id,
         });
         const result = await runner.run({
-          task: built.finalTask,
+          task: built.bareTask,
           contextPrefix: built.contextPrefix,
           workdir: run.workdir,
           timeout_ms: run.timeout_ms,
