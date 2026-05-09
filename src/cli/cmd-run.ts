@@ -110,7 +110,7 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
   let result;
   try {
     result = await runner.run({
-      task: built.finalTask,
+      task: built.bareTask,
       contextPrefix: built.contextPrefix,
       workdir: args.workdir,
       timeout_ms: args.timeoutMs,
