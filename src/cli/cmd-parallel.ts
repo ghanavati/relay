@@ -142,8 +142,15 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
 
       try {
         const runner = await getRunner(run.provider);
-        const result = await runner.run({
+        const { buildDelegatedTask } = await import('../context/layers.js');
+        const built = await buildDelegatedTask({
+          workdir: run.workdir,
           task: run.task,
+          run_id: run.run_id,
+        });
+        const result = await runner.run({
+          task: built.finalTask,
+          contextPrefix: built.contextPrefix,
           workdir: run.workdir,
           timeout_ms: run.timeout_ms,
           model: run.model,
