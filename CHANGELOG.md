@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `relay completion <bash|zsh|fish>` — emit a shell completion script for the named shell. Pipe into the shell's completion location, or `eval "$(relay completion zsh)"`.
 - ANSI color support across `doctor` and `history`. Honors `NO_COLOR`, `CI`, `TERM=dumb`, and stdout-not-a-TTY auto-detection. Override with `--color=always|never` flag or `RELAY_COLOR` env.
+- Codex worker now injects `WorkerTask.contextPrefix` into Codex via `-c model_instructions_file=<path>` (per Codex config-reference: `instructions` is reserved, prefer `model_instructions_file`). Tempfile lives in `os.tmpdir()` keyed by `run_id`, TOML-quoted, and removed in the worker's `.finally` cleanup. Bare `task.task` remains the prompt.
 
 ### Fixed
 - `relay doctor` no longer prints "All checks passed." when checks failed. Now conditional: green "All checks passed." when truly clean, red "N checks failed, M missing, K ok" on failure, gray "K ok, M missing (informational)" when only optional providers absent.
