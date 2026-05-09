@@ -163,6 +163,63 @@ export async function executeMemoryHookCommand(
   return 0;
 }
 
+/**
+ * T15 — Per-project memory wipe (GDPR-style).
+ *
+ * Soft delete by default (preserves audit trail); `--hard` for true erasure.
+ * Requires a confirmation phrase to prevent accidental data loss.
+ */
+export async function executeWipeCommand(
+  command: {
+    workdir: string;
+    hard: boolean;
+    tag: string | undefined;
+    confirm: string | undefined;
+    json: boolean;
+  },
+  io: CliIO
+): Promise<number> {
+  if (!command.workdir) {
+    if (command.json) io.stdout(JSON.stringify({ error: 'missing_workdir' }) + '\n');
+    else io.stderr('relay memory wipe requires --workdir <path>\n');
+    return 2;
+  }
+
+  const expectedPhrase = command.hard
+    ? `WIPE HARD ${command.workdir}`
+    : `WIPE ${command.workdir}`;
+
+  if (command.confirm !== expectedPhrase) {
+    const msg = `Refusing to wipe without explicit --confirm. Re-run with: --confirm "${expectedPhrase}"`;
+    if (command.json) {
+      io.stdout(JSON.stringify({ error: 'confirmation_required', expected: expectedPhrase }) + '\n');
+    } else {
+      io.stderr(`${msg}\n`);
+    }
+    return 2;
+  }
+
+  const { MemoryStore } = await import('../memory/memory-store.js');
+  const store = new MemoryStore();
+  const result = store.wipeWorkdir(command.workdir, { hard: command.hard, tag: command.tag });
+
+  if (command.json) {
+    io.stdout(JSON.stringify({
+      workdir: command.workdir,
+      hard: command.hard,
+      tag: command.tag ?? null,
+      soft_deleted: result.soft_deleted,
+      hard_deleted: result.hard_deleted,
+    }) + '\n');
+  } else {
+    const mode = command.hard ? 'hard-deleted' : 'soft-deleted';
+    const count = command.hard ? result.hard_deleted : result.soft_deleted;
+    const tagSuffix = command.tag ? ` (tag: ${command.tag})` : '';
+    io.stdout(`Wiped ${count} memories from ${command.workdir}${tagSuffix} — ${mode}.\n`);
+  }
+  return 0;
+}
+
 /** Promote a high-trust memory to a permanent rule in CLAUDE.md (or specified rules file). */
 export async function executeMemoryToRulesCommand(
   command: { memoryId: string; rulesFile: string; json: boolean },
