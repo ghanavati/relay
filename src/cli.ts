@@ -103,6 +103,9 @@ MEMORY COMMANDS
   relay memory auto-extract --enable       Opt IN to auto-extraction (writes
     [--allow-remote]                          .relay/auto-extract.json in workdir)
     [--workdir <path>] [--json]
+  relay memory auto-extract --from-stdin   CC SessionEnd hook entry point
+    [--max-bytes <N>]                      (default: 32768)
+    [--json]
 
 CONTEXT COMMANDS
   relay context emit --target <t>          Emit recalled memories in a per-LLM
@@ -287,16 +290,25 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
   }
 
   if (action === 'auto-extract') {
-    if (!isBool(flags, 'enable')) {
-      io.stderr('relay memory auto-extract currently supports --enable [--allow-remote] (T13)\n');
-      return 2;
+    if (isBool(flags, 'enable')) {
+      const { executeMemoryAutoExtractEnableCommand } = await import('./cli/cmd-memory-auto-extract-enable.js');
+      return executeMemoryAutoExtractEnableCommand({
+        allowRemote: isBool(flags, 'allow-remote'),
+        workdir: lastOption(flags, 'workdir') ?? io.cwd,
+        json: isBool(flags, 'json'),
+      }, io);
     }
-    const { executeMemoryAutoExtractEnableCommand } = await import('./cli/cmd-memory-auto-extract-enable.js');
-    return executeMemoryAutoExtractEnableCommand({
-      allowRemote: isBool(flags, 'allow-remote'),
-      workdir: lastOption(flags, 'workdir') ?? io.cwd,
-      json: isBool(flags, 'json'),
-    }, io);
+    if (isBool(flags, 'from-stdin')) {
+      const maxBytesRaw = lastOption(flags, 'max-bytes');
+      const { executeMemoryAutoExtractCommand } = await import('./cli/cmd-memory-auto-extract.js');
+      return executeMemoryAutoExtractCommand({
+        fromStdin: true,
+        maxBytes: maxBytesRaw ? Number.parseInt(maxBytesRaw, 10) : undefined,
+        json: isBool(flags, 'json'),
+      }, io);
+    }
+    io.stderr('relay memory auto-extract requires --enable [--allow-remote] OR --from-stdin\n');
+    return 2;
   }
 
   io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract\n`);
