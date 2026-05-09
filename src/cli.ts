@@ -84,6 +84,7 @@ MEMORY COMMANDS
     [--token-budget <N>]                   (default: 4000)
     [--workdir <path>]
     [--include-expired]
+    [--min-trust unverified|provisional|trusted]   (default: unverified — no filter)
     [--json]
 
   relay memory show-context <query>        Preview the recalled_lessons context layer
@@ -201,6 +202,16 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     const tokenBudgetRaw = lastOption(flags, 'token-budget');
     const createdAfter = lastOption(flags, 'created-after');
     const createdBefore = lastOption(flags, 'created-before');
+    const minTrustRaw = lastOption(flags, 'min-trust');
+    let minTrust: 'unverified' | 'provisional' | 'trusted' | undefined;
+    if (minTrustRaw !== undefined) {
+      const valid = ['unverified', 'provisional', 'trusted'];
+      if (!valid.includes(minTrustRaw)) {
+        io.stderr(`--min-trust must be one of: ${valid.join(', ')}\n`);
+        return 2;
+      }
+      minTrust = minTrustRaw as 'unverified' | 'provisional' | 'trusted';
+    }
     const { executeRecallCommand } = await import('./cli/cmd-memory-ops.js');
     return executeRecallCommand({
       query,
@@ -212,6 +223,7 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
       createdAfter: createdAfter ? Number.parseInt(createdAfter, 10) : undefined,
       createdBefore: createdBefore ? Number.parseInt(createdBefore, 10) : undefined,
       file: lastOption(flags, 'file'),
+      minTrust,
       json: isBool(flags, 'json'),
     }, io);
   }

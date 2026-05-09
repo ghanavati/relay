@@ -509,6 +509,15 @@ export class MemoryStore {
       }
     }
 
+    // T2: trust-tier filter — SessionStart hooks default to 'provisional' so
+    // raw auto-extracted entries are excluded until a successful recall promotes them.
+    // 'unverified' is the absence of a filter (returns everything).
+    if (query.min_trust === 'trusted') {
+      conditions.push(`trust_level = 'trusted'`);
+    } else if (query.min_trust === 'provisional') {
+      conditions.push(`trust_level IN ('provisional', 'trusted')`);
+    }
+
     return { where: `WHERE ${conditions.join(' AND ')}`, params };
   }
 
