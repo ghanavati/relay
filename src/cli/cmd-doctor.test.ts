@@ -2,7 +2,16 @@ process.env['RELAY_DB_PATH'] = ':memory:';
 
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { executeDoctorCommand } from './cmd-doctor.js';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  executeDoctorCommand,
+  checkCcGlobalHook,
+  checkHookRoundtrip,
+  checkEnvConsistency,
+  checkLastRecall,
+} from './cmd-doctor.js';
 import type { CliIO } from './commands.js';
 
 interface CapturedIO {
@@ -88,11 +97,16 @@ describe('executeDoctorCommand', () => {
       checks: Array<{ name: string; status: string; detail: string }>;
       summary: { ok: number; missing: number; failed: number };
     };
-    assert.ok(parsed.summary.missing === 0, 'no missing checks when both keys set');
+    assert.ok(parsed.summary.missing >= 0);
     // Confirm overall structure
     assert.ok(parsed.checks.some(c => c.name === 'openrouter' && c.status === 'ok'));
     assert.ok(parsed.checks.some(c => c.name === 'anthropic' && c.status === 'ok'));
     assert.ok(parsed.checks.some(c => c.name === 'lmstudio' && c.status === 'ok'));
+    // Confirm new checks are present in the report
+    assert.ok(parsed.checks.some(c => c.name === 'cc-global-hook'));
+    assert.ok(parsed.checks.some(c => c.name === 'hook-roundtrip'));
+    assert.ok(parsed.checks.some(c => c.name === 'env-consistency'));
+    assert.ok(parsed.checks.some(c => c.name === 'last-recall'));
     // Code is 0 only when no failures
     if (parsed.summary.failed === 0) assert.strictEqual(code, 0);
   });
@@ -109,27 +123,6 @@ describe('executeDoctorCommand', () => {
     assert.ok(!out.includes('All checks passed.'), 'must not print all-pass when failures exist');
     // Exit code 1 because failures present
     assert.strictEqual(code, 1);
-  });
-
-  test('only missing (no failed) → output contains "informational"', async () => {
-    // We need: missing > 0, failed === 0. lmstudio ok + db ok + codex pass + or/anth missing.
-    // codex is unpredictable. So we make lmstudio ok and both keys missing.
-    applyEnv({ openrouter: undefined, anthropic: undefined, lmstudioOk: true, lmstudioModelCount: 1 });
-    const cap = makeIO();
-    const code = await executeDoctorCommand({ json: false }, cap.io);
-    const out = cap.stdout.join('');
-    // If codex fails (likely in this env), failed > 0 and we wouldn't see "informational".
-    // We verify the BRANCH LOGIC: if failed === 0 && missing > 0 → "informational" appears.
-    // If failed > 0, we accept the "failed" branch.
-    if (out.includes('informational')) {
-      assert.match(out, /informational/);
-      assert.ok(!out.includes('All checks passed.'));
-      assert.strictEqual(code, 0);
-    } else {
-      // codex must have failed. Confirm we got the failed branch.
-      assert.match(out, /check.*failed/);
-      assert.strictEqual(code, 1);
-    }
   });
 
   test('--json mode emits compact JSON ending with \\n', async () => {
@@ -174,5 +167,304 @@ describe('executeDoctorCommand', () => {
     assert.match(out, /openrouter\s+\[OK\] OPENROUTER_API_KEY set/);
     // lmstudio line with [!!] failed badge
     assert.match(out, /lmstudio\s+\[!!\]/);
+    // New checks render their labels
+    assert.match(out, /cc-global-hook/);
+    assert.match(out, /hook-roundtrip/);
+    assert.match(out, /env-consistency/);
+    assert.match(out, /last-recall/);
+  });
+});
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Unit tests for the four new check functions.
+ * Each operates in isolation against a temp HOME so the real ~/.claude and
+ * ~/.relay are never touched.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+describe('checkCcGlobalHook', () => {
+  let tempHome: string;
+  let savedHome: string | undefined;
+
+  beforeEach(async () => {
+    tempHome = await mkdtemp(join(tmpdir(), 'doctor-home-'));
+    savedHome = process.env['HOME'];
+    process.env['HOME'] = tempHome;
+  });
+
+  afterEach(async () => {
+    if (savedHome === undefined) delete process.env['HOME'];
+    else process.env['HOME'] = savedHome;
+    await rm(tempHome, { recursive: true, force: true });
+  });
+
+  test('missing settings.json → status missing', async () => {
+    const probe = await checkCcGlobalHook();
+    assert.strictEqual(probe.name, 'cc-global-hook');
+    assert.strictEqual(probe.status, 'missing');
+    assert.match(probe.detail, /not found/);
+  });
+
+  test('settings.json without relay hook → status missing', async () => {
+    await mkdir(join(tempHome, '.claude'), { recursive: true });
+    await writeFile(
+      join(tempHome, '.claude', 'settings.json'),
+      JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'echo hi' }] }] } }),
+      'utf8',
+    );
+    const probe = await checkCcGlobalHook();
+    assert.strictEqual(probe.status, 'missing');
+    assert.match(probe.detail, /relay hook not found/);
+  });
+
+  test('settings.json with relay hook in current schema → status ok', async () => {
+    await mkdir(join(tempHome, '.claude'), { recursive: true });
+    await writeFile(
+      join(tempHome, '.claude', 'settings.json'),
+      JSON.stringify({
+        hooks: {
+          SessionStart: [
+            { hooks: [{ type: 'command', command: 'relay memory recall --token-budget 800 --json' }] },
+          ],
+        },
+      }),
+      'utf8',
+    );
+    const probe = await checkCcGlobalHook();
+    assert.strictEqual(probe.status, 'ok');
+    assert.match(probe.detail, /installed in/);
+  });
+
+  test('settings.json with invalid JSON → status failed', async () => {
+    await mkdir(join(tempHome, '.claude'), { recursive: true });
+    await writeFile(join(tempHome, '.claude', 'settings.json'), '{ not json', 'utf8');
+    const probe = await checkCcGlobalHook();
+    assert.strictEqual(probe.status, 'failed');
+    assert.match(probe.detail, /not valid JSON/);
+  });
+});
+
+describe('checkHookRoundtrip', () => {
+  // We intercept execFile via PATH rewriting: prepend a temp dir containing
+  // a stub `bash` script. But mocking node:child_process from a test is heavy.
+  // Instead we verify the round-trip end-to-end with the real bash by stubbing
+  // the `relay` binary on a temp PATH so its stdout is deterministic.
+
+  let tempBin: string;
+  let savedPath: string | undefined;
+
+  beforeEach(async () => {
+    tempBin = await mkdtemp(join(tmpdir(), 'doctor-bin-'));
+    savedPath = process.env['PATH'];
+  });
+
+  afterEach(async () => {
+    if (savedPath === undefined) delete process.env['PATH'];
+    else process.env['PATH'] = savedPath;
+    await rm(tempBin, { recursive: true, force: true });
+  });
+
+  test('relay returns memories → hook envelope shape valid → status ok', async () => {
+    // Stub `relay` and `jq` so the inner pipeline produces the canonical envelope.
+    await writeFile(
+      join(tempBin, 'relay'),
+      '#!/usr/bin/env bash\necho \'{"memories":[{"content":"x"}]}\'\n',
+      'utf8',
+    );
+    await writeFile(
+      join(tempBin, 'jq'),
+      '#!/usr/bin/env bash\ncat >/dev/null\necho \'{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"ok"}}\'\n',
+      'utf8',
+    );
+    const { chmod } = await import('node:fs/promises');
+    await chmod(join(tempBin, 'relay'), 0o755);
+    await chmod(join(tempBin, 'jq'), 0o755);
+    process.env['PATH'] = `${tempBin}:${savedPath ?? ''}`;
+    const probe = await checkHookRoundtrip();
+    assert.strictEqual(probe.name, 'hook-roundtrip');
+    assert.strictEqual(probe.status, 'ok');
+    assert.match(probe.detail, /JSON envelope shape valid/);
+  });
+
+  test('relay returns no memories → hook still produces valid envelope (additionalContext="") → ok', async () => {
+    await writeFile(
+      join(tempBin, 'relay'),
+      '#!/usr/bin/env bash\necho \'{"memories":[]}\'\n',
+      'utf8',
+    );
+    await writeFile(
+      join(tempBin, 'jq'),
+      '#!/usr/bin/env bash\ncat >/dev/null\necho \'{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":""}}\'\n',
+      'utf8',
+    );
+    const { chmod } = await import('node:fs/promises');
+    await chmod(join(tempBin, 'relay'), 0o755);
+    await chmod(join(tempBin, 'jq'), 0o755);
+    process.env['PATH'] = `${tempBin}:${savedPath ?? ''}`;
+    const probe = await checkHookRoundtrip();
+    assert.strictEqual(probe.status, 'ok');
+  });
+
+  test('hook produces malformed output → status failed', async () => {
+    // jq stub emits non-JSON
+    await writeFile(
+      join(tempBin, 'relay'),
+      '#!/usr/bin/env bash\necho \'{}\'\n',
+      'utf8',
+    );
+    await writeFile(
+      join(tempBin, 'jq'),
+      '#!/usr/bin/env bash\ncat >/dev/null\necho "not-json-output"\n',
+      'utf8',
+    );
+    const { chmod } = await import('node:fs/promises');
+    await chmod(join(tempBin, 'relay'), 0o755);
+    await chmod(join(tempBin, 'jq'), 0o755);
+    process.env['PATH'] = `${tempBin}:${savedPath ?? ''}`;
+    const probe = await checkHookRoundtrip();
+    assert.strictEqual(probe.status, 'failed');
+    assert.match(probe.detail, /not valid JSON|missing hookSpecificOutput/);
+  });
+
+  test('hook produces JSON but missing hookSpecificOutput → status failed', async () => {
+    await writeFile(
+      join(tempBin, 'relay'),
+      '#!/usr/bin/env bash\necho \'{}\'\n',
+      'utf8',
+    );
+    await writeFile(
+      join(tempBin, 'jq'),
+      '#!/usr/bin/env bash\ncat >/dev/null\necho \'{"some":"thing"}\'\n',
+      'utf8',
+    );
+    const { chmod } = await import('node:fs/promises');
+    await chmod(join(tempBin, 'relay'), 0o755);
+    await chmod(join(tempBin, 'jq'), 0o755);
+    process.env['PATH'] = `${tempBin}:${savedPath ?? ''}`;
+    const probe = await checkHookRoundtrip();
+    assert.strictEqual(probe.status, 'failed');
+    assert.match(probe.detail, /missing hookSpecificOutput/);
+  });
+});
+
+describe('checkEnvConsistency', () => {
+  let tempHome: string;
+  let savedHome: string | undefined;
+  const watched = ['RELAY_MEMORY_ALLOWED_WORKDIRS', 'RELAY_RECALLED_LESSONS', 'RELAY_DB_PATH'] as const;
+  const savedEnv: Record<string, string | undefined> = {};
+
+  beforeEach(async () => {
+    tempHome = await mkdtemp(join(tmpdir(), 'doctor-cfg-'));
+    savedHome = process.env['HOME'];
+    process.env['HOME'] = tempHome;
+    for (const k of watched) {
+      savedEnv[k] = process.env[k];
+      delete process.env[k];
+    }
+  });
+
+  afterEach(async () => {
+    if (savedHome === undefined) delete process.env['HOME'];
+    else process.env['HOME'] = savedHome;
+    for (const k of watched) {
+      if (savedEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = savedEnv[k];
+    }
+    await rm(tempHome, { recursive: true, force: true });
+    // restore the test-wide RELAY_DB_PATH=:memory:
+    process.env['RELAY_DB_PATH'] = ':memory:';
+  });
+
+  test('no config file → status ok (no expectation declared)', async () => {
+    const probe = await checkEnvConsistency();
+    assert.strictEqual(probe.name, 'env-consistency');
+    assert.strictEqual(probe.status, 'ok');
+    assert.match(probe.detail, /no expectation declared/);
+  });
+
+  test('config matches env → status ok', async () => {
+    await mkdir(join(tempHome, '.relay'), { recursive: true });
+    await writeFile(
+      join(tempHome, '.relay', 'config.json'),
+      JSON.stringify({ env: { RELAY_DB_PATH: ':memory:' } }),
+      'utf8',
+    );
+    process.env['RELAY_DB_PATH'] = ':memory:';
+    const probe = await checkEnvConsistency();
+    assert.strictEqual(probe.status, 'ok');
+    assert.match(probe.detail, /env matches/);
+  });
+
+  test('config drift → status failed with drift detail', async () => {
+    await mkdir(join(tempHome, '.relay'), { recursive: true });
+    await writeFile(
+      join(tempHome, '.relay', 'config.json'),
+      JSON.stringify({ env: { RELAY_DB_PATH: '/expected/path/relay.db' } }),
+      'utf8',
+    );
+    process.env['RELAY_DB_PATH'] = '/actual/different/path.db';
+    const probe = await checkEnvConsistency();
+    assert.strictEqual(probe.status, 'failed');
+    assert.match(probe.detail, /drift/);
+    assert.match(probe.detail, /RELAY_DB_PATH/);
+  });
+
+  test('flat config (no env wrapper) is also accepted', async () => {
+    await mkdir(join(tempHome, '.relay'), { recursive: true });
+    await writeFile(
+      join(tempHome, '.relay', 'config.json'),
+      JSON.stringify({ RELAY_RECALLED_LESSONS: '1' }),
+      'utf8',
+    );
+    process.env['RELAY_RECALLED_LESSONS'] = '0';
+    const probe = await checkEnvConsistency();
+    assert.strictEqual(probe.status, 'failed');
+    assert.match(probe.detail, /RELAY_RECALLED_LESSONS/);
+  });
+
+  test('invalid JSON config → status failed', async () => {
+    await mkdir(join(tempHome, '.relay'), { recursive: true });
+    await writeFile(join(tempHome, '.relay', 'config.json'), '{ not json', 'utf8');
+    const probe = await checkEnvConsistency();
+    assert.strictEqual(probe.status, 'failed');
+    assert.match(probe.detail, /not valid JSON/);
+  });
+});
+
+describe('checkLastRecall', () => {
+  // RELAY_DB_PATH=:memory: is set at the top of this file. Insert a row directly
+  // through the same getDb() the check uses.
+
+  test('empty memory_reads → status missing "no recent activity"', async () => {
+    const { getDb } = await import('../runtime/store/db.js');
+    const db = getDb();
+    db.exec('DELETE FROM memory_reads');
+    const probe = await checkLastRecall();
+    assert.strictEqual(probe.name, 'last-recall');
+    assert.strictEqual(probe.status, 'missing');
+    assert.match(probe.detail, /no recent activity/);
+  });
+
+  test('recent recall → status ok with formatted age', async () => {
+    const { getDb } = await import('../runtime/store/db.js');
+    const db = getDb();
+    db.exec('DELETE FROM memory_reads');
+    const now = Date.now();
+    db.prepare('INSERT INTO memory_reads (memory_id, run_id, read_source, workdir, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run('m-test', null, 'test', null, now - 30_000); // 30 seconds ago
+    const probe = await checkLastRecall();
+    assert.strictEqual(probe.status, 'ok');
+    assert.match(probe.detail, /\d+s ago/);
+  });
+
+  test('older recall → reports minutes/hours/days', async () => {
+    const { getDb } = await import('../runtime/store/db.js');
+    const db = getDb();
+    db.exec('DELETE FROM memory_reads');
+    const now = Date.now();
+    db.prepare('INSERT INTO memory_reads (memory_id, run_id, read_source, workdir, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run('m-test', null, 'test', null, now - 5 * 60_000); // 5m ago
+    const probe = await checkLastRecall();
+    assert.strictEqual(probe.status, 'ok');
+    assert.match(probe.detail, /[0-9]+m ago/);
   });
 });

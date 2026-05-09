@@ -27,6 +27,19 @@ relay --help
 
 See [docs/quickstart.md](docs/quickstart.md) for the full walkthrough.
 
+### LM Studio wrapper (`relay-llm`)
+
+`scripts/relay-llm.sh` is a thin shell wrapper that calls `lms chat` with the current
+workdir's recall layer auto-injected as the system prompt. Install it on your `$PATH`:
+
+```bash
+ln -s "$(pwd)/scripts/relay-llm.sh" /usr/local/bin/relay-llm
+relay-llm qwen3-coder "summarise the diff in src/cli/cmd-doctor.ts"
+```
+
+The wrapper depends on `relay context emit --target lmstudio-cli` (delivered by the
+context-emit task); until that ships, the wrapper falls back to a plain `lms chat` call.
+
 ## What it does
 
 - **Delegate**: dispatch coding tasks to Codex CLI, OpenRouter, LM Studio (local), or Anthropic. One worker or many in parallel.
