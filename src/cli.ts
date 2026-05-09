@@ -100,6 +100,14 @@ MEMORY COMMANDS
   relay memory to-rules <memory_id>        Promote a memory to .claude/CLAUDE.md
     [--rules-file <path>]
 
+CONTEXT COMMANDS
+  relay context emit --target <t>          Emit recalled memories in a per-LLM
+                                           wrapper format (replaces hook jq pipeline)
+    --target cc|codex|lmstudio-http|lmstudio-cli   (required)
+    [--workdir <path>]                     (default: PWD)
+    [--token-budget <N>]                   (default: 800)
+    [--types <list>]                       (default: lesson,fact,decision,context)
+
 DELEGATION COMMANDS
   relay run <task>                         Delegate a task to a worker
     [--provider codex|lmstudio|openrouter|anthropic] (default: codex)
@@ -273,6 +281,57 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
   return 2;
 }
 
+async function dispatchContext(rest: readonly string[]): Promise<number> {
+  const flags = parseFlags(rest);
+  const action = flags.positionals[0];
+
+  if (!action) {
+    io.stderr('relay context requires an action: emit\n');
+    return 2;
+  }
+
+  if (action === 'emit') {
+    const target = lastOption(flags, 'target');
+    if (!target) {
+      io.stderr('relay context emit requires --target <cc|codex|lmstudio-http|lmstudio-cli>\n');
+      return 2;
+    }
+    const { executeContextEmitCommand, parseEmitTypes, VALID_EMIT_TARGETS } =
+      await import('./cli/cmd-context-emit.js');
+    if (!(VALID_EMIT_TARGETS as readonly string[]).includes(target)) {
+      io.stderr(
+        `--target must be one of: ${VALID_EMIT_TARGETS.join(', ')} (got: ${target})\n`
+      );
+      return 2;
+    }
+    const tokenBudgetRaw = lastOption(flags, 'token-budget');
+    const tokenBudget = tokenBudgetRaw ? Number.parseInt(tokenBudgetRaw, 10) : 800;
+    const typesRaw = lastOption(flags, 'types');
+    const splitTypes = typesRaw
+      ? typesRaw.split(',').map(s => s.trim()).filter(Boolean)
+      : [];
+    let types;
+    try {
+      types = parseEmitTypes(splitTypes);
+    } catch (e) {
+      io.stderr(`${(e as Error).message}\n`);
+      return 2;
+    }
+    return executeContextEmitCommand(
+      {
+        target: target as 'cc' | 'codex' | 'lmstudio-http' | 'lmstudio-cli',
+        workdir: lastOption(flags, 'workdir') ?? io.cwd,
+        tokenBudget,
+        types,
+      },
+      io
+    );
+  }
+
+  io.stderr(`relay context: unknown action '${action}'. Try: emit\n`);
+  return 2;
+}
+
 const VALID_COLOR_MODES = new Set<ColorMode>(['auto', 'always', 'never']);
 
 function isColorMode(v: string): v is ColorMode {
@@ -322,6 +381,10 @@ async function main(): Promise<number> {
 
   if (cmd === 'memory') {
     return dispatchMemory(rest);
+  }
+
+  if (cmd === 'context') {
+    return dispatchContext(rest);
   }
 
   if (cmd === 'run') return dispatchRun(rest);
