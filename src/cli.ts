@@ -117,6 +117,11 @@ DELEGATION COMMANDS
   relay diff <run_id> [--json]             Show files_changed + diffs for a run
   relay compare <run_a> <run_b> [--json]   Side-by-side diff of two runs
 
+PROJECT (per-project privacy controls)
+  relay project disable [--yes] [--json]   Write .relayignore, opt out of extract/recall/hook/share
+  relay project enable [--yes] [--json]    Remove .relayignore (re-enable defaults)
+  relay project audit [--json]             Read-only scan of committed hooks + workdir memories
+
 SETUP
   relay init [--auto|--quick] [--json]     Interactive setup wizard
   relay completion <bash|zsh|fish>         Emit shell completion script
@@ -369,6 +374,20 @@ async function main(): Promise<number> {
     return executeParallelCommand({
       specPath,
       maxConcurrency: maxConcurrencyRaw ? Number.parseInt(maxConcurrencyRaw, 10) : 4,
+      json: isBool(flags, 'json'),
+    }, io);
+  }
+  if (cmd === 'project') {
+    const flags = parseFlags(rest);
+    const action = flags.positionals[0];
+    if (!action || !['disable', 'enable', 'audit'].includes(action)) {
+      io.stderr('relay project requires an action: disable | enable | audit\n');
+      return 2;
+    }
+    const { executeProjectCommand } = await import('./cli/cmd-project.js');
+    return executeProjectCommand({
+      action: action as 'disable' | 'enable' | 'audit',
+      yes: isBool(flags, 'yes'),
       json: isBool(flags, 'json'),
     }, io);
   }
