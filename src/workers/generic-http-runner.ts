@@ -46,12 +46,26 @@ export class GenericHttpRunner implements WorkerRunner {
     const url = this.config.getUrl();
     const headers = this.config.getHeaders(model ?? "");
 
+    // When contextPrefix is set, callers MUST pass the bare task in `task.task`
+    // (NOT the concatenated finalTask) — the prefix is injected here as a
+    // system-role message so it stays cache-stable across requests.
+    const messages = task.contextPrefix
+      ? [
+          { role: "system", content: task.contextPrefix },
+          { role: "user", content: task.task },
+        ]
+      : [{ role: "user", content: task.task }];
+
     const body =
       this.config.requestFormat === "responses"
-        ? { model: model ?? "", input: task.task }
+        ? {
+            model: model ?? "",
+            input: task.task,
+            ...(task.contextPrefix ? { instructions: task.contextPrefix } : {}),
+          }
         : {
             model: model ?? "",
-            messages: [{ role: "user", content: task.task }],
+            messages,
             stream: false,
           };
 
