@@ -18,6 +18,7 @@ export function handleRecall(args: RecallArgs): McpToolResult {
     created_after: args.created_after,
     created_before: args.created_before,
     files: args.file ? [args.file] : undefined,
+    min_trust: args.min_trust,
   };
 
   // 1. Get all candidate memories (SQL-filtered by type, workdir, expiry)

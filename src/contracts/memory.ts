@@ -57,6 +57,10 @@ export const recallSchema = {
   created_after: z.number().int().optional().describe('Lower bound on created_at (epoch ms)'),
   created_before: z.number().int().optional().describe('Upper bound on created_at (epoch ms)'),
   file: z.string().optional().describe('SHIP-52: restrict to memories associated with this file path (auto-written by run-recorder)'),
+  min_trust: z
+    .enum(['unverified', 'provisional', 'trusted'])
+    .optional()
+    .describe('T2: minimum trust tier — provisional excludes raw auto-extracted entries, trusted only returns human-pinned/proven entries'),
 };
 
 export const RecallArgsSchema = z.object(recallSchema);
