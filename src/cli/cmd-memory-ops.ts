@@ -45,6 +45,7 @@ export async function executeRecallCommand(
     createdAfter: number | undefined;
     createdBefore: number | undefined;
     file: string | undefined;
+    minTrust: 'unverified' | 'provisional' | 'trusted' | undefined;
     json: boolean;
   },
   io: CliIO
@@ -60,6 +61,7 @@ export async function executeRecallCommand(
     created_after: command.createdAfter,
     created_before: command.createdBefore,
     file: command.file,
+    min_trust: command.minTrust,
   }) as { content: Array<{ type: string; text: string }>; isError?: boolean };
   const text = response.content[0]?.text ?? '';
   if (command.json) {
