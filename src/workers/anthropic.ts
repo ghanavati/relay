@@ -46,6 +46,10 @@ export class AnthropicRunner implements WorkerRunner {
         body: JSON.stringify({
           model: task.model,
           max_tokens: 4096,
+          // Anthropic Messages API uses a top-level `system` field, not a system
+          // role inside `messages`. When contextPrefix is set, callers MUST pass
+          // the bare task in `task.task` (NOT the concatenated finalTask).
+          ...(task.contextPrefix ? { system: task.contextPrefix } : {}),
           messages: [{ role: "user", content: task.task }],
         }),
         signal: controller.signal,
