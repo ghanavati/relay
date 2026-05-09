@@ -100,6 +100,10 @@ MEMORY COMMANDS
   relay memory to-rules <memory_id>        Promote a memory to .claude/CLAUDE.md
     [--rules-file <path>]
 
+  relay memory auto-extract --from-stdin   CC SessionEnd hook entry point
+    [--max-bytes <N>]                      (default: 32768)
+    [--json]
+
 DELEGATION COMMANDS
   relay run <task>                         Delegate a task to a worker
     [--provider codex|lmstudio|openrouter|anthropic] (default: codex)
@@ -269,7 +273,17 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     return executeMemoryToRulesCommand({ memoryId, rulesFile, json: isBool(flags, 'json') }, io, io.cwd);
   }
 
-  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules\n`);
+  if (action === 'auto-extract') {
+    const maxBytesRaw = lastOption(flags, 'max-bytes');
+    const { executeMemoryAutoExtractCommand } = await import('./cli/cmd-memory-auto-extract.js');
+    return executeMemoryAutoExtractCommand({
+      fromStdin: isBool(flags, 'from-stdin'),
+      maxBytes: maxBytesRaw ? Number.parseInt(maxBytesRaw, 10) : undefined,
+      json: isBool(flags, 'json'),
+    }, io);
+  }
+
+  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract\n`);
   return 2;
 }
 
