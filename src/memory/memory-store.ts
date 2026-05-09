@@ -531,12 +531,23 @@ export class MemoryStore {
    */
   /** SHIP-61 — increment success_recall_count for memories recalled by a successful run.
    *  Auto-pins when success_recall_count reaches 3: pinned entries are excluded from
-   *  gcByTokenBudget(), making proven memories structurally un-evictable. */
+   *  gcByTokenBudget(), making proven memories structurally un-evictable.
+   *
+   *  T14 (memory poisoning fence): entries tagged `auto-extract` are explicitly
+   *  excluded from auto-pinning regardless of recall count. Auto-extracted entries
+   *  come from low-trust sources (transcript scraping) and must never graduate to
+   *  `trusted` purely via recall — only an explicit human action (pin) or a
+   *  human-sourced write can mark them trusted. The `tags_json LIKE '%"auto-extract"%'`
+   *  match relies on the tag being JSON-encoded as a quoted string in the array. */
   markRecallSuccess(memoryIds: readonly string[]): void {
     if (memoryIds.length === 0) return;
     const update = this.db.prepare('UPDATE memories SET success_recall_count = success_recall_count + 1 WHERE memory_id = ?');
     const autoPin = this.db.prepare(
-      `UPDATE memories SET pinned = 1 WHERE memory_id = ? AND success_recall_count >= ${AUTOPIN_THRESHOLD} AND pinned = 0`
+      `UPDATE memories SET pinned = 1
+       WHERE memory_id = ?
+         AND success_recall_count >= ${AUTOPIN_THRESHOLD}
+         AND pinned = 0
+         AND tags_json NOT LIKE '%"auto-extract"%'`
     );
     for (const id of memoryIds) {
       update.run(id);
