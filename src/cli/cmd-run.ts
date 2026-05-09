@@ -101,10 +101,17 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
   }
 
   // 4. Dispatch
+  const { buildDelegatedTask } = await import('../context/layers.js');
+  const built = await buildDelegatedTask({
+    workdir: args.workdir,
+    task: args.task,
+    run_id,
+  });
   let result;
   try {
     result = await runner.run({
-      task: args.task,
+      task: built.finalTask,
+      contextPrefix: built.contextPrefix,
       workdir: args.workdir,
       timeout_ms: args.timeoutMs,
       model: args.model,
