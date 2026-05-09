@@ -100,6 +100,12 @@ MEMORY COMMANDS
   relay memory to-rules <memory_id>        Promote a memory to .claude/CLAUDE.md
     [--rules-file <path>]
 
+  relay memory wipe --workdir <path>       GDPR-style per-project memory wipe
+    [--hard]                                  hard-delete (default: soft)
+    [--tag <name>]                            narrow to memories carrying tag
+    --confirm "WIPE <path>"                   required confirmation phrase
+    [--json]                                  ("WIPE HARD <path>" with --hard)
+
 DELEGATION COMMANDS
   relay run <task>                         Delegate a task to a worker
     [--provider codex|lmstudio|openrouter|anthropic] (default: codex)
@@ -269,7 +275,23 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     return executeMemoryToRulesCommand({ memoryId, rulesFile, json: isBool(flags, 'json') }, io, io.cwd);
   }
 
-  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules\n`);
+  if (action === 'wipe') {
+    const workdir = lastOption(flags, 'workdir');
+    if (!workdir) {
+      io.stderr('relay memory wipe requires --workdir <path>\n');
+      return 2;
+    }
+    const { executeWipeCommand } = await import('./cli/cmd-memory-ops.js');
+    return executeWipeCommand({
+      workdir,
+      hard: isBool(flags, 'hard'),
+      tag: lastOption(flags, 'tag'),
+      confirm: lastOption(flags, 'confirm'),
+      json: isBool(flags, 'json'),
+    }, io);
+  }
+
+  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, wipe\n`);
   return 2;
 }
 
