@@ -1,5 +1,8 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { writeFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { WorkerTask, WorkerResult } from "./types.js";
 import type { WorkerRunner } from "./runner.js";
 import { getCodexBin, getRelayCodexNetworkMode } from "../config/runtime.js";
@@ -33,7 +36,28 @@ interface ApprovalFlag {
 interface CodexInvocation {
   args: string[];
   envAdditions: Record<string, string>;
+  tempFiles: string[];
 }
+
+/** File writer signature for testability — writes content to path synchronously. */
+export type TempFileWriter = (path: string, content: string) => void;
+
+/** Path builder signature for testability — produces an absolute tempfile path. */
+export type TempPathBuilder = (runId: string) => string;
+
+const defaultTempFileWriter: TempFileWriter = (path, content) => {
+  writeFileSync(path, content, { encoding: "utf8", mode: 0o600 });
+};
+
+const defaultTempPathBuilder: TempPathBuilder = (runId) => {
+  // Unique-per-call: combine run_id + pid + monotonic counter to avoid collisions when
+  // the same run dispatches multiple Codex invocations (rare but possible).
+  const safe = String(runId || "run").replace(/[^a-zA-Z0-9_-]/g, "_");
+  const unique = `${process.pid}-${tempPathCounter++}`;
+  return join(tmpdir(), `relay-codex-instructions-${safe}-${unique}.md`);
+};
+
+let tempPathCounter = 0;
 
 export interface CodexCliCapabilities {
   approvalFlag: ApprovalFlag | null;
@@ -160,14 +184,17 @@ export function parseCodexLine(line: string): string | null {
 export function buildCodexInvocation(
   task: Pick<
     WorkerTask,
-    "workdir" | "model" | "reasoning_effort" | "task" | "mcps" | "codex_approval_policy" | "run_id"
+    "workdir" | "model" | "reasoning_effort" | "task" | "mcps" | "codex_approval_policy" | "run_id" | "contextPrefix"
   >,
   env: NodeJS.ProcessEnv = process.env,
-  capabilities: CodexCliCapabilities = LEGACY_CODEX_CAPABILITIES
+  capabilities: CodexCliCapabilities = LEGACY_CODEX_CAPABILITIES,
+  writer: TempFileWriter = defaultTempFileWriter,
+  pathBuilder: TempPathBuilder = defaultTempPathBuilder
 ): CodexInvocation {
   const globalArgs: string[] = [];
   const execArgs = ["exec", "--cd", task.workdir, "--json"];
   const envAdditions: Record<string, string> = {};
+  const tempFiles: string[] = [];
 
   // Forward CC orchestration env vars so Codex workers receive the same thinking/effort settings
   // as the orchestrating CC session — works even when relay runs as a daemon with a clean env.
@@ -265,6 +292,20 @@ export function buildCodexInvocation(
     }
   }
 
+  // Inject Relay context layers via Codex `model_instructions_file` config.
+  // Codex docs (https://developers.openai.com/codex/config-reference) state
+  // `instructions` is reserved; `model_instructions_file` is the supported path.
+  // The bare task is passed as the prompt; stable context lives in the file so it
+  // can be cached/reused without polluting the prompt argument.
+  if (task.contextPrefix && task.contextPrefix.length > 0) {
+    const tempPath = pathBuilder(task.run_id);
+    writer(tempPath, task.contextPrefix);
+    tempFiles.push(tempPath);
+    // `-c` values are parsed as TOML — quote the path with toTomlString (JSON.stringify)
+    // to handle spaces, backslashes, and other special characters safely.
+    globalArgs.push("-c", `model_instructions_file=${toTomlString(tempPath)}`);
+  }
+
   execArgs.push("--", task.task);
 
   // Ensure CC thinking flags reach Codex workers — default to optimal settings
@@ -280,6 +321,7 @@ export function buildCodexInvocation(
   return {
     args: [...globalArgs, ...execArgs],
     envAdditions,
+    tempFiles,
   };
 }
 
@@ -287,10 +329,12 @@ export function buildCodexInvocation(
 export function buildCodexArgs(
   task: Pick<
     WorkerTask,
-    "workdir" | "model" | "reasoning_effort" | "task" | "mcps" | "codex_approval_policy"
+    "workdir" | "model" | "reasoning_effort" | "task" | "mcps" | "codex_approval_policy" | "contextPrefix"
   >,
   env: NodeJS.ProcessEnv = process.env,
-  capabilities: CodexCliCapabilities = LEGACY_CODEX_CAPABILITIES
+  capabilities: CodexCliCapabilities = LEGACY_CODEX_CAPABILITIES,
+  writer: TempFileWriter = defaultTempFileWriter,
+  pathBuilder: TempPathBuilder = defaultTempPathBuilder
 ): string[] {
   return buildCodexInvocation(
     {
@@ -298,7 +342,9 @@ export function buildCodexArgs(
       run_id: "run",
     },
     env,
-    capabilities
+    capabilities,
+    writer,
+    pathBuilder
   ).args;
 }
 
@@ -586,6 +632,18 @@ export async function runCodexWorker(task: WorkerTask): Promise<WorkerResult> {
   }).finally(() => {
     // Remove temp wrapper scripts regardless of how the worker exits.
     void injection?.cleanup();
+    // Remove temp model_instructions_file(s) created for Codex context injection.
+    for (const tempPath of invocation.tempFiles) {
+      try {
+        unlinkSync(tempPath);
+      } catch (err) {
+        // File may already be gone (process crash, manual cleanup, etc.). Log to stderr
+        // so the failure is visible without aborting the run.
+        process.stderr.write(
+          `relay: failed to remove codex tempfile ${tempPath}: ${(err as Error).message}\n`
+        );
+      }
+    }
   });
 }
 
