@@ -108,11 +108,11 @@ async function runContextEmitCheck(workdir: string, token: string): Promise<Veri
 async function runHookCheck(): Promise<VerifyCheck> {
   try {
     const { HOOK_SCRIPT } = await import('./cmd-memory-ops.js');
-    if (typeof HOOK_SCRIPT !== 'string' || !HOOK_SCRIPT.includes('relay memory recall')) {
-      return { name: 'hook', status: 'fail', message: 'HOOK_SCRIPT missing relay memory recall', critical: true };
+    if (typeof HOOK_SCRIPT !== 'string' || !HOOK_SCRIPT.includes('relay context emit')) {
+      return { name: 'hook', status: 'fail', message: 'HOOK_SCRIPT missing relay context emit', critical: true };
     }
-    if (!HOOK_SCRIPT.includes('--json')) {
-      return { name: 'hook', status: 'fail', message: 'HOOK_SCRIPT missing --json flag', critical: true };
+    if (!HOOK_SCRIPT.includes('--target cc')) {
+      return { name: 'hook', status: 'fail', message: 'HOOK_SCRIPT missing --target cc', critical: true };
     }
     return { name: 'hook', status: 'pass', message: 'SessionStart hook script well-formed', critical: false };
   } catch (err) {
