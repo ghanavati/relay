@@ -131,6 +131,12 @@ MEMORY COMMANDS
     [--hard]                               Hard-delete row (default: soft, superseded_by='forget')
     [--json]
 
+  relay memory rollback <run-id>           Remove auto-extracted memories from a run
+  relay memory rollback --since <iso>      Remove auto-extracts created since timestamp
+    [--dry-run]                            Preview without deleting
+    [--hard]                               Permanent delete (default: soft-delete)
+    [--json]
+
 CONTEXT COMMANDS
   relay context emit --target <t>          Emit recalled memories in a per-LLM
                                            wrapper format (replaces hook jq pipeline)
@@ -397,6 +403,19 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     }, io);
   }
 
+  if (action === 'rollback') {
+    const runId = flags.positionals[1];
+    const since = lastOption(flags, 'since');
+    const { executeMemoryRollbackCommand } = await import('./cli/cmd-memory-rollback.js');
+    return executeMemoryRollbackCommand({
+      runId,
+      since,
+      hard: isBool(flags, 'hard'),
+      dryRun: isBool(flags, 'dry-run'),
+      json: isBool(flags, 'json'),
+    }, io);
+  }
+
   if (action === 'tail') {
     const { executeMemoryTailCommand } = await import('./cli/cmd-memory-tail.js');
     return executeMemoryTailCommand({
@@ -430,7 +449,7 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     }, io);
   }
 
-  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract, wipe, tail, why, forget\n`);
+  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract, wipe, tail, why, forget, rollback\n`);
   return 2;
 }
 
