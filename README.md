@@ -9,10 +9,14 @@ Solo CLI for delegating bounded coding tasks to AI workers (Codex, OpenRouter, L
 ```bash
 git clone https://github.com/ghanavati/relay.git
 cd relay
-npm install
-npm run build
+npm install     # auto-builds via the `prepare` script
+npm run build   # explicit build (no-op if `prepare` already ran)
 npm link        # makes 'relay' available globally from this checkout
 ```
+
+The `prepare` script runs `npm run build` automatically on `npm install`, so a fresh
+clone produces a working `dist/` without an extra step. Run `npm run build` again
+after editing source.
 
 Requires Node >=20 and `better-sqlite3` (native module). On macOS install Xcode CLT first.
 
@@ -26,19 +30,6 @@ relay --help
 ```
 
 See [docs/quickstart.md](docs/quickstart.md) for the full walkthrough.
-
-### LM Studio wrapper (`relay-llm`)
-
-`scripts/relay-llm.sh` is a thin shell wrapper that calls `lms chat` with the current
-workdir's recall layer auto-injected as the system prompt. Install it on your `$PATH`:
-
-```bash
-ln -s "$(pwd)/scripts/relay-llm.sh" /usr/local/bin/relay-llm
-relay-llm qwen3-coder "summarise the diff in src/cli/cmd-doctor.ts"
-```
-
-The wrapper depends on `relay context emit --target lmstudio-cli` (delivered by the
-context-emit task); until that ships, the wrapper falls back to a plain `lms chat` call.
 
 ## What it does
 

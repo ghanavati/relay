@@ -7,12 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Beyond v0.2 (planned)
+- v0.3.0: TUI visual layer (Ink) for history + live run progress + cost dashboard
+- v0.4.0: skill packs (slim), `relay run --pipe`, `relay queue cron`, `relay watch <dir>`, brew formula
+- v1.0.0: stable surface, public if not already
+
+## [0.2.0] — 2026-05-09
+
+Cross-LLM memory injection, opt-in auto-extract pipeline, per-project privacy controls, and a complete off-switch / inspection / wipe surface. Distribution-ready: global hook install by default, `~/.local/bin` LM Studio wrapper, `relay info` + extended `relay doctor` for diagnostics.
+
 ### Added
+
+#### Cross-LLM memory injection
+- `relay context emit --target <cc|codex|lmstudio-http|lmstudio-cli>` — single command emits per-target wrapper format around recalled-memory markdown. Replaces the jq pipeline previously used in the CC SessionStart hook. Flags: `--workdir` (default PWD), `--token-budget` (default 800), `--types` (default `lesson,fact,decision,context`).
+- LM Studio + OpenRouter (HTTP chat-completions + responses) + Anthropic (Messages API `system` field) workers now inject `WorkerTask.contextPrefix` as a stable system role. Enables prompt caching at the head of the message array.
+- Codex worker writes `contextPrefix` to a tempfile and passes `-c model_instructions_file=<toml-quoted-path>` (the supported Codex injection path; `instructions` field is reserved). Tempfile cleanup tracked in `CodexInvocation.tempFiles` and unlinked in the runner's `.finally`.
+- `scripts/relay-llm.sh` wrapper for LM Studio invocation with auto-injected memory context. Installer at `scripts/install-relay-llm.sh` deploys to `~/.local/bin/relay-llm`.
+
+#### Opt-in auto-extract pipeline (off by default)
+- `relay memory auto-extract --enable [--allow-remote]` — writes per-workdir consent file at `<workdir>/.relay/auto-extract.json`. Without this file, auto-extraction is disabled. Consent file declares remote-provider permission, byte caps, minimum confidence, and optional extra redaction patterns layered on the built-in PII set. Every extra regex is compile-tested before reaching the redaction pipeline.
+- `relay memory auto-extract --from-stdin` — SessionEnd hook entry point. Parses CC hook JSON payload, checks consent, loads a trailing transcript window, redacts, calls the extractor, validates, and (optionally) Berry-checks before writing. Hooks must never block CC, so every error path returns exit 0 with a typed `skipped:*` status (`no-consent` / `bad-payload` / `no-transcript` / `empty-window` / `llm-not-wired` / etc.).
+- LM Studio extraction runner (`src/memory/auto-extract-runner.ts`) — HTTP call to local LM Studio with `RELAY_AUTO_EXTRACT_MODEL` (default `qwen/qwen3-coder-next`). Returns `{status, rawOutput, durationMs}`.
+- Zod schema + `cleanupAndValidate(raw, minConfidence)` (`src/memory/auto-extract-schema.ts`) — strips ` ```json ` fences (qwen wrapping), parses, validates `{content, memory_type, confidence}`, caps lessons at 3, rejects `[REDACTED:` leak, filters by minConfidence.
+- Berry hallucination check helper (`src/memory/auto-extract-berry.ts`) — optional gate before lessons are written. Returns `'pass' | 'flagged' | 'unavailable'`. On unreachable endpoint or timeout returns `'unavailable'`; callers decide policy via `RELAY_AUTO_EXTRACT_REQUIRE_BERRY`.
+- Extended PII redaction patterns in `src/security/redaction-pii.ts` — JWT, Stripe keys, database URLs, RFC1918 + internal LAN IPs, plus the existing API-key patterns. Applied as the pre-LLM redaction stage.
+
+#### Off-switch + inspection + wipe
+- `relay pause [--minutes N]` / `relay resume` — global off-switch. Sets a stop-flag that all hook-driven paths (recall + auto-extract) honor. `--minutes` schedules an automatic resume.
+- `relay info` — overall status summary: binary version, DB stats, hook install state, last activity, providers reachable. Complements `relay doctor` (which is health checks).
+- `relay memory tail [--filter <event>] [--since <duration>]` — readable activity log inspector for `~/.relay/auto-extract.log` and friends. `--filter` restricts to a single event type; `--since 24h` (or `1d`, `30m`) windows recent activity.
+- `relay memory why <id>` — score breakdown explainer for a recalled memory. Shows recency, frequency, trust, query-match contributions and the final composite score.
+- `relay memory forget <id>` — alias for soft-delete via supersede. Convenience for the common case.
+- `relay memory wipe --workdir <path> [--hard] [--tag <name>]` — GDPR-style per-project deletion. Soft-delete by default (marks rows `superseded_by='wipe-workdir'`), `--hard` for true erasure. Optional `--tag` narrows to a label. Requires explicit `--confirm "WIPE <path>"` (or `"WIPE HARD <path>"`) phrase so the call cannot fire by accident.
+- `relay export --safe [--workdir <path>]` — sharable export that filters out auto-extract entries, private (workdir-scoped) memories, and unverified-trust entries.
+
+#### Hook installation upgrades
+- `relay memory hook --install --global` — writes the SessionStart hook to `~/.claude/settings.json` (instead of project-local `.claude/settings.json`) so a single install fires in every CC project.
+- `relay memory hook --install --session-end [--global]` — extends the installer to wire the SessionEnd hook for auto-extract. Combined with `--global` for user-wide setup.
+- `relay init` defaults to `--global-hook`. Wizard now offers SessionEnd hook install + LM Studio model picker.
+
+#### Per-project privacy controls
+- `relay project disable | enable | audit` — opt a single workdir out of Relay's extract/recall/hook/share defaults via a `.relayignore` file (mirrors `.gitignore` in spirit).
+  - `disable`: writes `.relayignore` with `extract/recall/hook=off`, `shareable=false`, then offers to add `.relayignore` to `.gitignore` so the privacy file itself does not leak via git.
+  - `enable`: removes the file (interactive confirm; `--yes` skips).
+  - `audit`: read-only inspection — counts deployed hooks via committed `.claude/settings.json` and counts cwd-scoped memories that `to-rules` promotion would leak into a CLAUDE.md.
+  - All actions support `--json`. Audit warns and continues on parse errors so it can never block the user.
+
+#### Recall + diagnostic surface
+- `--min-trust <unverified|provisional|trusted>` flag on `relay memory recall` — trust-tier filter so SessionStart hooks can exclude auto-extracted entries by default. Threads through CLI → contract → `RecallQuery` → `buildWhereClause` SQL filter.
+- `relay doctor` extended with hook-roundtrip + env-consistency + last-recall + auto-extract checks. Surfaces auto-extract status from `~/.relay/auto-extract.log`.
+
+#### Logging + scripting infrastructure
+- Centralized ndjson logger (`src/runtime/relay-log.ts`) — single writer with rotation and 30-day retention. Used by recall, auto-extract, and hook-roundtrip paths.
+- `scripts/relay-llm.sh` — LM Studio CLI wrapper with auto-injected memory context.
+- `scripts/install-relay-llm.sh` — installs `relay-llm` to `~/.local/bin` with smoke test.
+
+#### Polish (also in earlier `[Unreleased]`)
 - `relay completion <bash|zsh|fish>` — emit a shell completion script for the named shell. Pipe into the shell's completion location, or `eval "$(relay completion zsh)"`.
 - ANSI color support across `doctor` and `history`. Honors `NO_COLOR`, `CI`, `TERM=dumb`, and stdout-not-a-TTY auto-detection. Override with `--color=always|never` flag or `RELAY_COLOR` env.
-- Codex worker now injects `WorkerTask.contextPrefix` into Codex via `-c model_instructions_file=<path>` (per Codex config-reference: `instructions` is reserved, prefer `model_instructions_file`). Tempfile lives in `os.tmpdir()` keyed by `run_id`, TOML-quoted, and removed in the worker's `.finally` cleanup. Bare `task.task` remains the prompt.
 
 ### Fixed
+- `RELAY_RECALLED_LESSONS=1` was a no-op for `relay run` and `relay parallel`. Now properly wired via `buildDelegatedTask()` in both commands. (T1)
+- SessionStart hook output format corrected from raw recall JSON to the documented `hookSpecificOutput.additionalContext` shape. CC was silently discarding the prior payload.
+- Auto-pin tag fence: `markRecallSuccess()` no longer auto-pins entries tagged `auto-extract` regardless of recall count. The fence is at the *pin* layer, not trust-level computation — `computeTrustLevel()` still returns `trusted` after the threshold, but the missing pin keeps the entry GC-eligible. Memory poisoning protection. (T14)
+- Hook `--workdir` flag now enforced under `RELAY_MEMORY_ALLOWED_WORKDIRS`. Out-of-allowlist requests are rejected.
+- `HOOK_SCRIPT` constant in `src/cli/cmd-memory-ops.ts` updated to invoke `relay context emit --target cc` instead of the brittle jq pipeline.
 - `relay doctor` no longer prints "All checks passed." when checks failed. Now conditional: green "All checks passed." when truly clean, red "N checks failed, M missing, K ok" on failure, gray "K ok, M missing (informational)" when only optional providers absent.
 - `relay doctor --json` emits compact one-line JSON (was pretty-printed `null, 2`).
 - `relay init` no longer hardcodes `-Users-ghanavati-ai-stack-Projects-relay-mcp` as the CC memory probe path. Derives `~/.claude/projects/<hash>/memory` dynamically from `io.cwd`. Now works for any user, any project.
@@ -21,10 +80,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cmd-history.ts:48` removed double `.padEnd(28).slice(0,28).padEnd(28)` no-op chain. Removed `as any[]` cast — defines `RunRow` interface.
 - `cmd-history.ts` `formatDuration` no longer declares unused `ms` variable; uses `<1000ms` short-form.
 
-### Beyond v0.2 (planned)
-- v0.3.0: TUI visual layer (Ink) for history + live run progress + cost dashboard
-- v0.4.0: skill packs (slim), `relay run --pipe`, `relay queue cron`, `relay watch <dir>`, brew formula
-- v1.0.0: stable surface, public if not already
+### Changed
+- `relay init` defaults to `--global-hook` (writes to `~/.claude/settings.json` instead of cwd).
+- `relay memory recall` defaults `--workdir` to `process.cwd()` when `RELAY_MEMORY_ALLOWED_WORKDIRS` is set. Avoids the "broken hook" footgun where a missing flag silently widened the recall scope.
+- `HOOK_SCRIPT` constant updated to use `relay context emit --target cc` instead of the jq pipeline.
+- Worktree leftovers cleaned: `.gitignore` adds `.claude/tsc-cache/`. Merged worktrees + branches removed via `git worktree remove`.
+
+### Security
+- Auto-extracted entries default to `unverified` trust tier with a 30-day TTL. Never auto-pin (see auto-pin tag fence under Fixed). Trust must be earned by manual graduation.
+- Per-workdir consent file required for auto-extraction (default OFF). No consent file → no extraction, regardless of env vars.
+- Remote LLM auto-extraction blocked unless **both** `RELAY_AUTO_EXTRACT_ALLOW_REMOTE=1` AND consent file `allow_remote: true`. Default LM Studio HTTP path stays local-only.
+- `~/.relay/secrets` enforced at `chmod 600` on touch. Loaders refuse to read world-readable secret files.
+
+### Migration notes from 0.1.0
+- Re-run `relay init --auto` to install the global SessionStart hook (replaces project-local installs).
+- Existing memory entries are unaffected — schema is additive.
+- Auto-extract is **OFF** until you run `relay memory auto-extract --enable` per-workdir. Without an opt-in consent file, the SessionEnd hook is a no-op.
+- If you previously customized the project-local hook script, the global install does not migrate it — re-add any custom flags via `relay memory hook --install --global` and re-edit if needed.
 
 ## [0.1.0] - 2026-05-02
 
@@ -62,5 +134,6 @@ Initial extract from the relay-mcp monorepo. Solo CLI distro focused on memory +
 ### Known limitations
 - `relay budget`, `relay corpus` commands deferred to v0.2 (BudgetStore needs per-provider scope; corpus is unused without QMD integration).
 
-[Unreleased]: https://github.com/ghanavati/relay/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ghanavati/relay/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/ghanavati/relay/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ghanavati/relay/releases/tag/v0.1.0
