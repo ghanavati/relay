@@ -174,6 +174,12 @@ EXPORT
     [--out <file>]                         (default: stdout)
     [--json]                               (machine summary when --out is set)
 
+PRIVACY
+  relay pause [--minutes N] [--workdir P] [--json]
+                                           Off-switch — sentinel blocks hooks
+  relay pause --check [--workdir P]        Silent exit 0 if paused, 1 if not
+  relay resume [--workdir P] [--json]      Remove the pause sentinel
+
 GENERAL
   relay --help, -h                         Show this help
   relay --version, -V                      Show version
@@ -610,8 +616,6 @@ async function main(): Promise<number> {
   }
   if (cmd === 'export') {
     const flags = parseFlags(rest);
-    // --safe is the default (and only mode in v0.1.0). --unsafe is reserved for future use
-    // and currently rejected so behavior cannot drift silently.
     if (isBool(flags, 'unsafe')) {
       io.stderr('relay export: --unsafe is not supported in this version. Drop the flag (--safe is the default).\n');
       return 2;
@@ -629,6 +633,27 @@ async function main(): Promise<number> {
       out: lastOption(flags, 'out'),
       json: isBool(flags, 'json'),
     }, io);
+  }
+  if (cmd === 'pause') {
+    const flags = parseFlags(rest);
+    const minutesRaw = lastOption(flags, 'minutes');
+    const minutes = minutesRaw ? Number.parseFloat(minutesRaw) : undefined;
+    if (minutesRaw !== undefined && (minutes === undefined || Number.isNaN(minutes) || minutes <= 0)) {
+      io.stderr(`--minutes must be a positive number (got: ${minutesRaw})\n`);
+      return 2;
+    }
+    const workdir = lastOption(flags, 'workdir');
+    if (isBool(flags, 'check')) {
+      const { executePauseCheckCommand } = await import('./cli/cmd-pause.js');
+      return executePauseCheckCommand({ workdir });
+    }
+    const { executePauseCommand } = await import('./cli/cmd-pause.js');
+    return executePauseCommand({ minutes, workdir, json: isBool(flags, 'json') }, io);
+  }
+  if (cmd === 'resume') {
+    const flags = parseFlags(rest);
+    const { executeResumeCommand } = await import('./cli/cmd-pause.js');
+    return executeResumeCommand({ workdir: lastOption(flags, 'workdir'), json: isBool(flags, 'json') }, io);
   }
 
   const futureCmds = ['corpus', 'budget'];
