@@ -119,6 +119,8 @@ DELEGATION COMMANDS
 
 SETUP
   relay init [--auto|--quick] [--json]     Interactive setup wizard
+  relay setup --everything [--workdir P] [--lm-model M] [--yes] [--json]
+                                           One-command installer (init + hooks + auto-extract)
   relay completion <bash|zsh|fish>         Emit shell completion script
 
 GENERAL
@@ -352,6 +354,17 @@ async function main(): Promise<number> {
     const flags = parseFlags(rest);
     const { executeInitCommand } = await import('./cli/cmd-init.js');
     return executeInitCommand({ auto: isBool(flags, 'auto'), quick: isBool(flags, 'quick'), json: isBool(flags, 'json') }, io);
+  }
+  if (cmd === 'setup') {
+    const flags = parseFlags(rest);
+    const { executeSetupCommand } = await import('./cli/cmd-setup.js');
+    return executeSetupCommand({
+      everything: isBool(flags, 'everything'),
+      workdir: lastOption(flags, 'workdir'),
+      lmModel: lastOption(flags, 'lm-model'),
+      yes: isBool(flags, 'yes'),
+      json: isBool(flags, 'json'),
+    }, io);
   }
   if (cmd === 'compare') {
     const flags = parseFlags(rest);
