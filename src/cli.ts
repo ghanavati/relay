@@ -138,6 +138,10 @@ CONTEXT COMMANDS
     [--workdir <path>]                     (default: PWD)
     [--token-budget <N>]                   (default: 800)
     [--types <list>]                       (default: lesson,fact,decision,context)
+    [--min-trust any|unverified|provisional|trusted]  (default: provisional —
+                                           T1: blocks unverified auto-extracted
+                                           memories from leaking into LLM context.
+                                           Use 'any' to disable filter.)
 
 DELEGATION COMMANDS
   relay run <task>                         Delegate a task to a worker
@@ -445,7 +449,7 @@ async function dispatchContext(rest: readonly string[]): Promise<number> {
       io.stderr('relay context emit requires --target <cc|codex|lmstudio-http|lmstudio-cli>\n');
       return 2;
     }
-    const { executeContextEmitCommand, parseEmitTypes, VALID_EMIT_TARGETS } =
+    const { executeContextEmitCommand, parseEmitTypes, parseEmitMinTrust, VALID_EMIT_TARGETS } =
       await import('./cli/cmd-context-emit.js');
     if (!(VALID_EMIT_TARGETS as readonly string[]).includes(target)) {
       io.stderr(
@@ -466,12 +470,21 @@ async function dispatchContext(rest: readonly string[]): Promise<number> {
       io.stderr(`${(e as Error).message}\n`);
       return 2;
     }
+    // T1 — parse `--min-trust` (default: provisional via parseEmitMinTrust).
+    let minTrust: 'unverified' | 'provisional' | 'trusted';
+    try {
+      minTrust = parseEmitMinTrust(lastOption(flags, 'min-trust'));
+    } catch (e) {
+      io.stderr(`${(e as Error).message}\n`);
+      return 2;
+    }
     return executeContextEmitCommand(
       {
         target: target as 'cc' | 'codex' | 'lmstudio-http' | 'lmstudio-cli',
         workdir: lastOption(flags, 'workdir') ?? io.cwd,
         tokenBudget,
         types,
+        minTrust,
       },
       io
     );

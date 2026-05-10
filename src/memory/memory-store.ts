@@ -177,14 +177,26 @@ export class MemoryStore {
     ).get(contentHash, now - 60_000) as { memory_id: string } | undefined;
     if (dupe) return dupe.memory_id;
 
+    // T1 — stamp the computed trust_level at insert time so the SQL filter in
+    // getCandidates() (memory-store.ts:515) sees a consistent column value
+    // immediately, not only after upgradeTrust() runs. Without this, a freshly
+    // inserted `memory_source='human'` row keeps the DB-default 'unverified'
+    // value and gets filtered out by --min-trust=provisional even though
+    // computeTrustLevel('human', 0, false) === 'provisional'.
+    const initialTrustLevel = computeTrustLevel(
+      (params.memory_source ?? 'unknown') as MemorySource,
+      0,
+      params.pinned === true,
+    );
     this.db
       .prepare(
         `INSERT INTO memories (
           memory_id, memory_type, content, tags_json, workdir,
           token_count, pinned, source_run_id, git_ref,
           superseded_by, created_at, accessed_at, expires_at,
-          entity_key, sources_json, content_hash, memory_source, files_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`
+          entity_key, sources_json, content_hash, memory_source, files_json,
+          trust_level
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         memoryId,
@@ -204,6 +216,7 @@ export class MemoryStore {
         contentHash,
         params.memory_source ?? 'unknown',
         JSON.stringify(params.files ?? []),
+        initialTrustLevel,
       );
 
     this.gcByTokenBudget();
