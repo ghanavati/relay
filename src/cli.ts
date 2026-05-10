@@ -218,7 +218,8 @@ GENERAL
   --color=auto|always|never                Force color (overrides NO_COLOR)
 
 DEFERRED TO v0.2
-  relay budget, relay corpus — see CHANGELOG.md.
+  relay budget show [--json]               Stub — reports deferred status (target: 0.2.0)
+  relay corpus — see CHANGELOG.md.
 
 DOCS
   https://github.com/ghanavati/relay/tree/main/docs
@@ -543,6 +544,24 @@ async function dispatchVerify(rest: readonly string[]): Promise<number> {
   return executeVerifyCommand({ json: isBool(flags, 'json') }, io);
 }
 
+async function dispatchBudget(rest: readonly string[]): Promise<number> {
+  const flags = parseFlags(rest);
+  const action = flags.positionals[0];
+
+  if (!action) {
+    io.stderr('relay budget requires an action: show\n');
+    return 2;
+  }
+
+  if (action === 'show') {
+    const { executeBudgetShowCommand } = await import('./cli/cmd-budget.js');
+    return executeBudgetShowCommand({ json: isBool(flags, 'json') }, io);
+  }
+
+  io.stderr(`relay budget: unknown action '${action}'. Try: show\n`);
+  return 2;
+}
+
 const VALID_COLOR_MODES = new Set<ColorMode>(['auto', 'always', 'never']);
 
 function isColorMode(v: string): v is ColorMode {
@@ -600,6 +619,7 @@ async function main(): Promise<number> {
 
   if (cmd === 'run') return dispatchRun(rest);
   if (cmd === 'verify') return dispatchVerify(rest);
+  if (cmd === 'budget') return dispatchBudget(rest);
   if (cmd === 'doctor') {
     const flags = parseFlags(rest);
     const { executeDoctorCommand } = await import('./cli/cmd-doctor.js');
@@ -776,7 +796,10 @@ async function main(): Promise<number> {
     return executeResumeCommand({ workdir: lastOption(flags, 'workdir'), json: isBool(flags, 'json') }, io);
   }
 
-  const futureCmds = ['corpus', 'budget'];
+  // Note: `budget` is wired above (see dispatchBudget) and returns a
+  // structured deferred-status payload. `corpus` remains a future command
+  // until QMD integration lands in v0.2.
+  const futureCmds = ['corpus'];
   if (cmd && futureCmds.includes(cmd)) {
     io.stderr(`relay ${cmd}: deferred to v0.2. See CHANGELOG.md.\n`);
     return 64;
