@@ -111,6 +111,11 @@ MEMORY COMMANDS
     [--max-bytes <N>]                      (default: 32768)
     [--json]
 
+  relay memory tail                        Tail the relay activity log
+    [--filter <event>] (repeatable, substring match)
+    [--since <duration>]                   e.g. 30m, 2h, 7d
+    [--json]
+
   relay memory wipe --workdir <path>       GDPR-style per-project memory wipe
     [--hard]                                  hard-delete (default: soft)
     [--tag <name>]                            narrow to memories carrying tag
@@ -350,7 +355,16 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     }, io);
   }
 
-  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract, wipe\n`);
+  if (action === 'tail') {
+    const { executeMemoryTailCommand } = await import('./cli/cmd-memory-tail.js');
+    return executeMemoryTailCommand({
+      filters: allOptions(flags, 'filter'),
+      since: lastOption(flags, 'since'),
+      json: isBool(flags, 'json'),
+    }, io);
+  }
+
+  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract, wipe, tail\n`);
   return 2;
 }
 
