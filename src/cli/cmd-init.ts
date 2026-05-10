@@ -1,13 +1,25 @@
 /**
  * `relay init` — interactive setup wizard for first-time users.
  *
- * Detects providers, offers to wire SessionStart hook, optionally migrates
- * Claude Code auto-memory, writes ~/.relay/config.json.
+ * Detects providers, offers to wire SessionStart hook (defaults to global so
+ * the hook fires in every CC project), optionally wires the SessionEnd
+ * auto-extract hook, optionally records a chosen LM Studio model into config
+ * for the auto-extract pipeline, and finally verifies the round-trip by
+ * running `relay context emit --target cc` and confirming the CC envelope
+ * shape.
  *
  * Modes:
  *   relay init             — interactive (default), Y/n prompts with sensible defaults
  *   relay init --auto      — non-interactive, accept all sensible defaults
  *   relay init --quick     — bare minimum (creates ~/.relay/, writes empty config, no prompts)
+ *
+ * New flags (T36):
+ *   --global-hook                 install SessionStart hook to ~/.claude (default true)
+ *   --no-global-hook              install to per-project .claude/ instead
+ *   --session-end-hook            also install SessionEnd auto-extract hook (default false)
+ *   --lm-model <id>               record this LM Studio model into config.auto_extract.model
+ *   --no-shell-edit               reserved — currently a no-op marker for shell-rc edits
+ *   --enable-auto-extract         write per-workdir consent file for io.cwd
  */
 
 import type { CliIO } from './commands.js';
@@ -22,6 +34,11 @@ export interface InitArgs {
   auto: boolean;
   quick: boolean;
   json: boolean;
+  globalHook?: boolean;
+  sessionEndHook?: boolean;
+  lmModel?: string;
+  noShellEdit?: boolean;
+  enableAutoExtract?: boolean;
 }
 
 /**
@@ -64,6 +81,9 @@ interface RelayConfig {
   memory?: {
     default_workdir?: string | null;
   };
+  auto_extract?: {
+    model?: string;
+  };
 }
 
 async function readExistingConfig(): Promise<RelayConfig> {
@@ -77,6 +97,82 @@ async function readExistingConfig(): Promise<RelayConfig> {
 async function writeConfig(config: RelayConfig): Promise<void> {
   await mkdir(getRelayDir(), { recursive: true });
   await writeFile(getConfigPath(), JSON.stringify(config, null, 2) + '\n', 'utf-8');
+}
+
+interface LoadedLmModel { id: string }
+
+/**
+ * Fetch loaded model IDs from LM Studio's HTTP API. Returns [] if unreachable
+ * or response is malformed — never throws. 3s timeout matches probeLmStudio.
+ */
+async function fetchLmStudioModels(): Promise<LoadedLmModel[]> {
+  const endpoint = process.env['LMSTUDIO_ENDPOINT'] ?? 'http://localhost:1234';
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+  try {
+    const res = await fetch(`${endpoint}/v1/models`, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) return [];
+    const json = (await res.json()) as { data?: Array<{ id?: unknown }> };
+    if (!Array.isArray(json.data)) return [];
+    return json.data
+      .map((m) => (typeof m?.id === 'string' ? { id: m.id } : null))
+      .filter((m): m is LoadedLmModel => m !== null);
+  } catch {
+    clearTimeout(timer);
+    return [];
+  }
+}
+
+/** Pick a model interactively from a numbered list; returns the chosen id or null. */
+async function pickLmModel(
+  rl: ReturnType<typeof createInterface>,
+  models: LoadedLmModel[],
+  io: CliIO
+): Promise<string | null> {
+  if (models.length === 0) return null;
+  io.stdout('\nLM Studio models loaded:\n');
+  models.forEach((m, i) => io.stdout(`  ${i + 1}) ${m.id}\n`));
+  io.stdout('  0) skip\n');
+  const ans = (await rl.question('Pick a model for auto-extract [1]: ')).trim();
+  if (ans === '0') return null;
+  const idx = ans === '' ? 0 : Number.parseInt(ans, 10) - 1;
+  if (Number.isNaN(idx) || idx < 0 || idx >= models.length) return null;
+  return models[idx]!.id;
+}
+
+/**
+ * Round-trip verification — runs `relay context emit --target cc` for the
+ * current workdir and validates the JSON envelope shape CC expects. Returns
+ * `{ ok, detail }` so the caller can report PASS/FAIL without re-parsing.
+ */
+async function verifyContextEmitRoundTrip(
+  cwd: string
+): Promise<{ ok: boolean; detail: string }> {
+  const captured: string[] = [];
+  const verifyIo: CliIO = {
+    cwd,
+    stdout: (m) => captured.push(m),
+    stderr: () => {},
+  };
+  try {
+    const { executeContextEmitCommand } = await import('./cmd-context-emit.js');
+    const code = await executeContextEmitCommand(
+      { target: 'cc', workdir: cwd, tokenBudget: 800, types: ['lesson', 'fact', 'decision', 'context'] },
+      verifyIo
+    );
+    if (code !== 0) return { ok: false, detail: `exit code ${code}` };
+    const out = captured.join('').trim();
+    if (!out) return { ok: false, detail: 'empty output' };
+    const parsed = JSON.parse(out) as { hookSpecificOutput?: { hookEventName?: unknown; additionalContext?: unknown } };
+    const hso = parsed.hookSpecificOutput;
+    if (!hso || hso.hookEventName !== 'SessionStart' || typeof hso.additionalContext !== 'string') {
+      return { ok: false, detail: 'missing hookSpecificOutput.{hookEventName,additionalContext}' };
+    }
+    return { ok: true, detail: 'hookSpecificOutput shape valid' };
+  } catch (err) {
+    return { ok: false, detail: (err as Error).message };
+  }
 }
 
 export async function executeInitCommand(args: InitArgs, io: CliIO): Promise<number> {
@@ -133,49 +229,109 @@ export async function executeInitCommand(args: InitArgs, io: CliIO): Promise<num
   const preferredDefault = availableProviders.includes('codex') ? 'codex' : availableProviders[0]!;
   providers.default = providers.default ?? preferredDefault;
 
-  // Hook install
+  // Step 4 — SessionStart hook (defaults to global)
+  // CLI flag overrides everything; prompt only when interactive AND flag absent.
+  const wantGlobal = args.globalHook !== false; // default true
   let installHook = false;
   if (rl) {
-    installHook = await ask(rl, '\nInstall Claude Code SessionStart hook so memory recall auto-injects on every CC session?');
+    installHook = await ask(
+      rl,
+      `\nInstall Claude Code SessionStart hook (${wantGlobal ? 'global ~/.claude' : 'per-project .claude'}) so memory recall auto-injects?`
+    );
   } else if (args.auto) {
     installHook = true;
   }
 
+  let hookGlobal = wantGlobal;
   if (installHook) {
     const { executeMemoryHookCommand } = await import('./cmd-memory-ops.js');
-    // In --json mode, route the hook's stdout to a discard sink so init's final
-    // JSON object is the only thing on stdout (single parseable object).
-    // In human mode, init prints its own confirmation lines and the hook's
-    // human stdout is fine to interleave.
-    const hookIo: CliIO = args.json
-      ? { cwd: io.cwd, stdout: () => {}, stderr: io.stderr }
-      : io;
-    // Wrap in try/catch — a read-only or non-existent .claude/ path should not
-    // crash init. Init's primary job is config; the hook is best-effort.
+    const hookIo: CliIO = args.json ? { cwd: io.cwd, stdout: () => {}, stderr: io.stderr } : io;
     try {
-      await executeMemoryHookCommand({ install: true, json: false }, hookIo, io.cwd);
+      await executeMemoryHookCommand(
+        { install: true, json: false, global: hookGlobal },
+        hookIo,
+        io.cwd
+      );
     } catch (err) {
       installHook = false;
-      if (!args.json) {
-        io.stderr(`(skipped hook install: ${(err as Error).message})\n`);
-      }
+      if (!args.json) io.stderr(`(skipped hook install: ${(err as Error).message})\n`);
     }
   }
 
-  // CC memory migration offer
+  // Step 5 — SessionEnd auto-extract hook (defaults to off)
+  const wantSessionEnd = args.sessionEndHook === true;
+  let installSessionEnd = false;
+  if (rl) {
+    installSessionEnd = await ask(rl, 'Install SessionEnd auto-extract hook?', false);
+  } else if (args.auto) {
+    installSessionEnd = wantSessionEnd;
+  }
+
+  if (installSessionEnd) {
+    const { executeMemoryHookCommand } = await import('./cmd-memory-ops.js');
+    const hookIo: CliIO = args.json ? { cwd: io.cwd, stdout: () => {}, stderr: io.stderr } : io;
+    try {
+      await executeMemoryHookCommand(
+        { install: true, json: false, global: hookGlobal, sessionEnd: true },
+        hookIo,
+        io.cwd
+      );
+    } catch (err) {
+      installSessionEnd = false;
+      if (!args.json) io.stderr(`(skipped session-end hook: ${(err as Error).message})\n`);
+    }
+  }
+
+  // Step 6 — LM Studio model picker (only when LM Studio is reachable)
+  let chosenLmModel: string | null = null;
+  if (args.lmModel) {
+    chosenLmModel = args.lmModel;
+  } else if (lmstudio.status === 'ok') {
+    const models = await fetchLmStudioModels();
+    if (models.length > 0) {
+      if (rl) {
+        chosenLmModel = await pickLmModel(rl, models, io);
+      } else if (args.auto && models[0]) {
+        chosenLmModel = models[0].id;
+      }
+    }
+  }
+  if (chosenLmModel) {
+    config.auto_extract = { ...(config.auto_extract ?? {}), model: chosenLmModel };
+  }
+
+  // Per-workdir auto-extract consent (--enable-auto-extract)
+  let enabledAutoExtract = false;
+  if (args.enableAutoExtract) {
+    try {
+      const { executeMemoryAutoExtractEnableCommand } = await import('./cmd-memory-auto-extract-enable.js');
+      const enableIo: CliIO = args.json ? { cwd: io.cwd, stdout: () => {}, stderr: io.stderr } : io;
+      const code = await executeMemoryAutoExtractEnableCommand(
+        { allowRemote: false, workdir: io.cwd, json: false },
+        enableIo
+      );
+      enabledAutoExtract = code === 0;
+    } catch (err) {
+      if (!args.json) io.stderr(`(skipped auto-extract enable: ${(err as Error).message})\n`);
+    }
+  }
+
+  // CC memory migration offer (unchanged)
   let migrateMemory = false;
   if (rl && ccMemory) {
     migrateMemory = await ask(rl, `\nFound Claude Code auto-memory at ${ccMemoryPath}. Migrate to Relay's memory store?`);
   }
-
   if (migrateMemory) {
     io.stdout('\nRun: node dist/scripts/migrate-cc-memory.js --apply\n');
     io.stdout('(Run --inventory + --dry-run first to inspect.)\n');
   }
 
-  // Write config
+  // Persist config (providers + auto_extract.model if chosen)
   config.providers = providers;
   await writeConfig(config);
+
+  // Step 7 — Verify round-trip
+  const verify = await verifyContextEmitRoundTrip(io.cwd);
 
   if (rl) rl.close();
 
@@ -186,12 +342,20 @@ export async function executeInitCommand(args: InitArgs, io: CliIO): Promise<num
         config_path: configPath,
         providers: { default: providers.default, available: availableProviders },
         hook_installed: installHook,
+        hook_global: installHook ? hookGlobal : false,
+        session_end_hook_installed: installSessionEnd,
         cc_memory_found: ccMemory,
+        lm_model: chosenLmModel,
+        auto_extract_enabled: enabledAutoExtract,
+        verify: { ok: verify.ok, detail: verify.detail },
       }) + '\n'
     );
   } else {
     io.stdout(`\n✓ Wrote ${configPath}\n`);
     io.stdout(`✓ Default provider: ${providers.default}\n`);
+    if (chosenLmModel) io.stdout(`✓ LM model for auto-extract: ${chosenLmModel}\n`);
+    if (enabledAutoExtract) io.stdout(`✓ Auto-extract consent enabled for ${io.cwd}\n`);
+    io.stdout(`${verify.ok ? '✓' : '✗'} Verify (context emit cc): ${verify.ok ? 'PASS' : 'FAIL'} — ${verify.detail}\n`);
     io.stdout(`\nTry: relay run "what is 2+2? answer in one word" --provider ${providers.default}${providers.default !== 'codex' ? ' --model <id>' : ''}\n`);
     io.stdout(`     relay history\n`);
     io.stdout(`     relay doctor\n`);
