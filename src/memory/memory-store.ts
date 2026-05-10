@@ -607,13 +607,29 @@ export class MemoryStore {
   }
 
   /**
-   * Soft-delete a memory by setting superseded_by to 'deleted'.
+   * Forget (delete) a memory by id.
+   *
+   * Soft (default): sets `superseded_by = 'forget'` — the row is preserved for audit
+   * but excluded from recall/get/count.
+   * Hard: physically removes the row. The FTS5 delete trigger
+   * (`memories_fts_delete`) cleans the FTS index automatically.
+   *
+   * Returns `{found, mode}` where `found` is true iff a row was affected.
+   * Soft-mode `found=false` includes both missing ids AND already-superseded rows.
+   * Hard-mode `found=false` means the id does not exist at all.
    */
-  forget(memoryId: string): boolean {
+  forget(memoryId: string, options?: { hard?: boolean }): { found: boolean; mode: 'soft' | 'hard' } {
+    const mode = options?.hard ? 'hard' : 'soft';
+    if (mode === 'hard') {
+      const result = this.db
+        .prepare('DELETE FROM memories WHERE memory_id = ?')
+        .run(memoryId);
+      return { found: result.changes > 0, mode };
+    }
     const result = this.db
       .prepare('UPDATE memories SET superseded_by = ? WHERE memory_id = ? AND superseded_by IS NULL')
-      .run('deleted', memoryId);
-    return result.changes > 0;
+      .run('forget', memoryId);
+    return { found: result.changes > 0, mode };
   }
 
   /**

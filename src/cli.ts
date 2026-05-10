@@ -100,6 +100,10 @@ MEMORY COMMANDS
   relay memory to-rules <memory_id>        Promote a memory to .claude/CLAUDE.md
     [--rules-file <path>]
 
+  relay memory forget <memory_id>          Forget a single memory entry
+    [--hard]                               Hard-delete row (default: soft, superseded_by='forget')
+    [--json]
+
 DELEGATION COMMANDS
   relay run <task>                         Delegate a task to a worker
     [--provider codex|lmstudio|openrouter|anthropic] (default: codex)
@@ -269,7 +273,21 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     return executeMemoryToRulesCommand({ memoryId, rulesFile, json: isBool(flags, 'json') }, io, io.cwd);
   }
 
-  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules\n`);
+  if (action === 'forget') {
+    const memoryId = flags.positionals[1];
+    if (!memoryId) {
+      io.stderr('relay memory forget requires <memory_id>\n');
+      return 2;
+    }
+    const { executeForgetCommand } = await import('./cli/cmd-memory-ops.js');
+    return executeForgetCommand({
+      memoryId,
+      hard: isBool(flags, 'hard'),
+      json: isBool(flags, 'json'),
+    }, io);
+  }
+
+  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, forget\n`);
   return 2;
 }
 
