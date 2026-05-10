@@ -119,6 +119,9 @@ DELEGATION COMMANDS
 
 SETUP
   relay init [--auto|--quick] [--json]     Interactive setup wizard
+  relay setup-llm <target> [--write] [--json]
+                                           Per-LLM init helper
+                                           targets: codex | lmstudio | openrouter | anthropic
   relay completion <bash|zsh|fish>         Emit shell completion script
 
 GENERAL
@@ -352,6 +355,22 @@ async function main(): Promise<number> {
     const flags = parseFlags(rest);
     const { executeInitCommand } = await import('./cli/cmd-init.js');
     return executeInitCommand({ auto: isBool(flags, 'auto'), quick: isBool(flags, 'quick'), json: isBool(flags, 'json') }, io);
+  }
+  if (cmd === 'setup-llm') {
+    const flags = parseFlags(rest);
+    const target = flags.positionals[0];
+    const validTargets = ['codex', 'lmstudio', 'openrouter', 'anthropic'] as const;
+    type Target = typeof validTargets[number];
+    if (!target || !(validTargets as readonly string[]).includes(target)) {
+      io.stderr(`relay setup-llm requires <target>. Try: ${validTargets.join(' / ')}\n`);
+      return 2;
+    }
+    const { executeSetupLlmCommand } = await import('./cli/cmd-setup-llm.js');
+    return executeSetupLlmCommand({
+      target: target as Target,
+      write: isBool(flags, 'write'),
+      json: isBool(flags, 'json'),
+    }, io);
   }
   if (cmd === 'compare') {
     const flags = parseFlags(rest);
