@@ -1,20 +1,27 @@
 /**
  * `relay memory auto-extract --from-stdin` — wired to Claude Code's SessionEnd hook.
  *
- * CC sends JSON on stdin: `{ session_id, transcript_path, cwd, hook_event_name }`.
- * We:
- *   1. Parse & validate the payload (Zod).
- *   2. Verify per-workdir consent at `<cwd>/.relay/auto-extract.json` (T13 owns the file format).
- *   3. Load the trailing transcript window via the auto-extract-transcript helper.
- *   4. Hand off to the LM Studio extraction runner (T10 — currently stubbed; logs `skipped:llm-not-wired`).
- *   5. Append a single ndjson line to `~/.relay/auto-extract.log` so the user can audit decisions.
+ * Pipeline (T16 — full E2E):
+ *   1. Parse + validate the SessionEnd hook payload (Zod).
+ *   2. Verify per-workdir consent (T13 — `<cwd>/.relay/auto-extract.json`).
+ *   3. Block remote providers when `consent.allow_remote === false` (v1 = local only).
+ *   4. Load the trailing transcript window (T9).
+ *   5. Apply extended PII / secret redaction (T12) before sending to any LLM.
+ *   6. Call the LM Studio extraction runner (T10).
+ *   7. Validate + clean the LLM output through the Zod schema (T11).
+ *   8. Optionally cross-check each lesson with Berry (T15). When
+ *      `RELAY_AUTO_EXTRACT_REQUIRE_BERRY=1` is set, an "unavailable" verdict is
+ *      treated as a failure (the lesson is skipped). Without that flag, only
+ *      explicitly "flagged" verdicts skip the lesson.
+ *   9. For every surviving lesson, write through the internal `handleRemember`
+ *      API with `memory_source='auto-run-recorder'` and the `auto-extract` tag
+ *      so the trust-tier fence (T14) prevents auto-pinning.
+ *  10. Append a single ndjson line to `~/.relay/auto-extract.log` with the
+ *      final outcome.
  *
- * Skip codes (used in the audit log + JSON output):
- *   - `skipped:no-consent`     consent file missing or `enabled: false`
- *   - `skipped:bad-payload`    stdin is not valid JSON / fails the Zod schema
- *   - `skipped:no-transcript`  `transcript_path` does not exist
- *   - `skipped:empty-window`   transcript existed but produced 0 turns
- *   - `skipped:llm-not-wired`  T10 hasn't been merged yet (the v1 default)
+ * The hook is wired into CC's SessionEnd event. CC discards the exit code and
+ * stderr, so this command never throws — every failure path is caught, logged,
+ * and exits 0.
  */
 
 import type { CliIO } from './commands.js';
@@ -24,35 +31,79 @@ import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { z } from 'zod';
 
+import { loadConsent, type ConsentConfig } from '../memory/auto-extract-consent.js';
+import {
+  loadRecentTranscriptWindow,
+  DEFAULT_WINDOW_BYTES,
+  type TranscriptWindow,
+} from '../memory/auto-extract-transcript.js';
+import { redactSecretsAndPII } from '../security/redaction-pii.js';
+import {
+  extractLessonsViaLmStudio,
+  type ExtractionOptions,
+  type ExtractionResult,
+} from '../memory/auto-extract-runner.js';
+import {
+  cleanupAndValidate,
+  type CleanupResult,
+  type ExtractedLessonT,
+} from '../memory/auto-extract-schema.js';
+import {
+  checkLessonViaBerry,
+  type BerryCheckResult,
+  type CheckLessonOptions,
+} from '../memory/auto-extract-berry.js';
+import { handleRemember } from '../tools/remember.js';
+
+// ── Hook payload schema ──────────────────────────────────────────────────────
+
 const HookPayloadSchema = z.object({
   session_id: z.string().min(1),
   transcript_path: z.string().min(1),
   cwd: z.string().min(1),
   hook_event_name: z.string().min(1).optional(),
 });
+type HookPayload = z.infer<typeof HookPayloadSchema>;
 
-const ConsentSchema = z.object({
-  enabled: z.boolean(),
-  // Future T13 fields — accept and ignore to stay forward-compatible.
-}).passthrough();
+// ── Status enum (extended per T16 spec) ──────────────────────────────────────
 
-type SkipReason =
+export type AutoExtractStatus =
+  | 'ok'
+  | 'skipped:disabled'
   | 'skipped:no-consent'
   | 'skipped:bad-payload'
   | 'skipped:no-transcript'
   | 'skipped:empty-window'
-  | 'skipped:llm-not-wired';
+  | 'skipped:no-llm'
+  | 'skipped:rate-limit'
+  | 'skipped:low-confidence'
+  | 'error:llm-down'
+  | 'error:llm-timeout'
+  | 'error:parse'
+  | 'error:schema'
+  | 'error:berry-flagged'
+  | 'error:write'
+  | 'partial:berry-flag';
+
+// ── Audit log shape ──────────────────────────────────────────────────────────
 
 interface AuditEntry {
   readonly ts: string;
   readonly session_id: string | null;
   readonly cwd: string | null;
-  readonly status: SkipReason | 'extracted';
+  readonly status: AutoExtractStatus;
+  readonly provider?: string;
+  readonly model?: string;
   readonly turns_read?: number;
-  readonly bytes?: number;
-  readonly extracted_count?: number;
+  readonly transcript_bytes?: number;
+  readonly redaction_hits?: number;
+  readonly lessons_written?: number;
+  readonly duration_ms?: number;
   readonly error?: string;
+  readonly note?: string;
 }
+
+// ── Public command interface ─────────────────────────────────────────────────
 
 export interface AutoExtractArgs {
   readonly fromStdin: boolean;
@@ -60,23 +111,361 @@ export interface AutoExtractArgs {
   readonly json: boolean;
 }
 
+/**
+ * Dependency-injection seam — every external service used by the pipeline is
+ * injectable so the test suite can drive end-to-end paths without touching the
+ * network. Defaults wire the real implementations.
+ */
+export interface AutoExtractDeps {
+  readonly readStdin?: () => Promise<string>;
+  readonly loadConsent?: (workdir: string) => Promise<ConsentLoadResultLike>;
+  readonly loadTranscript?: (path: string, maxBytes: number) => TranscriptWindow;
+  readonly redact?: (text: string) => string;
+  readonly extractLessons?: (opts: ExtractionOptions) => Promise<ExtractionResult>;
+  readonly cleanupAndValidate?: (raw: string, minConfidence: number) => CleanupResult;
+  readonly checkBerry?: (opts: CheckLessonOptions) => Promise<BerryCheckResult>;
+  readonly remember?: typeof handleRemember;
+  readonly now?: () => number;
+  readonly auditPath?: string;
+  readonly env?: NodeJS.ProcessEnv;
+}
+
+type ConsentLoadResultLike =
+  | { ok: true; consent: ConsentConfig }
+  | { ok: false; reason: string; detail?: string };
+
+const DEFAULT_ENDPOINT = 'http://localhost:1234';
+const DEFAULT_MODEL = 'qwen/qwen3-coder-next';
+const DEFAULT_TIMEOUT_MS = 25_000;
+const TTL_HOURS_30_DAYS = 30 * 24;
+
 export async function executeMemoryAutoExtractCommand(
   args: AutoExtractArgs,
-  io: CliIO
+  io: CliIO,
+  deps: AutoExtractDeps = {}
 ): Promise<number> {
   if (!args.fromStdin) {
     io.stderr('relay memory auto-extract requires --from-stdin (CC SessionEnd hook is the only caller)\n');
     return 2;
   }
 
-  // 1. Read + parse stdin.
-  const raw = await readAllStdin();
-  let payload: z.infer<typeof HookPayloadSchema>;
+  const env = deps.env ?? process.env;
+  const now = deps.now ?? Date.now;
+  const startedAt = now();
+  const audit = (entry: AuditEntry): Promise<void> => appendAudit(entry, deps.auditPath);
+
+  // 1. stdin → payload
+  const payload = await readPayload(args, io, deps, audit);
+  if (!payload.ok) return 0;
+
+  // 2. consent
+  const consentResult = await (deps.loadConsent ?? loadConsent)(payload.value.cwd);
+  if (!consentResult.ok) {
+    const status: AutoExtractStatus =
+      consentResult.reason === 'no-file' ? 'skipped:no-consent' : 'skipped:no-consent';
+    await emit(io, args, status, audit, {
+      ts: new Date().toISOString(),
+      session_id: payload.value.session_id,
+      cwd: payload.value.cwd,
+      status,
+      duration_ms: now() - startedAt,
+      ...(consentResult.detail ? { error: consentResult.detail } : {}),
+    });
+    return 0;
+  }
+
+  const consent = consentResult.consent;
+  if (consent.enabled === false) {
+    await emit(io, args, 'skipped:disabled', audit, {
+      ts: new Date().toISOString(),
+      session_id: payload.value.session_id,
+      cwd: payload.value.cwd,
+      status: 'skipped:disabled',
+      duration_ms: now() - startedAt,
+    });
+    return 0;
+  }
+
+  // 3. provider gating — v1 supports lmstudio only. allow_remote=false blocks anything else.
+  const provider = String(env['RELAY_AUTO_EXTRACT_PROVIDER'] ?? 'lmstudio');
+  if (provider !== 'lmstudio' && consent.allow_remote === false) {
+    await emit(io, args, 'skipped:no-llm', audit, {
+      ts: new Date().toISOString(),
+      session_id: payload.value.session_id,
+      cwd: payload.value.cwd,
+      status: 'skipped:no-llm',
+      provider,
+      duration_ms: now() - startedAt,
+      error: `provider '${provider}' is remote and consent.allow_remote=false`,
+    });
+    return 0;
+  }
+  if (provider !== 'lmstudio') {
+    // Even with allow_remote=true, only lmstudio is implemented in v1.
+    await emit(io, args, 'skipped:no-llm', audit, {
+      ts: new Date().toISOString(),
+      session_id: payload.value.session_id,
+      cwd: payload.value.cwd,
+      status: 'skipped:no-llm',
+      provider,
+      duration_ms: now() - startedAt,
+      error: `provider '${provider}' not supported in v1 (only lmstudio)`,
+    });
+    return 0;
+  }
+
+  // 4. transcript exists?
+  if (!existsSync(payload.value.transcript_path)) {
+    await emit(io, args, 'skipped:no-transcript', audit, {
+      ts: new Date().toISOString(),
+      session_id: payload.value.session_id,
+      cwd: payload.value.cwd,
+      status: 'skipped:no-transcript',
+      provider,
+      duration_ms: now() - startedAt,
+      error: payload.value.transcript_path,
+    });
+    return 0;
+  }
+
+  // 5. load trailing window
+  const window = (deps.loadTranscript ?? loadRecentTranscriptWindow)(
+    payload.value.transcript_path,
+    args.maxBytes ?? consent.max_bytes ?? DEFAULT_WINDOW_BYTES
+  );
+  if (window.turnsRead === 0) {
+    await emit(io, args, 'skipped:empty-window', audit, {
+      ts: new Date().toISOString(),
+      session_id: payload.value.session_id,
+      cwd: payload.value.cwd,
+      status: 'skipped:empty-window',
+      provider,
+      turns_read: 0,
+      transcript_bytes: 0,
+      duration_ms: now() - startedAt,
+    });
+    return 0;
+  }
+
+  // 6. PII / secret redaction
+  const redact = deps.redact ?? redactSecretsAndPII;
+  const redactedTranscript = redact(window.jsonl);
+  const redactionHits = countRedactionHits(window.jsonl, redactedTranscript);
+
+  // 7. LM Studio extraction
+  const endpoint = String(env['RELAY_AUTO_EXTRACT_ENDPOINT'] ?? DEFAULT_ENDPOINT);
+  const model = String(env['RELAY_AUTO_EXTRACT_MODEL'] ?? DEFAULT_MODEL);
+  const timeoutMs = parsePositiveInt(env['RELAY_AUTO_EXTRACT_TIMEOUT_MS']) ?? DEFAULT_TIMEOUT_MS;
+
+  const extract = deps.extractLessons ?? extractLessonsViaLmStudio;
+  const extraction = await extract({
+    transcript: redactedTranscript,
+    endpoint,
+    model,
+    timeoutMs,
+  });
+
+  if (extraction.status !== 'ok' || !extraction.rawOutput) {
+    const status: AutoExtractStatus =
+      extraction.status === 'error:timeout'
+        ? 'error:llm-timeout'
+        : extraction.status === 'error:llm-down'
+          ? 'error:llm-down'
+          : extraction.status === 'error:parse' || extraction.status === 'error:empty'
+            ? 'error:parse'
+            : 'error:llm-down';
+    await emit(io, args, status, audit, {
+      ts: new Date().toISOString(),
+      session_id: payload.value.session_id,
+      cwd: payload.value.cwd,
+      status,
+      provider,
+      model,
+      turns_read: window.turnsRead,
+      transcript_bytes: window.bytes,
+      redaction_hits: redactionHits,
+      duration_ms: now() - startedAt,
+      ...(extraction.note ? { error: extraction.note } : {}),
+    });
+    return 0;
+  }
+
+  // 8. schema cleanup + validation
+  const cleanup = (deps.cleanupAndValidate ?? cleanupAndValidate)(
+    extraction.rawOutput,
+    consent.min_confidence
+  );
+  if (!cleanup.ok) {
+    const status: AutoExtractStatus =
+      cleanup.reason === 'parse-error'
+        ? 'error:parse'
+        : cleanup.reason === 'low-confidence'
+          ? 'skipped:low-confidence'
+          : 'error:schema';
+    await emit(io, args, status, audit, {
+      ts: new Date().toISOString(),
+      session_id: payload.value.session_id,
+      cwd: payload.value.cwd,
+      status,
+      provider,
+      model,
+      turns_read: window.turnsRead,
+      transcript_bytes: window.bytes,
+      redaction_hits: redactionHits,
+      duration_ms: now() - startedAt,
+      ...(cleanup.detail ? { error: cleanup.detail } : {}),
+    });
+    return 0;
+  }
+
+  // 9. optional Berry hallucination check (per lesson)
+  const requireBerry = env['RELAY_AUTO_EXTRACT_REQUIRE_BERRY'] === '1';
+  const berryCheck = deps.checkBerry ?? checkLessonViaBerry;
+  const transcriptSpans = [
+    { source: `transcript:${payload.value.session_id}`, text: redactedTranscript },
+  ];
+
+  const survivors: ExtractedLessonT[] = [];
+  let anyFlagged = false;
+  for (const lesson of cleanup.lessons) {
+    let outcome: BerryCheckResult;
+    try {
+      outcome = await berryCheck({
+        lessonContent: lesson.content,
+        transcriptSpans,
+      });
+    } catch (err) {
+      // Defensive: berry helper itself should not throw, but never crash.
+      outcome = { ok: 'unavailable', details: { error: (err as Error).message } };
+    }
+    if (outcome.ok === 'flagged') {
+      anyFlagged = true;
+      continue;
+    }
+    if (outcome.ok === 'unavailable' && requireBerry) {
+      anyFlagged = true;
+      continue;
+    }
+    survivors.push(lesson);
+  }
+
+  if (survivors.length === 0) {
+    const status: AutoExtractStatus = anyFlagged ? 'error:berry-flagged' : 'skipped:low-confidence';
+    await emit(io, args, status, audit, {
+      ts: new Date().toISOString(),
+      session_id: payload.value.session_id,
+      cwd: payload.value.cwd,
+      status,
+      provider,
+      model,
+      turns_read: window.turnsRead,
+      transcript_bytes: window.bytes,
+      redaction_hits: redactionHits,
+      lessons_written: 0,
+      duration_ms: now() - startedAt,
+    });
+    return 0;
+  }
+
+  // 10. write surviving lessons through internal handleRemember
+  const remember = deps.remember ?? handleRemember;
+  let written = 0;
+  let writeError: string | undefined;
+  for (const lesson of survivors) {
+    try {
+      remember(
+        {
+          content: lesson.content,
+          memory_type: lesson.memory_type,
+          tags: [
+            'auto',
+            'auto-extract',
+            `session:${payload.value.session_id}`,
+            `confidence:${lesson.confidence.toFixed(2)}`,
+          ],
+          pinned: false,
+          workdir: payload.value.cwd,
+          expires_in_hours: TTL_HOURS_30_DAYS,
+          source_run_id: `auto-extract:${payload.value.session_id}`,
+        },
+        'auto-run-recorder'
+      );
+      written += 1;
+    } catch (err) {
+      writeError = (err as Error).message;
+      break;
+    }
+  }
+
+  if (writeError !== undefined && written === 0) {
+    await emit(io, args, 'error:write', audit, {
+      ts: new Date().toISOString(),
+      session_id: payload.value.session_id,
+      cwd: payload.value.cwd,
+      status: 'error:write',
+      provider,
+      model,
+      turns_read: window.turnsRead,
+      transcript_bytes: window.bytes,
+      redaction_hits: redactionHits,
+      lessons_written: 0,
+      duration_ms: now() - startedAt,
+      error: writeError,
+    });
+    return 0;
+  }
+
+  const finalStatus: AutoExtractStatus = anyFlagged ? 'partial:berry-flag' : 'ok';
+  await emit(io, args, finalStatus, audit, {
+    ts: new Date().toISOString(),
+    session_id: payload.value.session_id,
+    cwd: payload.value.cwd,
+    status: finalStatus,
+    provider,
+    model,
+    turns_read: window.turnsRead,
+    transcript_bytes: window.bytes,
+    redaction_hits: redactionHits,
+    lessons_written: written,
+    duration_ms: now() - startedAt,
+    ...(writeError ? { error: writeError } : {}),
+  });
+  return 0;
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+interface PayloadOk { readonly ok: true; readonly value: HookPayload; }
+interface PayloadErr { readonly ok: false; }
+
+async function readPayload(
+  args: AutoExtractArgs,
+  io: CliIO,
+  deps: AutoExtractDeps,
+  audit: (entry: AuditEntry) => Promise<void>
+): Promise<PayloadOk | PayloadErr> {
+  const reader = deps.readStdin ?? readAllStdin;
+  let raw: string;
+  try {
+    raw = await reader();
+  } catch (err) {
+    await audit({
+      ts: new Date().toISOString(),
+      session_id: null,
+      cwd: null,
+      status: 'skipped:bad-payload',
+      error: `stdin read failed: ${(err as Error).message}`,
+    });
+    if (args.json) io.stdout(JSON.stringify({ status: 'skipped:bad-payload', error: 'stdin read failed' }) + '\n');
+    return { ok: false };
+  }
+
   try {
     const parsed = JSON.parse(raw) as unknown;
-    payload = HookPayloadSchema.parse(parsed);
+    const value = HookPayloadSchema.parse(parsed);
+    return { ok: true, value };
   } catch (err) {
-    await appendAudit({
+    await audit({
       ts: new Date().toISOString(),
       session_id: null,
       cwd: null,
@@ -85,76 +474,25 @@ export async function executeMemoryAutoExtractCommand(
     });
     if (args.json) io.stdout(JSON.stringify({ status: 'skipped:bad-payload', error: (err as Error).message }) + '\n');
     else io.stderr(`auto-extract: bad stdin payload: ${(err as Error).message}\n`);
-    return 0; // hooks must never block CC — return 0 even on bad input
+    return { ok: false };
   }
+}
 
-  // 2. Consent check.
-  const consent = await loadConsent(payload.cwd);
-  if (!consent.enabled) {
-    await appendAudit({
-      ts: new Date().toISOString(),
-      session_id: payload.session_id,
-      cwd: payload.cwd,
-      status: 'skipped:no-consent',
-    });
-    if (args.json) io.stdout(JSON.stringify({ status: 'skipped:no-consent', cwd: payload.cwd }) + '\n');
-    return 0;
-  }
-
-  // 3. Transcript exists?
-  if (!existsSync(payload.transcript_path)) {
-    await appendAudit({
-      ts: new Date().toISOString(),
-      session_id: payload.session_id,
-      cwd: payload.cwd,
-      status: 'skipped:no-transcript',
-      error: payload.transcript_path,
-    });
-    if (args.json) io.stdout(JSON.stringify({ status: 'skipped:no-transcript', transcript_path: payload.transcript_path }) + '\n');
-    return 0;
-  }
-
-  // 4. Load window.
-  const { loadRecentTranscriptWindow, DEFAULT_WINDOW_BYTES } = await import('../memory/auto-extract-transcript.js');
-  const window = loadRecentTranscriptWindow(payload.transcript_path, args.maxBytes ?? DEFAULT_WINDOW_BYTES);
-  if (window.turnsRead === 0) {
-    await appendAudit({
-      ts: new Date().toISOString(),
-      session_id: payload.session_id,
-      cwd: payload.cwd,
-      status: 'skipped:empty-window',
-      turns_read: 0,
-      bytes: 0,
-    });
-    if (args.json) io.stdout(JSON.stringify({ status: 'skipped:empty-window' }) + '\n');
-    return 0;
-  }
-
-  // 5. LLM stub — T10 will replace with the LM Studio extraction runner.
-  await appendAudit({
-    ts: new Date().toISOString(),
-    session_id: payload.session_id,
-    cwd: payload.cwd,
-    status: 'skipped:llm-not-wired',
-    turns_read: window.turnsRead,
-    bytes: window.bytes,
-  });
+async function emit(
+  io: CliIO,
+  args: AutoExtractArgs,
+  status: AutoExtractStatus,
+  audit: (entry: AuditEntry) => Promise<void>,
+  entry: AuditEntry
+): Promise<void> {
+  await audit(entry);
   if (args.json) {
-    io.stdout(JSON.stringify({
-      status: 'skipped:llm-not-wired',
-      session_id: payload.session_id,
-      cwd: payload.cwd,
-      turns_read: window.turnsRead,
-      bytes: window.bytes,
-    }) + '\n');
+    io.stdout(JSON.stringify({ ...entry, status }) + '\n');
   }
-  return 0;
 }
 
 /** Drain process.stdin into a string. CC pipes the hook payload as a single short blob. */
 async function readAllStdin(): Promise<string> {
-  // process.stdin is async iterable in Node 20+. We don't time-limit here —
-  // CC writes the payload synchronously and then closes.
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) {
     chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
@@ -162,40 +500,33 @@ async function readAllStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-interface Consent { readonly enabled: boolean; }
-
-async function loadConsent(cwd: string): Promise<Consent> {
-  const path = join(cwd, '.relay', 'auto-extract.json');
-  try {
-    const st = await stat(path);
-    if (!st.isFile()) return { enabled: false };
-  } catch {
-    return { enabled: false };
-  }
-  try {
-    const raw = await readFile(path, 'utf8');
-    const parsed = ConsentSchema.parse(JSON.parse(raw));
-    return { enabled: parsed.enabled === true };
-  } catch (err) {
-    // Malformed consent file = treat as no-consent. Surface via audit log only.
-    await appendAudit({
-      ts: new Date().toISOString(),
-      session_id: null,
-      cwd,
-      status: 'skipped:no-consent',
-      error: `bad consent file: ${(err as Error).message}`,
-    });
-    return { enabled: false };
-  }
-}
-
-async function appendAudit(entry: AuditEntry): Promise<void> {
-  const path = join(homedir(), '.relay', 'auto-extract.log');
+async function appendAudit(entry: AuditEntry, overridePath?: string): Promise<void> {
+  const path = overridePath ?? join(homedir(), '.relay', 'auto-extract.log');
   try {
     await mkdir(dirname(path), { recursive: true });
     await appendFile(path, JSON.stringify(entry) + '\n', 'utf8');
   } catch (err) {
-    // Audit log is best-effort. Surface to stderr so loss is observable.
     process.stderr.write(`auto-extract: audit-log write failed: ${(err as Error).message}\n`);
   }
 }
+
+/**
+ * Estimate redaction "hits" by counting `[REDACTED:` markers introduced by the
+ * pipeline. Cheap and good enough for an audit log signal.
+ */
+function countRedactionHits(before: string, after: string): number {
+  const beforeCount = (before.match(/\[REDACTED:/g) ?? []).length;
+  const afterCount = (after.match(/\[REDACTED:/g) ?? []).length;
+  return Math.max(0, afterCount - beforeCount);
+}
+
+function parsePositiveInt(v: unknown): number | undefined {
+  if (typeof v !== 'string') return undefined;
+  const n = Number.parseInt(v, 10);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return n;
+}
+
+// Keep the imports above marked as used for downstream type references.
+void readFile;
+void stat;
