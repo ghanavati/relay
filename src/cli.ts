@@ -162,6 +162,9 @@ SETUP
     [--enable-auto-extract]                Write per-workdir auto-extract consent file
   relay update [--check|--apply] [--json]  Self-update Relay (default: --check)
     [--force]                              Bypass signed-tag-ahead requirement
+  relay setup-llm <target> [--write] [--json]
+                                           Per-LLM init helper
+                                           targets: codex | lmstudio | openrouter | anthropic
   relay completion <bash|zsh|fish>         Emit shell completion script
 
 EXPORT
@@ -544,6 +547,22 @@ async function main(): Promise<number> {
       apply,
       json: isBool(flags, 'json'),
       force: isBool(flags, 'force'),
+    }, io);
+  }
+  if (cmd === 'setup-llm') {
+    const flags = parseFlags(rest);
+    const target = flags.positionals[0];
+    const validTargets = ['codex', 'lmstudio', 'openrouter', 'anthropic'] as const;
+    type Target = typeof validTargets[number];
+    if (!target || !(validTargets as readonly string[]).includes(target)) {
+      io.stderr(`relay setup-llm requires <target>. Try: ${validTargets.join(' / ')}\n`);
+      return 2;
+    }
+    const { executeSetupLlmCommand } = await import('./cli/cmd-setup-llm.js');
+    return executeSetupLlmCommand({
+      target: target as Target,
+      write: isBool(flags, 'write'),
+      json: isBool(flags, 'json'),
     }, io);
   }
   if (cmd === 'compare') {
