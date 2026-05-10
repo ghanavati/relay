@@ -16,7 +16,7 @@ export interface CompletionArgs {
 
 const COMMANDS = [
   'run', 'parallel', 'history', 'doctor', 'diff', 'compare', 'init',
-  'memory', 'completion', 'help',
+  'update', 'memory', 'completion', 'help',
 ] as const;
 
 const MEMORY_ACTIONS = ['remember', 'recall', 'show-context', 'get', 'hook', 'to-rules'] as const;
@@ -62,7 +62,7 @@ _relay_complete() {
     --rules-file|--spec) COMPREPLY=( \$(compgen -f -- "\$cur") ); return 0;;
   esac
 
-  COMPREPLY=( \$(compgen -W "--json --provider --model --workdir --type --tag --pinned --token-budget --limit --status --max-concurrency --auto --quick --install --uninstall --rules-file --timeout-ms --reasoning-effort --color --help" -- "\$cur") )
+  COMPREPLY=( \$(compgen -W "--json --provider --model --workdir --type --tag --pinned --token-budget --limit --status --max-concurrency --auto --quick --install --uninstall --rules-file --timeout-ms --reasoning-effort --check --apply --force --color --help" -- "\$cur") )
 }
 complete -F _relay_complete relay
 `;
@@ -127,6 +127,9 @@ _relay() {
     '--uninstall[uninstall hook]' \\
     '--rules-file[rules file path]' \\
     '--reasoning-effort[codex reasoning effort]' \\
+    '--check[check for updates only]' \\
+    '--apply[pull, build, and test updates]' \\
+    '--force[bypass signed-tag-ahead requirement]' \\
     '--color[auto|always|never]' \\
     '--help[show help]'
 }
@@ -161,6 +164,9 @@ function fish(): string {
   lines.push(`${cmd} -l uninstall -d 'uninstall hook'`);
   lines.push(`${cmd} -l rules-file -d 'rules file path' -r`);
   lines.push(`${cmd} -l reasoning-effort -d 'codex reasoning effort'`);
+  lines.push(`${cmd} -l check -d 'check for updates only'`);
+  lines.push(`${cmd} -l apply -d 'pull, build, and test updates'`);
+  lines.push(`${cmd} -l force -d 'bypass signed-tag-ahead requirement'`);
   lines.push(`${cmd} -l color -d 'auto|always|never' -xa 'auto always never'`);
   lines.push(`${cmd} -l help -s h -d 'show help'`);
   lines.push(`${cmd} -l version -s V -d 'show version'`);

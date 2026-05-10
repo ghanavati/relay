@@ -119,6 +119,8 @@ DELEGATION COMMANDS
 
 SETUP
   relay init [--auto|--quick] [--json]     Interactive setup wizard
+  relay update [--check|--apply] [--json]  Self-update Relay (default: --check)
+    [--force]                              Bypass signed-tag-ahead requirement
   relay completion <bash|zsh|fish>         Emit shell completion script
 
 GENERAL
@@ -352,6 +354,18 @@ async function main(): Promise<number> {
     const flags = parseFlags(rest);
     const { executeInitCommand } = await import('./cli/cmd-init.js');
     return executeInitCommand({ auto: isBool(flags, 'auto'), quick: isBool(flags, 'quick'), json: isBool(flags, 'json') }, io);
+  }
+  if (cmd === 'update') {
+    const flags = parseFlags(rest);
+    const { executeUpdateCommand } = await import('./cli/cmd-update.js');
+    const apply = isBool(flags, 'apply');
+    const check = isBool(flags, 'check') || !apply;
+    return executeUpdateCommand({
+      check,
+      apply,
+      json: isBool(flags, 'json'),
+      force: isBool(flags, 'force'),
+    }, io);
   }
   if (cmd === 'compare') {
     const flags = parseFlags(rest);
