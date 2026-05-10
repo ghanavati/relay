@@ -122,7 +122,7 @@ export async function executeMemoryShowContextCommand(
 // not wherever Relay's CWD happens to be — required for --global installs to work
 // correctly across every project the user opens.
 export const HOOK_SCRIPT =
-  'relay memory recall --token-budget 800 --type lesson --type fact --type decision --type context --workdir "${CLAUDE_PROJECT_DIR:-$PWD}" --json 2>/dev/null | jq -c \'{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:(if (.memories | length > 0) then "## Recalled memories\\n\\n" + (.memories | map("- " + .content) | join("\\n\\n")) else "" end)}}\' 2>/dev/null || true';
+  'relay context emit --target cc --workdir "${CLAUDE_PROJECT_DIR:-$PWD}" 2>/dev/null || true';
 const HOOK_ID = 'relay-memory-session-start';
 
 // SessionEnd hook: pipes CC's SessionEnd payload (JSON on stdin) to the auto-extract
