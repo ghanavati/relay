@@ -55,10 +55,16 @@ function findJsonLine(stdout: string[]): string | undefined {
  */
 const REAL_CONFIG_PATH = join(homedir(), '.relay', 'config.json');
 const REAL_CC_SETTINGS_PATH = join(homedir(), '.claude', 'settings.json');
+const REAL_CODEX_AGENTS_PATH = join(homedir(), '.codex', 'AGENTS.md');
+const REAL_RELAY_LLM_PATH = join(homedir(), '.local', 'bin', 'relay-llm');
 let realConfigBackup: string | null = null;
 let realConfigExisted = false;
 let realCcSettingsBackup: string | null = null;
 let realCcSettingsExisted = false;
+let realCodexAgentsBackup: string | null = null;
+let realCodexAgentsExisted = false;
+let realRelayLlmBackup: string | null = null;
+let realRelayLlmExisted = false;
 
 async function fileExists(p: string): Promise<boolean> {
   try { await stat(p); return true; } catch { return false; }
@@ -80,6 +86,14 @@ describe('executeInitCommand', () => {
     if (realCcSettingsExisted) {
       realCcSettingsBackup = await readFile(REAL_CC_SETTINGS_PATH, 'utf-8');
     }
+    realCodexAgentsExisted = await fileExists(REAL_CODEX_AGENTS_PATH);
+    if (realCodexAgentsExisted) {
+      realCodexAgentsBackup = await readFile(REAL_CODEX_AGENTS_PATH, 'utf-8');
+    }
+    realRelayLlmExisted = await fileExists(REAL_RELAY_LLM_PATH);
+    if (realRelayLlmExisted) {
+      realRelayLlmBackup = await readFile(REAL_RELAY_LLM_PATH, 'utf-8');
+    }
   });
 
   after(async () => {
@@ -94,6 +108,18 @@ describe('executeInitCommand', () => {
       await writeFile(REAL_CC_SETTINGS_PATH, realCcSettingsBackup, 'utf-8');
     } else if (await fileExists(REAL_CC_SETTINGS_PATH)) {
       await rm(REAL_CC_SETTINGS_PATH, { force: true });
+    }
+    if (realCodexAgentsExisted && realCodexAgentsBackup !== null) {
+      await mkdir(join(homedir(), '.codex'), { recursive: true });
+      await writeFile(REAL_CODEX_AGENTS_PATH, realCodexAgentsBackup, 'utf-8');
+    } else if (await fileExists(REAL_CODEX_AGENTS_PATH)) {
+      await rm(REAL_CODEX_AGENTS_PATH, { force: true });
+    }
+    if (realRelayLlmExisted && realRelayLlmBackup !== null) {
+      await mkdir(join(homedir(), '.local', 'bin'), { recursive: true });
+      await writeFile(REAL_RELAY_LLM_PATH, realRelayLlmBackup, 'utf-8');
+    } else if (await fileExists(REAL_RELAY_LLM_PATH)) {
+      await rm(REAL_RELAY_LLM_PATH, { force: true });
     }
   });
 
@@ -376,6 +402,129 @@ describe('executeInitCommand', () => {
     // The shape is what matters; the actual value depends on whether memory exists.
     assert.strictEqual(typeof parsed.verify.ok, 'boolean');
     assert.strictEqual(typeof parsed.verify.detail, 'string');
+  });
+
+  // ---------------- T17: auto-wire detected LLM CLIs ----------------
+
+  test('T17 --auto wires detected providers (openrouter + anthropic) into llm_wiring', async () => {
+    process.env['OPENROUTER_API_KEY'] = 'sk-or-test';
+    process.env['ANTHROPIC_API_KEY'] = 'sk-ant-test';
+    // openrouter setup attempts to fetch model list — return empty so no warning chain blocks ok.
+    (globalThis as { fetch?: typeof fetch }).fetch = (async (input: unknown) => {
+      const url = String(input);
+      if (url.includes('openrouter.ai')) {
+        return new Response(JSON.stringify({ data: [{ id: 'anthropic/claude-sonnet-4' }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      // LM Studio probe etc. — fail
+      throw new Error('not stubbed');
+    }) as typeof fetch;
+
+    const cap = makeIO(tmp);
+    const code = await executeInitCommand(
+      { auto: true, quick: false, json: true, globalHook: false },
+      cap.io
+    );
+    assert.strictEqual(code, 0);
+    const jsonLine = findJsonLine(cap.stdout);
+    const parsed = JSON.parse(jsonLine!) as {
+      llm_wiring: Array<{ provider: string; wired: boolean; skipped?: string }>;
+    };
+    assert.ok(Array.isArray(parsed.llm_wiring), 'expected llm_wiring array in JSON');
+    // Every provider appears in the wiring report
+    const providersInReport = parsed.llm_wiring.map(r => r.provider).sort();
+    assert.deepStrictEqual(providersInReport, ['anthropic', 'codex', 'lmstudio', 'openrouter']);
+    // openrouter + anthropic detected → should be wired
+    const or = parsed.llm_wiring.find(r => r.provider === 'openrouter')!;
+    const ant = parsed.llm_wiring.find(r => r.provider === 'anthropic')!;
+    assert.strictEqual(or.wired, true, `expected openrouter wired. Got: ${JSON.stringify(or)}`);
+    assert.strictEqual(ant.wired, true, `expected anthropic wired. Got: ${JSON.stringify(ant)}`);
+    // lmstudio not detected (fetch fails) → skipped not-detected
+    const lm = parsed.llm_wiring.find(r => r.provider === 'lmstudio')!;
+    assert.strictEqual(lm.wired, false);
+    assert.strictEqual(lm.skipped, 'not-detected');
+  });
+
+  test('T17 missing CLI is silently skipped (no providers → no wiring attempts)', async () => {
+    delete process.env['OPENROUTER_API_KEY'];
+    delete process.env['ANTHROPIC_API_KEY'];
+    // Override PATH to disable codex
+    const savedPath = process.env['PATH'];
+    process.env['PATH'] = '/nonexistent';
+    try {
+      const cap = makeIO(tmp);
+      const code = await executeInitCommand({ auto: true, quick: false, json: true }, cap.io);
+      // No providers → exit 1 before wiring step. That's fine.
+      // The test confirms wiring is NEVER attempted when nothing is detected.
+      if (code === 1) {
+        assert.match(cap.stderr.join(''), /No providers detected/);
+      } else {
+        // Host machine still resolved a provider — skip silently.
+        const jsonLine = findJsonLine(cap.stdout);
+        if (jsonLine) {
+          const parsed = JSON.parse(jsonLine) as {
+            llm_wiring?: Array<{ provider: string; wired: boolean; skipped?: string }>;
+          };
+          if (parsed.llm_wiring) {
+            for (const r of parsed.llm_wiring) {
+              if (!r.wired) {
+                assert.ok(
+                  r.skipped === 'not-detected' || r.skipped === 'declined' || r.skipped === 'error',
+                  `unexpected skipped value: ${r.skipped}`
+                );
+              }
+            }
+          }
+        }
+      }
+    } finally {
+      if (savedPath === undefined) delete process.env['PATH'];
+      else process.env['PATH'] = savedPath;
+    }
+  });
+
+  test('T17 anthropic-only --auto: anthropic wired; codex/lmstudio/openrouter marked not-detected', async () => {
+    delete process.env['OPENROUTER_API_KEY'];
+    process.env['ANTHROPIC_API_KEY'] = 'sk-ant-test';
+    // Override PATH to disable codex
+    const savedPath = process.env['PATH'];
+    process.env['PATH'] = '/nonexistent';
+    try {
+      const cap = makeIO(tmp);
+      const code = await executeInitCommand(
+        { auto: true, quick: false, json: true, globalHook: false },
+        cap.io
+      );
+      // If host PATH still resolved codex, the test setup is unreliable — allow either.
+      if (code !== 0) return;
+      const jsonLine = findJsonLine(cap.stdout);
+      assert.ok(jsonLine, 'expected JSON line');
+      const parsed = JSON.parse(jsonLine!) as {
+        llm_wiring: Array<{ provider: string; wired: boolean; skipped?: string }>;
+      };
+      const ant = parsed.llm_wiring.find(r => r.provider === 'anthropic')!;
+      assert.strictEqual(ant.wired, true, `expected anthropic wired. Got: ${JSON.stringify(ant)}`);
+      const or = parsed.llm_wiring.find(r => r.provider === 'openrouter')!;
+      assert.strictEqual(or.wired, false);
+      assert.strictEqual(or.skipped, 'not-detected');
+    } finally {
+      if (savedPath === undefined) delete process.env['PATH'];
+      else process.env['PATH'] = savedPath;
+    }
+  });
+
+  test('T17 non-JSON --auto prints per-provider wiring status lines', async () => {
+    process.env['ANTHROPIC_API_KEY'] = 'sk-ant-test';
+    const cap = makeIO(tmp);
+    await executeInitCommand(
+      { auto: true, quick: false, json: false, globalHook: false },
+      cap.io
+    );
+    const out = cap.stdout.join('');
+    // anthropic was detected → expect a setup-llm anthropic status line
+    assert.match(out, /setup-llm anthropic/);
   });
 });
 

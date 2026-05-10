@@ -141,7 +141,7 @@ function upsertManagedBlock(text: string, block: string): string {
   return text + sep + block + '\n';
 }
 
-async function setupCodex(args: SetupLlmArgs): Promise<SetupLlmResult> {
+export async function setupCodex(args: SetupLlmArgs): Promise<SetupLlmResult> {
   const actions: string[] = [];
   const warnings: string[] = [];
   const agentsPath = getCodexAgentsPath();
@@ -192,7 +192,7 @@ interface LmStudioModel {
   id: string;
 }
 
-async function setupLmStudio(args: SetupLlmArgs): Promise<SetupLlmResult> {
+export async function setupLmStudio(args: SetupLlmArgs): Promise<SetupLlmResult> {
   const actions: string[] = [];
   const warnings: string[] = [];
   const probe = await probeLmStudio();
@@ -275,7 +275,7 @@ async function fetchOpenRouterModels(apiKey: string): Promise<OpenRouterModel[]>
   }
 }
 
-async function setupOpenRouter(args: SetupLlmArgs): Promise<SetupLlmResult> {
+export async function setupOpenRouter(args: SetupLlmArgs): Promise<SetupLlmResult> {
   const actions: string[] = [];
   const warnings: string[] = [];
   const probe = probeEnvKey('OPENROUTER_API_KEY', 'openrouter');
@@ -313,7 +313,7 @@ async function setupOpenRouter(args: SetupLlmArgs): Promise<SetupLlmResult> {
   };
 }
 
-async function setupAnthropic(args: SetupLlmArgs): Promise<SetupLlmResult> {
+export async function setupAnthropic(args: SetupLlmArgs): Promise<SetupLlmResult> {
   const actions: string[] = [];
   const warnings: string[] = [];
   const probe = probeEnvKey('ANTHROPIC_API_KEY', 'anthropic');
