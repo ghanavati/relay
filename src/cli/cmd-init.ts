@@ -300,6 +300,71 @@ export async function executeInitCommand(args: InitArgs, io: CliIO): Promise<num
     config.auto_extract = { ...(config.auto_extract ?? {}), model: chosenLmModel };
   }
 
+  // Step 6b — Wire detected LLM CLIs (T17)
+  // For each provider whose probe succeeded, optionally call the per-LLM setup
+  // helper from cmd-setup-llm.ts. Interactive: Y/n confirm with default Y.
+  // --auto / --yes: wire without prompting. Errors per provider are warned but
+  // do not abort init.
+  const llmWiringResults: Array<{
+    provider: string;
+    wired: boolean;
+    skipped?: 'declined' | 'not-detected' | 'error';
+    detail?: string;
+  }> = [];
+  const llmTargets = [
+    { name: 'codex', detected: codex.status === 'ok' },
+    { name: 'lmstudio', detected: lmstudio.status === 'ok' },
+    { name: 'openrouter', detected: openrouter.status === 'ok' },
+    { name: 'anthropic', detected: anthropic.status === 'ok' },
+  ] as const;
+
+  for (const t of llmTargets) {
+    if (!t.detected) {
+      llmWiringResults.push({ provider: t.name, wired: false, skipped: 'not-detected' });
+      continue;
+    }
+    let wantWire = false;
+    if (rl) {
+      wantWire = await ask(rl, `\nWire Relay context-emit into ${t.name}?`);
+    } else if (args.auto) {
+      wantWire = true;
+    }
+    if (!wantWire) {
+      llmWiringResults.push({ provider: t.name, wired: false, skipped: 'declined' });
+      continue;
+    }
+    try {
+      const { setupCodex, setupLmStudio, setupOpenRouter, setupAnthropic } =
+        await import('./cmd-setup-llm.js');
+      const setupArgs = { target: t.name, write: true, json: true } as const;
+      const result =
+        t.name === 'codex' ? await setupCodex(setupArgs as never) :
+        t.name === 'lmstudio' ? await setupLmStudio(setupArgs as never) :
+        t.name === 'openrouter' ? await setupOpenRouter(setupArgs as never) :
+        await setupAnthropic(setupArgs as never);
+      llmWiringResults.push({
+        provider: t.name,
+        wired: result.ok,
+        detail: result.ok ? result.actions[0] : (result.warnings[0] ?? 'setup returned not-ok'),
+        ...(result.ok ? {} : { skipped: 'error' as const }),
+      });
+      if (!args.json) {
+        const badge = result.ok ? '✓' : '!';
+        io.stdout(`${badge} setup-llm ${t.name}: ${result.ok ? 'wired' : (result.warnings[0] ?? 'failed')}\n`);
+      }
+    } catch (err) {
+      llmWiringResults.push({
+        provider: t.name,
+        wired: false,
+        skipped: 'error',
+        detail: (err as Error).message,
+      });
+      if (!args.json) {
+        io.stderr(`(skipped setup-llm ${t.name}: ${(err as Error).message})\n`);
+      }
+    }
+  }
+
   // Per-workdir auto-extract consent (--enable-auto-extract)
   let enabledAutoExtract = false;
   if (args.enableAutoExtract) {
@@ -347,6 +412,7 @@ export async function executeInitCommand(args: InitArgs, io: CliIO): Promise<num
         cc_memory_found: ccMemory,
         lm_model: chosenLmModel,
         auto_extract_enabled: enabledAutoExtract,
+        llm_wiring: llmWiringResults,
         verify: { ok: verify.ok, detail: verify.detail },
       }) + '\n'
     );
