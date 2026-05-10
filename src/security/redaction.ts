@@ -28,6 +28,17 @@ export const REDACTION_PATTERNS: readonly RedactionPattern[] = [
     replacement: "[REDACTED:API_KEY]",
   },
   {
+    // Matches env-style assignments where the identifier contains a secret-suggestive
+    // keyword (KEY, SECRET, TOKEN, PASSWORD, PWD, CREDENTIAL) as a complete `_`-delimited
+    // segment. The keyword may appear anywhere in the identifier, e.g. MY_API_KEY=...,
+    // USER_DB_PASSWORD=..., GITHUB_TOKEN=.... Identifier is preserved in the replacement
+    // so logs remain useful; only the value is redacted.
+    name: "env_assignment",
+    pattern:
+      /\b((?:[A-Z][A-Z0-9]*_)*(?:KEY|SECRET|TOKEN|PASSWORD|PWD|CREDENTIAL)(?:_[A-Z0-9]+)*\s*=\s*)\S+/g,
+    replacement: "$1[REDACTED:ENV_SECRET]",
+  },
+  {
     name: "private_key",
     pattern: /-----BEGIN [A-Z]+ PRIVATE KEY-----[\s\S]+?-----END [A-Z]+ PRIVATE KEY-----/g,
     replacement: "[REDACTED:PRIVATE_KEY]",
