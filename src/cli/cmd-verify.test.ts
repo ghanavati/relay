@@ -1,12 +1,13 @@
 process.env['RELAY_DB_PATH'] = ':memory:';
 
-import { test, describe, beforeEach } from 'node:test';
+import { test, describe, beforeEach, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { executeVerifyCommand, type VerifyCheck } from './cmd-verify.js';
 import { getDb } from '../runtime/store/db.js';
+import { MemoryStore } from '../memory/memory-store.js';
 import type { CliIO } from './commands.js';
 
 interface CapturedIO {

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Hardened the one-command installer and setup flow: non-interactive setup is now the default, `relay setup --clean` removes Relay-managed hooks idempotently, SessionEnd hook logging creates `~/.relay` before redirecting, and installer verification now runs `relay verify --json`.
+
 ### Beyond v0.2 (planned)
 - v0.3.0: TUI visual layer (Ink) for history + live run progress + cost dashboard
 - v0.4.0: skill packs (slim), `relay run --pipe`, `relay queue cron`, `relay watch <dir>`, brew formula
