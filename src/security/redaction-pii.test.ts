@@ -124,3 +124,80 @@ describe('redactSecretsAndPII — PII patterns', () => {
     assert.match(result, /\[REDACTED:OPENAI_KEY\]/);
   });
 });
+
+describe('redactSecretsAndPII — T5: consent.extra_redaction_patterns', () => {
+  test('valid extra pattern is applied with [REDACTED:USER_PATTERN] marker', () => {
+    const input = 'employee EMP-123456 reported issue on customer EMP-987654';
+    const result = redactSecretsAndPII(
+      input,
+      [{ name: 'employee_id', pattern: 'EMP-[0-9]{6}', replacement: '[ignored]' }],
+    );
+    const occurrences = result.match(/\[REDACTED:USER_PATTERN\]/g) ?? [];
+    assert.strictEqual(occurrences.length, 2, 'both EMP IDs are redacted');
+    assert.doesNotMatch(result, /EMP-123456/);
+    assert.doesNotMatch(result, /EMP-987654/);
+  });
+
+  test('per-pattern replacement field is intentionally ignored (uniform marker)', () => {
+    const result = redactSecretsAndPII(
+      'project CODE-XYZ shipped',
+      [{ name: 'code', pattern: 'CODE-[A-Z]+', replacement: '[CUSTOM]' }],
+    );
+    assert.match(result, /\[REDACTED:USER_PATTERN\]/);
+    // The user-supplied replacement must NOT appear — uniform marker only.
+    assert.doesNotMatch(result, /\[CUSTOM\]/);
+  });
+
+  test('malformed regex is logged via onPatternError and skipped (pipeline keeps running)', () => {
+    const errors: Array<{ name: string; message: string }> = [];
+    const result = redactSecretsAndPII(
+      'AKIAIOSFODNN7EXAMPLE and EMP-123456 still here',
+      [
+        { name: 'broken', pattern: '[unclosed', replacement: '[X]' },
+        { name: 'employee_id', pattern: 'EMP-[0-9]{6}', replacement: '[X]' },
+      ],
+      (name, err) => errors.push({ name, message: err.message }),
+    );
+    // Built-in pattern still ran (proves the pipeline didn't crash)
+    assert.match(result, /\[REDACTED:AWS_KEY\]/);
+    // Valid second extra pattern still applied
+    assert.match(result, /\[REDACTED:USER_PATTERN\]/);
+    assert.doesNotMatch(result, /EMP-123456/);
+    // The bad pattern was logged
+    assert.strictEqual(errors.length, 1);
+    assert.strictEqual(errors[0]!.name, 'broken');
+    assert.ok(errors[0]!.message.length > 0, 'error message captured');
+  });
+
+  test('no extras + no errors when called with empty array (default behaviour preserved)', () => {
+    const before = redactSecretsAndPII('clean text with sk-proj-abcdefghijklmnopqrstuvwxyz12345');
+    const after = redactSecretsAndPII('clean text with sk-proj-abcdefghijklmnopqrstuvwxyz12345', []);
+    assert.strictEqual(before, after);
+  });
+
+  test('multiple valid extras compose with built-ins and each other', () => {
+    const result = redactSecretsAndPII(
+      'EMP-123456 and PROJ-XYZ123 and AKIAIOSFODNN7EXAMPLE',
+      [
+        { name: 'emp', pattern: 'EMP-[0-9]+', replacement: '[X]' },
+        { name: 'proj', pattern: 'PROJ-[A-Z0-9]+', replacement: '[Y]' },
+      ],
+    );
+    const userMatches = result.match(/\[REDACTED:USER_PATTERN\]/g) ?? [];
+    assert.strictEqual(userMatches.length, 2);
+    assert.match(result, /\[REDACTED:AWS_KEY\]/);
+  });
+
+  test('onPatternError omitted entirely → bad pattern still skipped, no throw', () => {
+    // No onPatternError sink. Helper must still tolerate the malformed entry.
+    const result = redactSecretsAndPII(
+      'EMP-123456 lives here',
+      [
+        { name: 'broken', pattern: '(unclosed', replacement: '[X]' },
+        { name: 'emp', pattern: 'EMP-[0-9]+', replacement: '[X]' },
+      ],
+    );
+    assert.match(result, /\[REDACTED:USER_PATTERN\]/);
+    assert.doesNotMatch(result, /EMP-123456/);
+  });
+});

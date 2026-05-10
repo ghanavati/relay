@@ -1,158 +1,210 @@
+/**
+ * T29 — Berry helper now spawns a shell command instead of hitting HTTP.
+ *
+ * Tests cover:
+ *   - exit 0 → 'pass'
+ *   - exit non-zero → 'flagged'
+ *   - missing RELAY_BERRY_CMD → 'unavailable' with reason 'berry-not-configured'
+ *   - empty lesson → 'unavailable' (short-circuit, no spawn)
+ *   - spawn error → 'unavailable'
+ *   - timeout → 'unavailable'
+ *   - lesson content delivered to child stdin
+ */
+
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { Writable, Readable } from 'node:stream';
+import type { ChildProcess, spawn } from 'node:child_process';
 import { checkLessonViaBerry } from './auto-extract-berry.js';
 
-describe('checkLessonViaBerry', () => {
-  let savedFetch: typeof fetch | undefined;
+interface FakeChild extends EventEmitter {
+  stdin: Writable;
+  stdout: Readable;
+  stderr: Readable;
+  kill: (signal?: string) => boolean;
+  killed: boolean;
+  pid?: number;
+}
+
+interface MockSpawn {
+  fn: typeof spawn;
+  calls: Array<{ cmd: string; opts: unknown; stdinData: string }>;
+  child: FakeChild;
+  /** Trigger after the call so the test controls when the child exits. */
+  exitWith: (code: number) => void;
+  errorWith: (err: Error) => void;
+}
+
+function makeMockSpawn(): MockSpawn {
+  const calls: MockSpawn['calls'] = [];
+  let stdinChunks: Buffer[] = [];
+
+  const child = new EventEmitter() as FakeChild;
+  // stdin captures whatever the helper pipes in.
+  child.stdin = new Writable({
+    write(chunk: Buffer | string, _enc, cb) {
+      stdinChunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+      cb();
+    },
+    final(cb) {
+      cb();
+    },
+  });
+  child.stdout = Readable.from([]);
+  child.stderr = Readable.from([]);
+  child.killed = false;
+  child.kill = (_signal?: string) => {
+    child.killed = true;
+    return true;
+  };
+
+  const fn = ((cmd: string, opts: unknown): ChildProcess => {
+    calls.push({
+      cmd,
+      opts,
+      get stdinData() {
+        return Buffer.concat(stdinChunks).toString('utf8');
+      },
+    } as unknown as MockSpawn['calls'][number]);
+    // Reset stdin buffer for the *next* call (we leave the captured one alone).
+    stdinChunks = [];
+    return child as unknown as ChildProcess;
+  }) as unknown as typeof spawn;
+
+  return {
+    fn,
+    calls,
+    child,
+    exitWith: (code: number) => {
+      child.emit('close', code);
+    },
+    errorWith: (err: Error) => {
+      child.emit('error', err);
+    },
+  };
+}
+
+describe('checkLessonViaBerry — shell-command (T29)', () => {
+  let savedCmd: string | undefined;
 
   beforeEach(() => {
-    savedFetch = (globalThis as { fetch?: typeof fetch }).fetch;
+    savedCmd = process.env['RELAY_BERRY_CMD'];
+    delete process.env['RELAY_BERRY_CMD'];
   });
 
   afterEach(() => {
-    if (savedFetch) (globalThis as { fetch?: typeof fetch }).fetch = savedFetch;
+    if (savedCmd === undefined) delete process.env['RELAY_BERRY_CMD'];
+    else process.env['RELAY_BERRY_CMD'] = savedCmd;
   });
 
-  test('returns "pass" when Berry verifies the lesson is grounded', async () => {
-    let received: { url: string; body: unknown } | undefined;
-    (globalThis as { fetch?: typeof fetch }).fetch = (async (url: string, init?: RequestInit) => {
-      received = { url, body: JSON.parse(init?.body as string) as unknown };
-      return {
-        ok: true,
-        json: async () => ({ hallucinated: false, score: 0.92 }),
-      } as unknown as Response;
-    }) as typeof fetch;
-
+  test('returns "unavailable" with reason berry-not-configured when env var unset', async () => {
     const result = await checkLessonViaBerry({
-      lessonContent: 'Always run npm test before commit',
-      transcriptSpans: [
-        { source: 'tool:bash', text: 'I ran npm test and it passed before committing' },
-      ],
-      endpoint: 'http://test/check',
-    });
-
-    assert.strictEqual(result.ok, 'pass');
-    assert.ok(received, 'fetch must have been called');
-    assert.strictEqual(received!.url, 'http://test/check');
-    const body = received!.body as { answer: string; spans: Array<{ source: string; text: string }> };
-    assert.strictEqual(body.answer, 'Always run npm test before commit');
-    assert.strictEqual(body.spans.length, 1);
-    assert.strictEqual(body.spans[0]?.source, 'tool:bash');
-  });
-
-  test('returns "flagged" when Berry reports the lesson is hallucinated', async () => {
-    (globalThis as { fetch?: typeof fetch }).fetch = (async () => ({
-      ok: true,
-      json: async () => ({ hallucinated: true, reason: 'no supporting evidence' }),
-    } as unknown as Response)) as typeof fetch;
-
-    const result = await checkLessonViaBerry({
-      lessonContent: 'The build always succeeds in 30 seconds',
-      transcriptSpans: [{ source: 'tool:bash', text: 'unrelated chatter' }],
-      endpoint: 'http://test/check',
-    });
-
-    assert.strictEqual(result.ok, 'flagged');
-  });
-
-  test('accepts the newer normalized envelope { ok: "pass" }', async () => {
-    (globalThis as { fetch?: typeof fetch }).fetch = (async () => ({
-      ok: true,
-      json: async () => ({ ok: 'pass' }),
-    } as unknown as Response)) as typeof fetch;
-
-    const result = await checkLessonViaBerry({
-      lessonContent: 'foo',
+      lessonContent: 'always run npm test',
       transcriptSpans: [{ source: 's', text: 't' }],
-      endpoint: 'http://test/check',
-    });
-    assert.strictEqual(result.ok, 'pass');
-  });
-
-  test('returns "unavailable" when fetch throws (Berry down / network error)', async () => {
-    (globalThis as { fetch?: typeof fetch }).fetch = (async () => {
-      throw new Error('ECONNREFUSED 127.0.0.1:8765');
-    }) as typeof fetch;
-
-    const result = await checkLessonViaBerry({
-      lessonContent: 'lesson content',
-      transcriptSpans: [{ source: 's', text: 't' }],
-      endpoint: 'http://localhost:8765/check',
-    });
-
-    assert.strictEqual(result.ok, 'unavailable');
-    const details = result.details as { error: string };
-    assert.match(details.error, /ECONNREFUSED/);
-  });
-
-  test('returns "unavailable" when Berry returns non-2xx HTTP status', async () => {
-    (globalThis as { fetch?: typeof fetch }).fetch = (async () => ({
-      ok: false,
-      status: 503,
-      json: async () => ({}),
-    } as unknown as Response)) as typeof fetch;
-
-    const result = await checkLessonViaBerry({
-      lessonContent: 'foo',
-      transcriptSpans: [{ source: 's', text: 't' }],
-      endpoint: 'http://test/check',
     });
     assert.strictEqual(result.ok, 'unavailable');
-    const details = result.details as { status: number };
-    assert.strictEqual(details.status, 503);
+    const details = result.details as { reason: string };
+    assert.strictEqual(details.reason, 'berry-not-configured');
   });
 
-  test('returns "unavailable" when Berry returns an unparseable verdict', async () => {
-    (globalThis as { fetch?: typeof fetch }).fetch = (async () => ({
-      ok: true,
-      json: async () => ({ unrelated_field: true }),
-    } as unknown as Response)) as typeof fetch;
-
+  test('returns "unavailable" reason berry-not-configured when env var is whitespace', async () => {
     const result = await checkLessonViaBerry({
-      lessonContent: 'foo',
+      lessonContent: 'lesson',
       transcriptSpans: [{ source: 's', text: 't' }],
-      endpoint: 'http://test/check',
+      cmd: '   ',
     });
     assert.strictEqual(result.ok, 'unavailable');
+    assert.strictEqual((result.details as { reason: string }).reason, 'berry-not-configured');
   });
 
-  test('returns "unavailable" for empty lesson content (no point checking)', async () => {
-    let called = false;
-    (globalThis as { fetch?: typeof fetch }).fetch = (async () => {
-      called = true;
-      return { ok: true, json: async () => ({}) } as unknown as Response;
-    }) as typeof fetch;
-
+  test('returns "unavailable" for empty lesson content (short-circuits before spawn)', async () => {
+    const mock = makeMockSpawn();
     const result = await checkLessonViaBerry({
       lessonContent: '   ',
       transcriptSpans: [{ source: 's', text: 't' }],
-      endpoint: 'http://test/check',
+      cmd: 'true',
+      spawnFn: mock.fn,
     });
     assert.strictEqual(result.ok, 'unavailable');
-    assert.strictEqual(called, false, 'should short-circuit before fetch');
+    assert.strictEqual(mock.calls.length, 0, 'must not spawn for empty lesson');
   });
 
-  test('respects custom timeoutMs and aborts on slow Berry', async () => {
-    (globalThis as { fetch?: typeof fetch }).fetch = ((_url: string, init?: RequestInit) => {
-      return new Promise<Response>((_resolve, reject) => {
-        const signal = init?.signal;
-        if (signal) {
-          signal.addEventListener('abort', () => {
-            const err = new Error('aborted');
-            err.name = 'AbortError';
-            reject(err);
-          });
-        }
-        // Never resolve naturally — only the abort path completes the promise.
-      });
-    }) as typeof fetch;
-
-    const result = await checkLessonViaBerry({
-      lessonContent: 'foo',
+  test('exit 0 → "pass" and lesson content piped on stdin', async () => {
+    const mock = makeMockSpawn();
+    const promise = checkLessonViaBerry({
+      lessonContent: 'always run npm typecheck before commit',
       transcriptSpans: [{ source: 's', text: 't' }],
-      endpoint: 'http://test/check',
-      timeoutMs: 50,
+      cmd: 'fake-berry --check',
+      spawnFn: mock.fn,
     });
+    // Simulate the child closing cleanly on the next tick so the helper
+    // wires its 'close' listener first.
+    setImmediate(() => mock.exitWith(0));
+    const result = await promise;
+    assert.strictEqual(result.ok, 'pass');
+    assert.strictEqual(mock.calls.length, 1);
+    assert.strictEqual(mock.calls[0]!.cmd, 'fake-berry --check');
+    // Confirm the captured stdin matches the lesson body.
+    const stdinData = (mock.calls[0] as unknown as { stdinData: string }).stdinData;
+    assert.strictEqual(stdinData, 'always run npm typecheck before commit');
+  });
+
+  test('non-zero exit → "flagged"', async () => {
+    const mock = makeMockSpawn();
+    const promise = checkLessonViaBerry({
+      lessonContent: 'relay was authored by a bot in 1999',
+      transcriptSpans: [{ source: 's', text: 't' }],
+      cmd: 'fake-berry',
+      spawnFn: mock.fn,
+    });
+    setImmediate(() => mock.exitWith(1));
+    const result = await promise;
+    assert.strictEqual(result.ok, 'flagged');
+    assert.strictEqual((result.details as { code: number }).code, 1);
+  });
+
+  test('spawn error event → "unavailable" with error details', async () => {
+    const mock = makeMockSpawn();
+    const promise = checkLessonViaBerry({
+      lessonContent: 'lesson',
+      transcriptSpans: [{ source: 's', text: 't' }],
+      cmd: 'no-such-binary',
+      spawnFn: mock.fn,
+    });
+    setImmediate(() => mock.errorWith(new Error('ENOENT: no-such-binary')));
+    const result = await promise;
     assert.strictEqual(result.ok, 'unavailable');
+    assert.match((result.details as { error: string }).error, /ENOENT/);
+  });
+
+  test('timeout → "unavailable" reason=timeout and child is killed', async () => {
+    const mock = makeMockSpawn();
+    const promise = checkLessonViaBerry({
+      lessonContent: 'lesson',
+      transcriptSpans: [{ source: 's', text: 't' }],
+      cmd: 'sleep 60',
+      spawnFn: mock.fn,
+      timeoutMs: 25,
+    });
+    // Never call exitWith — the timeout should kick in.
+    const result = await promise;
+    assert.strictEqual(result.ok, 'unavailable');
+    assert.strictEqual((result.details as { reason: string }).reason, 'timeout');
+    assert.strictEqual(mock.child.killed, true);
+  });
+
+  test('process.env RELAY_BERRY_CMD is honoured when no override is passed', async () => {
+    process.env['RELAY_BERRY_CMD'] = 'env-set-cmd';
+    const mock = makeMockSpawn();
+    const promise = checkLessonViaBerry({
+      lessonContent: 'lesson',
+      transcriptSpans: [{ source: 's', text: 't' }],
+      spawnFn: mock.fn,
+    });
+    setImmediate(() => mock.exitWith(0));
+    const result = await promise;
+    assert.strictEqual(result.ok, 'pass');
+    assert.strictEqual(mock.calls[0]!.cmd, 'env-set-cmd');
   });
 });

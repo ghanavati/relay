@@ -1,6 +1,25 @@
 import { REDACTION_PATTERNS, redactSecrets, type RedactionPattern } from './redaction.js';
 
 /**
+ * Shape mirrored from `ConsentConfig.extra_redaction_patterns` so this module
+ * stays free of consent / auto-extract imports. The Zod schema in
+ * `auto-extract-consent.ts` is the source of truth.
+ */
+export interface ConsentExtraPattern {
+  readonly name: string;
+  readonly pattern: string;
+  readonly replacement: string;
+}
+
+/**
+ * Uniform replacement marker for any user-supplied consent pattern. Per spec:
+ * the per-pattern `replacement` field is intentionally NOT used — every match
+ * collapses to `[REDACTED:USER_PATTERN]` so users can't smuggle structured
+ * tokens into transcripts via the consent file.
+ */
+export const USER_PATTERN_REPLACEMENT = '[REDACTED:USER_PATTERN]';
+
+/**
  * Extended PII / secret patterns for the auto-extract pipeline ONLY.
  *
  * These patterns are intentionally separated from REDACTION_PATTERNS because
@@ -73,7 +92,34 @@ export const FULL_PATTERNS: readonly RedactionPattern[] = [...REDACTION_PATTERNS
  *
  * Intended ONLY for the auto-extract pre-redaction step. Do NOT use this for
  * memory writes — over-redaction can corrupt code content stored in memories.
+ *
+ * Optional `extraPatterns` come from the per-workdir consent file
+ * (`extra_redaction_patterns`). Each entry is compiled with
+ * `new RegExp(pattern, 'g')` inside try/catch — a malformed regex is logged
+ * via the optional `onPatternError` sink and silently skipped so a single bad
+ * user pattern can never crash the pipeline. All matches collapse to
+ * `[REDACTED:USER_PATTERN]` (the per-pattern `replacement` is intentionally
+ * ignored).
  */
-export function redactSecretsAndPII(text: string): string {
-  return redactSecrets(text, FULL_PATTERNS);
+export function redactSecretsAndPII(
+  text: string,
+  extraPatterns: readonly ConsentExtraPattern[] = [],
+  onPatternError?: (name: string, error: Error) => void,
+): string {
+  const compiledExtras: RedactionPattern[] = [];
+  for (const entry of extraPatterns) {
+    try {
+      compiledExtras.push({
+        name: `user:${entry.name}`,
+        pattern: new RegExp(entry.pattern, 'g'),
+        replacement: USER_PATTERN_REPLACEMENT,
+      });
+    } catch (err) {
+      onPatternError?.(entry.name, err as Error);
+      // skip — a bad user-supplied regex must never break the pipeline.
+    }
+  }
+  const all: readonly RedactionPattern[] =
+    compiledExtras.length === 0 ? FULL_PATTERNS : [...FULL_PATTERNS, ...compiledExtras];
+  return redactSecrets(text, all);
 }
