@@ -157,7 +157,10 @@ async function readLastActivity(): Promise<LastActivity> {
   } catch { /* db unreachable — leave nulls */ }
 
   try {
-    const logPath = join(homedir(), '.relay', 'auto-extract.log');
+    // T2: unified log — last extract activity is the mtime of relay.ndjson when
+    // any extract.* event has been logged through it. The previous per-feature
+    // `auto-extract.log` is no longer written, so we read the unified path.
+    const logPath = join(homedir(), '.relay', 'relay.ndjson');
     const s = await stat(logPath);
     lastExtractAgoMs = now - s.mtimeMs;
   } catch { /* log doesn't exist yet — never extracted */ }

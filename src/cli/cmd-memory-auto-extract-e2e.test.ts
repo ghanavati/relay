@@ -176,7 +176,11 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
       ].join('\n') + '\n',
       'utf8'
     );
-    auditPath = join(tmp, 'auto-extract.log');
+    // T2: tests use the unified ndjson filename even when redirected via deps.
+    // The on-disk format is identical (wrapped LogEntry ndjson lines), so this
+    // path could be anything — using `relay.ndjson` keeps it consistent with
+    // production.
+    auditPath = join(tmp, 'relay.ndjson');
     clearMemories();
   });
 

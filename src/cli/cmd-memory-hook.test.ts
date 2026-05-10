@@ -663,7 +663,7 @@ describe('executeMemoryHookCommand — marker-based identification', () => {
 
 describe('HOOK_SCRIPT_SESSION_END shape', () => {
   test('contains `mkdir -p "$HOME/.relay"` (Codex BLOCKER fix — log dir must exist before redirect)', () => {
-    // Shell parses `2>>"$HOME/.relay/auto-extract.log"` BEFORE relay runs, so a
+    // Shell parses `2>>"$HOME/.relay/relay.ndjson"` BEFORE relay runs, so a
     // missing ~/.relay directory causes the hook to silently no-op on first install.
     // The mkdir guard must precede the relay invocation.
     assert.match(HOOK_SCRIPT_SESSION_END, /mkdir -p "\$HOME\/\.relay"/);
@@ -676,8 +676,12 @@ describe('HOOK_SCRIPT_SESSION_END shape', () => {
     assert.match(HOOK_SCRIPT_SESSION_END, /relay memory auto-extract --from-stdin/);
   });
 
-  test('appends stderr to ~/.relay/auto-extract.log (does not block CC on hook failure)', () => {
-    assert.match(HOOK_SCRIPT_SESSION_END, /2>>"\$HOME\/\.relay\/auto-extract\.log"/);
+  test('appends stderr to the unified ~/.relay/relay.ndjson (does not block CC on hook failure)', () => {
+    // T2: redirect target is the unified ndjson stream. The pipeline itself logs
+    // structured outcomes via appendLog; this redirect is a defense-in-depth
+    // fallback for stderr that escapes the in-process logger (e.g. node startup
+    // faults), and both targets converge on the same path.
+    assert.match(HOOK_SCRIPT_SESSION_END, /2>>"\$HOME\/\.relay\/relay\.ndjson"/);
     assert.match(HOOK_SCRIPT_SESSION_END, /\|\| true$/);
   });
 });

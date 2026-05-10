@@ -475,15 +475,39 @@ describe('checkAutoExtractStatus', () => {
   let tmpDir: string;
   let logPath: string;
   let savedEnv: string | undefined;
+  let savedLogPath: string | undefined;
   let savedFetch: typeof fetch | undefined;
   let savedOpenRouter: string | undefined;
   let savedAnthropic: string | undefined;
 
+  // T2: build a unified-log entry the way `appendLog` does — wrapped with
+  // event='extract.*' and a meta payload that carries the legacy status string.
+  function unifiedLine(opts: { tsMs: number; status: string }): string {
+    const event =
+      opts.status === 'ok' || opts.status === 'partial:berry-flag'
+        ? 'extract.write'
+        : opts.status.startsWith('skipped:')
+          ? 'extract.skip'
+          : opts.status.startsWith('error:')
+            ? 'extract.error'
+            : 'extract.skip';
+    const ok = opts.status === 'ok';
+    return JSON.stringify({
+      ts: opts.tsMs,
+      event,
+      ok,
+      meta: { ts: new Date(opts.tsMs).toISOString(), status: opts.status },
+    });
+  }
+
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'relay-doctor-ae-'));
-    logPath = join(tmpDir, 'auto-extract.log');
+    logPath = join(tmpDir, 'relay.ndjson');
     savedEnv = process.env['RELAY_AUTO_EXTRACT_LOG'];
+    // Point the back-compat env at the unified test log; doctor accepts either
+    // env var to locate the ndjson file.
     process.env['RELAY_AUTO_EXTRACT_LOG'] = logPath;
+    savedLogPath = process.env['RELAY_LOG_PATH'];
     savedFetch = (globalThis as { fetch?: typeof fetch }).fetch;
     savedOpenRouter = process.env['OPENROUTER_API_KEY'];
     savedAnthropic = process.env['ANTHROPIC_API_KEY'];
@@ -492,6 +516,8 @@ describe('checkAutoExtractStatus', () => {
   afterEach(() => {
     if (savedEnv === undefined) delete process.env['RELAY_AUTO_EXTRACT_LOG'];
     else process.env['RELAY_AUTO_EXTRACT_LOG'] = savedEnv;
+    if (savedLogPath === undefined) delete process.env['RELAY_LOG_PATH'];
+    else process.env['RELAY_LOG_PATH'] = savedLogPath;
     if (savedFetch) (globalThis as { fetch?: typeof fetch }).fetch = savedFetch;
     if (savedOpenRouter === undefined) delete process.env['OPENROUTER_API_KEY'];
     else process.env['OPENROUTER_API_KEY'] = savedOpenRouter;
@@ -517,11 +543,11 @@ describe('checkAutoExtractStatus', () => {
 
   test('only-ok recent entries → status ok with counts', () => {
     const now = new Date('2026-05-10T12:00:00Z');
-    const recent = new Date(now.getTime() - 60 * 60 * 1000).toISOString(); // 1h ago
+    const recentMs = now.getTime() - 60 * 60 * 1000; // 1h ago
     const lines = [
-      JSON.stringify({ ts: recent, status: 'ok' }),
-      JSON.stringify({ ts: recent, status: 'ok' }),
-      JSON.stringify({ ts: recent, status: 'skipped:no-consent' }),
+      unifiedLine({ tsMs: recentMs, status: 'ok' }),
+      unifiedLine({ tsMs: recentMs, status: 'ok' }),
+      unifiedLine({ tsMs: recentMs, status: 'skipped:no-consent' }),
     ].join('\n') + '\n';
     writeFileSync(logPath, lines);
     const result = checkAutoExtractStatus(now);
@@ -531,10 +557,10 @@ describe('checkAutoExtractStatus', () => {
 
   test('any error entries → status missing (warn) with counts', () => {
     const now = new Date('2026-05-10T12:00:00Z');
-    const recent = new Date(now.getTime() - 30 * 60 * 1000).toISOString();
+    const recentMs = now.getTime() - 30 * 60 * 1000;
     const lines = [
-      JSON.stringify({ ts: recent, status: 'ok' }),
-      JSON.stringify({ ts: recent, status: 'error:bad-payload' }),
+      unifiedLine({ tsMs: recentMs, status: 'ok' }),
+      unifiedLine({ tsMs: recentMs, status: 'error:bad-payload' }),
     ].join('\n') + '\n';
     writeFileSync(logPath, lines);
     const result = checkAutoExtractStatus(now);
@@ -544,12 +570,12 @@ describe('checkAutoExtractStatus', () => {
 
   test('older-than-24h entries are excluded', () => {
     const now = new Date('2026-05-10T12:00:00Z');
-    const old = new Date(now.getTime() - 25 * 60 * 60 * 1000).toISOString(); // 25h ago
-    const recent = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+    const oldMs = now.getTime() - 25 * 60 * 60 * 1000; // 25h ago
+    const recentMs = now.getTime() - 60 * 60 * 1000;
     const lines = [
-      JSON.stringify({ ts: old, status: 'ok' }),
-      JSON.stringify({ ts: old, status: 'error:expired' }),
-      JSON.stringify({ ts: recent, status: 'ok' }),
+      unifiedLine({ tsMs: oldMs, status: 'ok' }),
+      unifiedLine({ tsMs: oldMs, status: 'error:expired' }),
+      unifiedLine({ tsMs: recentMs, status: 'ok' }),
     ].join('\n') + '\n';
     writeFileSync(logPath, lines);
     const result = checkAutoExtractStatus(now);
@@ -559,12 +585,43 @@ describe('checkAutoExtractStatus', () => {
 
   test('malformed JSON lines are skipped, not fatal', () => {
     const now = new Date('2026-05-10T12:00:00Z');
-    const recent = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+    const recentMs = now.getTime() - 60 * 60 * 1000;
     const lines = [
       'not-json-at-all',
-      JSON.stringify({ ts: recent, status: 'ok' }),
+      unifiedLine({ tsMs: recentMs, status: 'ok' }),
       '{"incomplete":',
-      JSON.stringify({ ts: recent, status: 'skipped:no-consent' }),
+      unifiedLine({ tsMs: recentMs, status: 'skipped:no-consent' }),
+    ].join('\n') + '\n';
+    writeFileSync(logPath, lines);
+    const result = checkAutoExtractStatus(now);
+    assert.strictEqual(result.status, 'ok');
+    assert.strictEqual(result.detail, '1 ok, 1 skipped, 0 error');
+  });
+
+  test('non-extract events in unified log are ignored', () => {
+    // T2: the unified log mixes hooks/recall/extract events. Doctor must
+    // count only extract.* lines and skip everything else.
+    const now = new Date('2026-05-10T12:00:00Z');
+    const recentMs = now.getTime() - 60 * 60 * 1000;
+    const lines = [
+      JSON.stringify({ ts: recentMs, event: 'hook.fire', ok: true }),
+      JSON.stringify({ ts: recentMs, event: 'recall', ok: true }),
+      unifiedLine({ tsMs: recentMs, status: 'ok' }),
+    ].join('\n') + '\n';
+    writeFileSync(logPath, lines);
+    const result = checkAutoExtractStatus(now);
+    assert.strictEqual(result.status, 'ok');
+    assert.strictEqual(result.detail, '1 ok, 0 skipped, 0 error');
+  });
+
+  test('legacy pre-T2 entries (ISO ts + status) are still counted', () => {
+    // Back-compat: a pre-T2 install may still have lines from the old
+    // auto-extract.log shape sitting in the file. Doctor parses both shapes.
+    const now = new Date('2026-05-10T12:00:00Z');
+    const recentIso = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+    const lines = [
+      JSON.stringify({ ts: recentIso, status: 'ok' }),
+      JSON.stringify({ ts: recentIso, status: 'skipped:no-consent' }),
     ].join('\n') + '\n';
     writeFileSync(logPath, lines);
     const result = checkAutoExtractStatus(now);
@@ -574,8 +631,8 @@ describe('checkAutoExtractStatus', () => {
 
   test('check is wired into doctor JSON output', async () => {
     const now = new Date();
-    const recent = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
-    writeFileSync(logPath, JSON.stringify({ ts: recent, status: 'ok' }) + '\n');
+    const recentMs = now.getTime() - 60 * 60 * 1000;
+    writeFileSync(logPath, unifiedLine({ tsMs: recentMs, status: 'ok' }) + '\n');
     applyEnv({ openrouter: 'sk-test', anthropic: 'sk-ant', lmstudioOk: true });
     const cap = makeIO();
     await executeDoctorCommand({ json: true }, cap.io);
