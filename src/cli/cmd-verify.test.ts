@@ -5,7 +5,7 @@ import * as assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { executeVerifyCommand, type VerifyCheck } from './cmd-verify.js';
+import { executeVerifyCommand, type VerifyCheck, type VerifyDeps } from './cmd-verify.js';
 import { getDb } from '../runtime/store/db.js';
 import { MemoryStore } from '../memory/memory-store.js';
 import type { CliIO } from './commands.js';
@@ -97,6 +97,217 @@ describe('executeVerifyCommand', () => {
     assert.strictEqual(parsed.summary.fail, 0, `expected 0 failures, got ${parsed.summary.fail}: ${JSON.stringify(parsed.checks.filter(c => c.status === 'fail'))}`);
     assert.strictEqual(parsed.ok, true);
     assert.strictEqual(code, 0);
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  // ---------------------------------------------------------------------------
+  // T23 — Failure-path coverage (DI stubs via VerifyDeps)
+  // ---------------------------------------------------------------------------
+  // Defaults: real check implementations everywhere except the one under test.
+  // We stub the *other* checks to predictable passes so we isolate the failure
+  // we care about. Non-critical fails (hook) must NOT flip exit code to 1.
+
+  function passingDeps(): VerifyDeps {
+    return {
+      runRememberCheck: async () => ({ name: 'remember', status: 'pass', message: 'stub-pass', critical: true }),
+      runRecallCheck: async () => ({ name: 'recall', status: 'pass', message: 'stub-pass', critical: true }),
+      runContextEmitCheck: async () => ({ name: 'context-emit', status: 'pass', message: 'stub-pass', critical: true }),
+      runHookCheck: async () => ({ name: 'hook', status: 'pass', message: 'stub-pass', critical: false }),
+      runDbRoundtripCheck: async () => ({ name: 'db-roundtrip', status: 'pass', message: 'stub-pass', critical: true }),
+    };
+  }
+
+  test('db write failure → db-roundtrip reports fail (critical) + exit 1', async () => {
+    const cap = makeIO(tmp);
+    const deps: VerifyDeps = {
+      ...passingDeps(),
+      runDbRoundtripCheck: async () => ({
+        name: 'db-roundtrip',
+        status: 'fail',
+        message: 'simulated MemoryStore.remember error: disk I/O',
+        critical: true,
+      }),
+    };
+    const code = await executeVerifyCommand({ json: true }, cap.io, deps);
+    const parsed = JSON.parse(cap.stdout.join('').trim()) as {
+      checks: VerifyCheck[];
+      summary: { pass: number; fail: number; skip: number };
+      ok: boolean;
+    };
+    const dbCheck = parsed.checks.find(c => c.name === 'db-roundtrip');
+    assert.ok(dbCheck, 'db-roundtrip check present');
+    assert.strictEqual(dbCheck.status, 'fail');
+    assert.strictEqual(dbCheck.critical, true);
+    assert.match(dbCheck.message, /disk I\/O/);
+    assert.strictEqual(parsed.ok, false, 'ok=false when critical fails');
+    assert.strictEqual(code, 1, 'exit 1 on critical failure');
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  test('recall returns empty after remember (mocked) → recall reports fail + exit 1', async () => {
+    const cap = makeIO(tmp);
+    const deps: VerifyDeps = {
+      ...passingDeps(),
+      // Simulate the real fail path: remember succeeded, recall returned empty,
+      // so the smoke token is not in any recalled memory.
+      runRecallCheck: async (token: string) => ({
+        name: 'recall',
+        status: 'fail',
+        message: `token ${token} not in recalled memories`,
+        critical: true,
+      }),
+    };
+    const code = await executeVerifyCommand({ json: true }, cap.io, deps);
+    const parsed = JSON.parse(cap.stdout.join('').trim()) as {
+      checks: VerifyCheck[];
+      summary: { pass: number; fail: number; skip: number };
+      ok: boolean;
+    };
+    const recallCheck = parsed.checks.find(c => c.name === 'recall');
+    assert.ok(recallCheck);
+    assert.strictEqual(recallCheck.status, 'fail');
+    assert.match(recallCheck.message, /not in recalled memories/);
+    assert.strictEqual(parsed.summary.fail, 1);
+    assert.strictEqual(parsed.summary.pass, 4);
+    assert.strictEqual(parsed.ok, false);
+    assert.strictEqual(code, 1);
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  test('context emit returns empty (mocked) → context-emit reports fail + exit 1', async () => {
+    const cap = makeIO(tmp);
+    const deps: VerifyDeps = {
+      ...passingDeps(),
+      runContextEmitCheck: async () => ({
+        name: 'context-emit',
+        status: 'fail',
+        message: 'recalled_lessons emitted empty content',
+        critical: true,
+      }),
+    };
+    const code = await executeVerifyCommand({ json: true }, cap.io, deps);
+    const parsed = JSON.parse(cap.stdout.join('').trim()) as {
+      checks: VerifyCheck[];
+      summary: { pass: number; fail: number; skip: number };
+      ok: boolean;
+    };
+    const ctxCheck = parsed.checks.find(c => c.name === 'context-emit');
+    assert.ok(ctxCheck);
+    assert.strictEqual(ctxCheck.status, 'fail');
+    assert.strictEqual(ctxCheck.critical, true);
+    assert.match(ctxCheck.message, /empty content/);
+    assert.strictEqual(parsed.ok, false);
+    assert.strictEqual(code, 1);
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  test('HOOK_SCRIPT mocked-empty → hook reports fail (NON-critical so exit stays 0)', async () => {
+    const cap = makeIO(tmp);
+    // Per cmd-verify.ts, the hook check returns critical:false on a successful
+    // pass. Real-code error paths DO set critical:true, but the spec for this
+    // test is: a non-critical fail must not affect exit code. We stub a
+    // non-critical fail to pin that contract.
+    const deps: VerifyDeps = {
+      ...passingDeps(),
+      runHookCheck: async () => ({
+        name: 'hook',
+        status: 'fail',
+        message: 'HOOK_SCRIPT empty (mocked)',
+        critical: false,
+      }),
+    };
+    const code = await executeVerifyCommand({ json: true }, cap.io, deps);
+    const parsed = JSON.parse(cap.stdout.join('').trim()) as {
+      checks: VerifyCheck[];
+      summary: { pass: number; fail: number; skip: number };
+      ok: boolean;
+    };
+    const hookCheck = parsed.checks.find(c => c.name === 'hook');
+    assert.ok(hookCheck);
+    assert.strictEqual(hookCheck.status, 'fail');
+    assert.strictEqual(hookCheck.critical, false);
+    assert.strictEqual(parsed.summary.fail, 1, 'summary records the failure');
+    // Critical-failed gate did not trip → ok=true and exit 0.
+    assert.strictEqual(parsed.ok, true, 'non-critical fail does not flip ok');
+    assert.strictEqual(code, 0, 'non-critical fail keeps exit 0');
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  test('--json output structure validated under failure (multiple critical fails)', async () => {
+    const cap = makeIO(tmp);
+    const deps: VerifyDeps = {
+      ...passingDeps(),
+      runRememberCheck: async () => ({ name: 'remember', status: 'fail', message: 'remember boom', critical: true }),
+      runDbRoundtripCheck: async () => ({ name: 'db-roundtrip', status: 'fail', message: 'db boom', critical: true }),
+    };
+    const code = await executeVerifyCommand({ json: true }, cap.io, deps);
+    const joined = cap.stdout.join('').trim();
+    // JSON envelope is well-formed even on failure.
+    assert.ok(joined.endsWith('}'));
+    const parsed = JSON.parse(joined) as {
+      checks: VerifyCheck[];
+      summary: { pass: number; fail: number; skip: number };
+      ok: boolean;
+    };
+    // Required top-level keys all present.
+    assert.ok(Array.isArray(parsed.checks));
+    assert.ok(parsed.summary && typeof parsed.summary === 'object');
+    assert.ok(typeof parsed.ok === 'boolean');
+    // Each check still has the canonical shape.
+    for (const ch of parsed.checks) {
+      assert.ok(typeof ch.name === 'string');
+      assert.ok(['pass', 'fail', 'skip'].includes(ch.status));
+      assert.ok(typeof ch.message === 'string');
+      assert.ok(typeof ch.critical === 'boolean');
+    }
+    assert.strictEqual(parsed.summary.fail, 2);
+    assert.strictEqual(parsed.summary.pass, 3);
+    assert.strictEqual(parsed.summary.skip, 0);
+    assert.strictEqual(parsed.ok, false);
+    assert.strictEqual(code, 1);
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  test('only critical fails set exit 1 — non-critical fails alone keep exit 0', async () => {
+    // Mix: a non-critical fail (hook) AND a non-critical pass for everything
+    // else. Confirms the gate is `critical && fail`, not just `fail`.
+    const cap = makeIO(tmp);
+    const deps: VerifyDeps = {
+      ...passingDeps(),
+      runHookCheck: async () => ({ name: 'hook', status: 'fail', message: 'soft fail', critical: false }),
+    };
+    const code = await executeVerifyCommand({ json: true }, cap.io, deps);
+    const parsed = JSON.parse(cap.stdout.join('').trim()) as {
+      checks: VerifyCheck[]; summary: { pass: number; fail: number; skip: number }; ok: boolean;
+    };
+    assert.strictEqual(parsed.summary.fail, 1);
+    assert.strictEqual(parsed.ok, true);
+    assert.strictEqual(code, 0);
+
+    // And the inverse: a single critical fail with all others passing → exit 1.
+    const cap2 = makeIO(tmp);
+    const deps2: VerifyDeps = {
+      ...passingDeps(),
+      runRememberCheck: async () => ({ name: 'remember', status: 'fail', message: 'hard fail', critical: true }),
+    };
+    const code2 = await executeVerifyCommand({ json: true }, cap2.io, deps2);
+    const parsed2 = JSON.parse(cap2.stdout.join('').trim()) as { ok: boolean };
+    assert.strictEqual(parsed2.ok, false);
+    assert.strictEqual(code2, 1);
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  test('human-readable mode under failure shows red failure summary', async () => {
+    const cap = makeIO(tmp);
+    const deps: VerifyDeps = {
+      ...passingDeps(),
+      runDbRoundtripCheck: async () => ({ name: 'db-roundtrip', status: 'fail', message: 'boom', critical: true }),
+    };
+    const code = await executeVerifyCommand({ json: false }, cap.io, deps);
+    const out = cap.stdout.join('');
+    assert.match(out, /relay verify/);
+    assert.match(out, /check\(s\) failed/);
+    assert.strictEqual(code, 1);
     await rm(tmp, { recursive: true, force: true });
   });
 });
