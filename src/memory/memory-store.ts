@@ -1294,7 +1294,6 @@ export class MemoryStore {
   }
 
   /**
-<<<<<<< HEAD
    * Raw single-row fetch including superseded entries — chain walking needs
    * to traverse rows that `getMemory()` deliberately hides. Returns the row
    * (or null) plus its raw `superseded_by` value so callers can decide whether
@@ -1374,7 +1373,9 @@ export class MemoryStore {
     }
 
     return { root: head.memory, root_superseded_by: head.superseded_by, ancestors, descendants };
-=======
+  }
+
+  /**
    * Aggregate per-tag analytics across all active (non-superseded) memories.
    *
    * For each unique tag, returns:
@@ -1439,6 +1440,5 @@ export class MemoryStore {
         if (b.memory_count !== a.memory_count) return b.memory_count - a.memory_count;
         return a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0;
       });
->>>>>>> 8395f9c (feat(memory): tag-stats analytics command)
   }
 }
