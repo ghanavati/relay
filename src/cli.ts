@@ -119,6 +119,7 @@ DELEGATION COMMANDS
 
 SETUP
   relay init [--auto|--quick] [--json]     Interactive setup wizard
+  relay info [--json]                      Overall status summary (binary, DB, hooks, providers)
   relay completion <bash|zsh|fish>         Emit shell completion script
 
 GENERAL
@@ -352,6 +353,11 @@ async function main(): Promise<number> {
     const flags = parseFlags(rest);
     const { executeInitCommand } = await import('./cli/cmd-init.js');
     return executeInitCommand({ auto: isBool(flags, 'auto'), quick: isBool(flags, 'quick'), json: isBool(flags, 'json') }, io);
+  }
+  if (cmd === 'info') {
+    const flags = parseFlags(rest);
+    const { executeInfoCommand } = await import('./cli/cmd-info.js');
+    return executeInfoCommand({ json: isBool(flags, 'json') }, io, VERSION);
   }
   if (cmd === 'compare') {
     const flags = parseFlags(rest);
