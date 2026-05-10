@@ -63,18 +63,13 @@ describe('HOOK_SCRIPT shape', () => {
     assert.match(HOOK_SCRIPT, /--workdir "\$\{CLAUDE_PROJECT_DIR:-\$PWD\}"/);
   });
 
-  test('includes the jq SessionStart additionalContext transform', () => {
-    assert.match(HOOK_SCRIPT, /jq -c/);
-    assert.match(HOOK_SCRIPT, /hookSpecificOutput/);
-    assert.match(HOOK_SCRIPT, /hookEventName:"SessionStart"/);
-    assert.match(HOOK_SCRIPT, /additionalContext/);
+  test('uses relay context emit --target cc (replaces legacy jq pipeline)', () => {
+    assert.match(HOOK_SCRIPT, /relay context emit --target cc/);
+    assert.doesNotMatch(HOOK_SCRIPT, /jq -c/);
   });
 
-  test('recall covers lesson, fact, decision, context types', () => {
-    assert.match(HOOK_SCRIPT, /--type lesson/);
-    assert.match(HOOK_SCRIPT, /--type fact/);
-    assert.match(HOOK_SCRIPT, /--type decision/);
-    assert.match(HOOK_SCRIPT, /--type context/);
+  test('type filtering lives inside relay context emit defaults', () => {
+    assert.match(HOOK_SCRIPT, /--target cc/);
   });
 
   test('falls back gracefully on failure (|| true)', () => {
