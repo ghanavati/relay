@@ -163,6 +163,8 @@ SETUP
     [--session-end-hook]                   Also install SessionEnd auto-extract hook
     [--lm-model <id>]                      Record LM Studio model id into config.auto_extract.model
     [--enable-auto-extract]                Write per-workdir auto-extract consent file
+  relay setup --everything [--workdir P] [--lm-model M] [--yes] [--json]
+                                           One-command installer (init + hooks + auto-extract)
   relay update [--check|--apply] [--json]  Self-update Relay (default: --check)
     [--force]                              Bypass signed-tag-ahead requirement
   relay setup-llm <target> [--write] [--json]
@@ -348,7 +350,6 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     return executeMemoryToRulesCommand({ memoryId, rulesFile, json: isBool(flags, 'json') }, io, io.cwd);
   }
 
-<<<<<<< HEAD
   if (action === 'auto-extract') {
     if (isBool(flags, 'enable')) {
       const { executeMemoryAutoExtractEnableCommand } = await import('./cli/cmd-memory-auto-extract-enable.js');
@@ -582,6 +583,17 @@ async function main(): Promise<number> {
     return executeSetupLlmCommand({
       target: target as Target,
       write: isBool(flags, 'write'),
+      json: isBool(flags, 'json'),
+    }, io);
+  }
+  if (cmd === 'setup') {
+    const flags = parseFlags(rest);
+    const { executeSetupCommand } = await import('./cli/cmd-setup.js');
+    return executeSetupCommand({
+      everything: isBool(flags, 'everything'),
+      workdir: lastOption(flags, 'workdir'),
+      lmModel: lastOption(flags, 'lm-model'),
+      yes: isBool(flags, 'yes'),
       json: isBool(flags, 'json'),
     }, io);
   }
