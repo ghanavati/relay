@@ -6,6 +6,16 @@ Solo CLI for delegating bounded coding tasks to AI workers (Codex, OpenRouter, L
 
 > Not published to npm. Install from source.
 
+### One-line install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ghanavati/relay/main/scripts/install.sh | bash
+```
+
+Clones into `~/.local/share/relay`, builds, runs `npm link`, and (if available) runs `relay setup --everything --yes`. Add `-s -- --yes` to skip the confirmation prompt, or `-s -- --prefix <dir>` to choose a different install location. Re-running updates the checkout in place.
+
+### Manual install
+
 ```bash
 git clone https://github.com/ghanavati/relay.git
 cd relay
