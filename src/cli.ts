@@ -9,7 +9,7 @@
 
 import { argv, exit, cwd } from 'node:process';
 import type { CliIO } from './cli/commands.js';
-import { setColorMode, type ColorMode } from './cli/colors.js';
+import { c, setColorMode, type ColorMode } from './cli/colors.js';
 // T50: env-driven cwd default for `relay memory recall` / `show-context`.
 import { resolveMemoryWorkdir } from './cli/resolve-memory-workdir.js';
 
@@ -66,12 +66,12 @@ const allOptions = (f: ParsedFlags, k: string): string[] => f.options.get(k) ?? 
 const isBool = (f: ParsedFlags, k: string): boolean => f.booleans.has(k);
 
 function printHelp(): void {
-  io.stdout(`relay v${VERSION} — solo CLI for AI delegation + memory
+  io.stdout(`${c.bold(`relay v${VERSION} — solo CLI for AI delegation + memory`)}
 
-USAGE
+${c.bold('USAGE')}
   relay <command> [args] [--flags]
 
-MEMORY COMMANDS
+${c.cyan('MEMORY COMMANDS')}
   relay memory remember <content>          Save a memory entry
     [--type fact|decision|lesson|context|state|handoff]   (default: fact)
     [--tag <tag>] (repeatable)
@@ -143,7 +143,7 @@ MEMORY COMMANDS
     [--workdir <path>]
     [--json]
 
-CONTEXT COMMANDS
+${c.cyan('CONTEXT COMMANDS')}
   relay context emit --target <t>          Emit recalled memories in a per-LLM
                                            wrapper format (replaces hook jq pipeline)
     --target cc|codex|lmstudio-http|lmstudio-cli   (required)
@@ -155,7 +155,7 @@ CONTEXT COMMANDS
                                            memories from leaking into LLM context.
                                            Use 'any' to disable filter.)
 
-DELEGATION COMMANDS
+${c.cyan('DELEGATION COMMANDS')}
   relay run <task>                         Delegate a task to a worker
     [--provider codex|lmstudio|openrouter|anthropic] (default: codex)
     [--model <id>] (required for HTTP providers)
@@ -173,12 +173,12 @@ DELEGATION COMMANDS
   relay diff <run_id> [--json]             Show files_changed + diffs for a run
   relay compare <run_a> <run_b> [--json]   Side-by-side diff of two runs
 
-PROJECT (per-project privacy controls)
+${c.cyan('PROJECT')} (per-project privacy controls)
   relay project disable [--yes] [--json]   Write .relayignore, opt out of extract/recall/hook/share
   relay project enable [--yes] [--json]    Remove .relayignore (re-enable defaults)
   relay project audit [--json]             Read-only scan of committed hooks + workdir memories
 
-SETUP
+${c.cyan('SETUP')}
   relay init [--auto|--quick] [--json]     Interactive setup wizard
     [--no-global-hook]                     Install SessionStart hook to project .claude/ (default ~/.claude)
     [--session-end-hook]                   Also install SessionEnd auto-extract hook
@@ -199,29 +199,29 @@ SETUP
                                            (--json prints one snapshot then exits)
   relay completion <bash|zsh|fish>         Emit shell completion script
 
-EXPORT
+${c.cyan('EXPORT')}
   relay export [--safe]                    Export memories (sanitized by default)
     [--workdir <path>]                     (default: current cwd)
     [--format json|md]                     (default: json)
     [--out <file>]                         (default: stdout)
     [--json]                               (machine summary when --out is set)
 
-PRIVACY
+${c.cyan('PRIVACY')}
   relay pause [--minutes N] [--workdir P] [--json]
                                            Off-switch — sentinel blocks hooks
   relay pause --check [--workdir P]        Silent exit 0 if paused, 1 if not
   relay resume [--workdir P] [--json]      Remove the pause sentinel
 
-GENERAL
+${c.cyan('GENERAL')}
   relay --help, -h                         Show this help
   relay --version, -V                      Show version
   --color=auto|always|never                Force color (overrides NO_COLOR)
 
-DEFERRED TO v0.2
+${c.cyan('DEFERRED TO v0.2')}
   relay budget show [--json]               Stub — reports deferred status (target: 0.2.0)
   relay corpus — see CHANGELOG.md.
 
-DOCS
+${c.cyan('DOCS')}
   https://github.com/ghanavati/relay/tree/main/docs
 `);
 }
