@@ -125,6 +125,13 @@ export const HOOK_SCRIPT =
   'relay memory recall --token-budget 800 --type lesson --type fact --type decision --type context --workdir "${CLAUDE_PROJECT_DIR:-$PWD}" --json 2>/dev/null | jq -c \'{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:(if (.memories | length > 0) then "## Recalled memories\\n\\n" + (.memories | map("- " + .content) | join("\\n\\n")) else "" end)}}\' 2>/dev/null || true';
 const HOOK_ID = 'relay-memory-session-start';
 
+// SessionEnd hook: pipes CC's SessionEnd payload (JSON on stdin) to the auto-extract
+// command, which runs the consent-gated transcript distillation pipeline. Errors are
+// appended to the relay log so the hook never blocks CC from terminating cleanly.
+export const HOOK_SCRIPT_SESSION_END =
+  'relay memory auto-extract --from-stdin 2>>$HOME/.relay/auto-extract.log || true';
+const HOOK_ID_SESSION_END = 'relay-memory-session-end';
+
 /** Resolve the settings.json path. `global=true` targets the user-wide
  *  `~/.claude/settings.json` so the hook fires in every project; otherwise
  *  the project-local `<cwd>/.claude/settings.json`. */
@@ -134,13 +141,22 @@ export function resolveHookSettingsPath(cwd: string, global: boolean): string {
     : join(cwd, '.claude', 'settings.json');
 }
 
-/** Install or remove a SessionStart hook that injects recalled memories into every new CC session. */
+/**
+ * Install or remove a CC hook (SessionStart by default; SessionEnd when
+ * `sessionEnd: true`). The two hook variants are independent — installing
+ * one does not touch the other, so users can opt into either or both.
+ */
 export async function executeMemoryHookCommand(
-  command: { install: boolean; json: boolean; global?: boolean },
+  command: { install: boolean; json: boolean; global?: boolean; sessionEnd?: boolean },
   io: CliIO,
   cwd: string
 ): Promise<number> {
   const settingsPath = resolveHookSettingsPath(cwd, command.global === true);
+  const sessionEnd = command.sessionEnd === true;
+  const hookEventName = sessionEnd ? 'SessionEnd' : 'SessionStart';
+  const hookScript = sessionEnd ? HOOK_SCRIPT_SESSION_END : HOOK_SCRIPT;
+  const legacyHookId = sessionEnd ? HOOK_ID_SESSION_END : HOOK_ID;
+
   let settings: Record<string, unknown> = {};
   try {
     settings = JSON.parse(await readFile(settingsPath, 'utf8')) as Record<string, unknown>;
@@ -149,33 +165,34 @@ export async function executeMemoryHookCommand(
   }
 
   const hooks = (settings['hooks'] ?? {}) as Record<string, unknown>;
-  const sessionStart = (Array.isArray(hooks['SessionStart']) ? hooks['SessionStart'] : []) as Array<Record<string, unknown>>;
+  const existing = (Array.isArray(hooks[hookEventName]) ? hooks[hookEventName] : []) as Array<Record<string, unknown>>;
 
-  // Strip any stale relay hook entries: legacy { id, run } shape AND any current-format
-  // entry whose inner hooks[] contains our HOOK_SCRIPT. Makes install idempotent and
-  // also self-heals settings.json files written by a prior buggy version.
-  const cleaned = sessionStart.filter(h => {
-    if (h['id'] === HOOK_ID) return false;
+  // Strip any stale relay hook entries for THIS event: legacy { id, run } shape AND any
+  // current-format entry whose inner hooks[] contains our hookScript. Makes install
+  // idempotent and self-heals settings.json files written by a prior buggy version.
+  const cleaned = existing.filter(h => {
+    if (h['id'] === legacyHookId) return false;
     const inner = (Array.isArray(h['hooks']) ? h['hooks'] : []) as Array<Record<string, unknown>>;
-    if (inner.some(i => i['command'] === HOOK_SCRIPT)) return false;
+    if (inner.some(i => i['command'] === hookScript)) return false;
     return true;
   });
 
   if (command.install) {
-    // CC hook schema: each SessionStart entry is { hooks: [{ type, command }] }, optionally with matcher.
-    cleaned.push({ hooks: [{ type: 'command', command: HOOK_SCRIPT }] });
-    hooks['SessionStart'] = cleaned;
+    // CC hook schema: each entry is { hooks: [{ type, command }] }, optionally with matcher.
+    cleaned.push({ hooks: [{ type: 'command', command: hookScript }] });
+    hooks[hookEventName] = cleaned;
     settings['hooks'] = hooks;
     await mkdir(dirname(settingsPath), { recursive: true });
     await writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
-    if (command.json) io.stdout(JSON.stringify({ installed: true, path: settingsPath }) + '\n');
+    if (command.json) io.stdout(JSON.stringify({ installed: true, path: settingsPath, event: hookEventName }) + '\n');
+    else if (sessionEnd) io.stdout(`SessionEnd hook installed in ${settingsPath}\nRelay will run auto-extract on session end (consent gated; see 'relay memory auto-extract --enable').\n`);
     else io.stdout(`SessionStart hook installed in ${settingsPath}\nRelay will inject recalled memories at the start of every new CC session.\n`);
   } else {
-    hooks['SessionStart'] = cleaned;
+    hooks[hookEventName] = cleaned;
     settings['hooks'] = hooks;
     await writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
-    if (command.json) io.stdout(JSON.stringify({ installed: false, path: settingsPath }) + '\n');
-    else io.stdout(`SessionStart hook removed from ${settingsPath}\n`);
+    if (command.json) io.stdout(JSON.stringify({ installed: false, path: settingsPath, event: hookEventName }) + '\n');
+    else io.stdout(`${hookEventName} hook removed from ${settingsPath}\n`);
   }
   return 0;
 }
