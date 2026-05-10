@@ -836,6 +836,67 @@ export class MemoryStore {
   }
 
   /**
+   * T20 — Rollback all auto-extracted memories from a single SessionEnd run.
+   *
+   * Safety filter: only memories with memory_source='auto-run-recorder' are touched —
+   * human-created entries are NEVER affected.
+   *
+   * Default behaviour soft-deletes by setting superseded_by='rollback:<runId>'.
+   * Pass {hard: true} to permanently DELETE rows.
+   * Pass {dryRun: true} to preview affected memory_ids without mutating.
+   *
+   * Returns the list of affected memory_ids (preview list when dryRun).
+   */
+  rollbackByRunId(runId: string, opts: { hard?: boolean; dryRun?: boolean } = {}): readonly string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT memory_id FROM memories
+         WHERE source_run_id = ? AND memory_source = 'auto-run-recorder'
+           AND superseded_by IS NULL`
+      )
+      .all(runId) as Array<{ memory_id: string }>;
+    const ids = rows.map(r => r.memory_id);
+    if (opts.dryRun || ids.length === 0) return ids;
+    if (opts.hard) {
+      const stmt = this.db.prepare('DELETE FROM memories WHERE memory_id = ?');
+      for (const id of ids) stmt.run(id);
+    } else {
+      const tag = `rollback:${runId.slice(0, 32)}`;
+      const stmt = this.db.prepare('UPDATE memories SET superseded_by = ? WHERE memory_id = ?');
+      for (const id of ids) stmt.run(tag, id);
+    }
+    return ids;
+  }
+
+  /**
+   * T20 — Rollback all auto-extracted memories created at or after a timestamp.
+   *
+   * Used as a fallback when no run_id is known. Same safety filter
+   * (memory_source='auto-run-recorder') and same dry-run / hard semantics
+   * as rollbackByRunId().
+   */
+  rollbackSince(sinceMs: number, opts: { hard?: boolean; dryRun?: boolean } = {}): readonly string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT memory_id FROM memories
+         WHERE created_at >= ? AND memory_source = 'auto-run-recorder'
+           AND superseded_by IS NULL`
+      )
+      .all(sinceMs) as Array<{ memory_id: string }>;
+    const ids = rows.map(r => r.memory_id);
+    if (opts.dryRun || ids.length === 0) return ids;
+    if (opts.hard) {
+      const stmt = this.db.prepare('DELETE FROM memories WHERE memory_id = ?');
+      for (const id of ids) stmt.run(id);
+    } else {
+      const tag = `rollback:since:${sinceMs}`;
+      const stmt = this.db.prepare('UPDATE memories SET superseded_by = ? WHERE memory_id = ?');
+      for (const id of ids) stmt.run(tag, id);
+    }
+    return ids;
+  }
+
+  /**
    * Hard-delete rows that have been superseded and are older than maxAgeMs.
    * Defaults to 30 days. Returns count of deleted rows.
    *
