@@ -87,7 +87,10 @@ export type AutoExtractStatus =
   | 'error:schema'
   | 'error:berry-flagged'
   | 'error:write'
-  | 'partial:berry-flag';
+  | 'error:write-all-failed'
+  | 'error:uncaught'
+  | 'partial:berry-flag'
+  | 'partial:write';
 
 // ── Audit log shape ──────────────────────────────────────────────────────────
 
@@ -102,6 +105,7 @@ interface AuditEntry {
   readonly transcript_bytes?: number;
   readonly redaction_hits?: number;
   readonly lessons_written?: number;
+  readonly lessons_failed?: number;
   readonly duration_ms?: number;
   readonly error?: string;
   readonly note?: string;
@@ -147,6 +151,47 @@ export async function executeMemoryAutoExtractCommand(
   args: AutoExtractArgs,
   io: CliIO,
   deps: AutoExtractDeps = {}
+): Promise<number> {
+  // T3 — top-level safety net. CC's SessionEnd hook discards stderr and the
+  // exit code, but a thrown exception would still surface in process.uncaughtException
+  // listeners and could be visible in CC logs. Catch ANY uncaught failure here,
+  // write `error:uncaught` to the audit log, and return exit 0.
+  try {
+    return await runPipeline(args, io, deps);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error && typeof err.stack === 'string' ? err.stack : undefined;
+    try {
+      await appendAudit(
+        {
+          ts: new Date().toISOString(),
+          session_id: null,
+          cwd: null,
+          status: 'error:uncaught',
+          error: message,
+          ...(stack ? { note: stack.split('\n').slice(0, 3).join(' | ') } : {}),
+        },
+        deps.auditPath
+      );
+    } catch {
+      // appendAudit already swallows its own errors, but defend against any
+      // other unforeseen failure here. The hook MUST never throw.
+    }
+    if (args.json) {
+      try {
+        io.stdout(JSON.stringify({ status: 'error:uncaught', error: message }) + '\n');
+      } catch {
+        // io.stdout is a callback; if even that throws there's nothing we can do.
+      }
+    }
+    return 0;
+  }
+}
+
+async function runPipeline(
+  args: AutoExtractArgs,
+  io: CliIO,
+  deps: AutoExtractDeps
 ): Promise<number> {
   if (!args.fromStdin) {
     io.stderr('relay memory auto-extract requires --from-stdin (CC SessionEnd hook is the only caller)\n');
@@ -371,10 +416,17 @@ export async function executeMemoryAutoExtractCommand(
     return 0;
   }
 
-  // 10. write surviving lessons through internal handleRemember
+  // 10. write surviving lessons through internal handleRemember.
+  //
+  // T10 — per-lesson outcome tracking. We attempt every lesson independently
+  // (no early break), then bucket the result:
+  //   - all succeed                → existing `ok` (or `partial:berry-flag` if Berry flagged earlier)
+  //   - some succeed, some throw   → `partial:write` with lessons_written/lessons_failed counts
+  //   - all throw                  → `error:write-all-failed`
   const remember = deps.remember ?? handleRemember;
   let written = 0;
-  let writeError: string | undefined;
+  let failed = 0;
+  const writeErrors: string[] = [];
   for (const lesson of survivors) {
     try {
       remember(
@@ -396,25 +448,51 @@ export async function executeMemoryAutoExtractCommand(
       );
       written += 1;
     } catch (err) {
-      writeError = (err as Error).message;
-      break;
+      failed += 1;
+      writeErrors.push(err instanceof Error ? err.message : String(err));
     }
   }
 
-  if (writeError !== undefined && written === 0) {
-    await emit(io, args, 'error:write', audit, {
+  // All lessons failed → error:write-all-failed (replaces the legacy `error:write`
+  // bucket; we keep `error:write` in the union for backward compat with consumers
+  // reading old audit logs).
+  if (failed > 0 && written === 0) {
+    await emit(io, args, 'error:write-all-failed', audit, {
       ts: new Date().toISOString(),
       session_id: payload.value.session_id,
       cwd: payload.value.cwd,
-      status: 'error:write',
+      status: 'error:write-all-failed',
       provider,
       model,
       turns_read: window.turnsRead,
       transcript_bytes: window.bytes,
       redaction_hits: redactionHits,
       lessons_written: 0,
+      lessons_failed: failed,
       duration_ms: now() - startedAt,
-      error: writeError,
+      error: writeErrors.join(' | '),
+    });
+    return 0;
+  }
+
+  // Some succeeded, some failed → partial:write (Berry flag, if any, is
+  // subsumed — write-side partial takes precedence because it surfaces a
+  // recoverable but non-trivial state to the operator).
+  if (failed > 0) {
+    await emit(io, args, 'partial:write', audit, {
+      ts: new Date().toISOString(),
+      session_id: payload.value.session_id,
+      cwd: payload.value.cwd,
+      status: 'partial:write',
+      provider,
+      model,
+      turns_read: window.turnsRead,
+      transcript_bytes: window.bytes,
+      redaction_hits: redactionHits,
+      lessons_written: written,
+      lessons_failed: failed,
+      duration_ms: now() - startedAt,
+      error: writeErrors.join(' | '),
     });
     return 0;
   }
@@ -432,7 +510,6 @@ export async function executeMemoryAutoExtractCommand(
     redaction_hits: redactionHits,
     lessons_written: written,
     duration_ms: now() - startedAt,
-    ...(writeError ? { error: writeError } : {}),
   });
   return 0;
 }
