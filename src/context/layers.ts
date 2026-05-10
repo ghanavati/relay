@@ -200,7 +200,19 @@ export async function loadRecalledLessonsContent(
   workdir: string,
   task?: string,
   run_id?: string,
-  opts?: { types?: readonly ("lesson" | "decision" | "fact" | "context" | "state" | "handoff" | "session")[]; tokenBudget?: number }
+  opts?: {
+    types?: readonly ("lesson" | "decision" | "fact" | "context" | "state" | "handoff" | "session")[];
+    tokenBudget?: number;
+    /**
+     * T1 — minimum trust tier filter. When set, MemoryStore.getCandidates
+     * applies the same SQL guard used by `relay memory recall --min-trust=…`:
+     *   - 'trusted'     → only trusted entries
+     *   - 'provisional' → provisional + trusted (excludes unverified)
+     *   - 'unverified'  → no filter (all tiers)
+     * Undefined preserves prior behaviour (no filter).
+     */
+    minTrust?: 'unverified' | 'provisional' | 'trusted';
+  }
 ): Promise<string | null> {
   const { MemoryStore } = await import("../memory/memory-store.js");
   const { budgetedRecall } = await import("../memory/memory-engine.js");
@@ -211,6 +223,8 @@ export async function loadRecalledLessonsContent(
     token_budget: opts?.tokenBudget ?? 800,
     // Pass task text so FTS5 returns task-relevant memories, not just most-recent
     ...(task?.trim() ? { query: task.trim() } : {}),
+    // T1 — pass-through to MemoryStore.getCandidates() trust-tier filter.
+    ...(opts?.minTrust !== undefined ? { min_trust: opts.minTrust } : {}),
   };
   const candidates = store.getCandidates(query);
   if (candidates.length === 0) return null;
