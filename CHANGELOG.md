@@ -101,6 +101,30 @@ Cross-LLM memory injection, opt-in auto-extract pipeline, per-project privacy co
 - Auto-extract is **OFF** until you run `relay memory auto-extract --enable` per-workdir. Without an opt-in consent file, the SessionEnd hook is a no-op.
 - If you previously customized the project-local hook script, the global install does not migrate it — re-add any custom flags via `relay memory hook --install --global` and re-edit if needed.
 
+## [0.1.1] - 2026-05-10
+
+Wave 4a patch release. Hardens auto-extract + memory + context-emit surfaces, adds three new commands, expands docs, and lights up CI.
+
+### Added
+- `relay verify` — end-to-end smoke test command. Exercises remember → recall → context-emit → memory-rollback in one call so users (and CI) can confirm a fresh install is healthy.
+- `relay memory rollback <event_id>` — undo an auto-extract or migration event. Restores prior trust tier or deletes the inserted memory based on the recorded event payload.
+- `relay memory consolidate` — merge near-duplicate memory entries detected by FTS5 similarity, preserving the highest trust tier and union of tags.
+- `relay init` now auto-wires detected LLM CLIs (codex, lms, anthropic, openrouter probes) into `~/.claude/relay/config.json` instead of leaving the providers section empty.
+- E2E tests covering the auto-extract pipeline and the `context-emit` command surface.
+- GitHub Actions test workflow (`.github/workflows/test.yml`) — runs build + `npm test` on push and PR.
+
+### Fixed
+- `relay context-emit` now defaults `--min-trust` to `provisional` (was implicitly `unverified`), matching the documented "safe-by-default" recall posture.
+- `MemoryStore.wipeWorkdir` escapes `%` and `_` in LIKE patterns so workdirs containing those characters are matched literally instead of as wildcards.
+- `relay memory hook` install/uninstall now matches the stable `<!-- relay:memory-hook -->` marker, so re-running install does not duplicate the block and uninstall correctly removes it even if the surrounding content changed.
+- `relay doctor` adds a `checkAutoExtractStatus` check that reports whether the auto-extract hook is wired and last ran successfully.
+
+### Docs
+- README rewritten around the v0.1.1 surface and the new `relay verify` quickstart.
+- New cookbook (docs/cookbook.md) with end-to-end recipes for auto-extract, parallel dispatch, and memory rollback.
+- New troubleshooting guide (docs/troubleshooting.md) covering the most common doctor-failure paths.
+- AGENTS.md gains a "Wave 4 lessons" section capturing the patterns that hardened auto-extract and memory.
+
 ## [0.1.0] - 2026-05-02
 
 Initial extract from the relay-mcp monorepo. Solo CLI distro focused on memory + delegation infrastructure. Dropped ~60% of relay-mcp scope (compliance, hosted, multi-tenant, regulatory reports) for a single-user surface.
@@ -138,5 +162,6 @@ Initial extract from the relay-mcp monorepo. Solo CLI distro focused on memory +
 - `relay budget`, `relay corpus` commands deferred to v0.2 (BudgetStore needs per-provider scope; corpus is unused without QMD integration).
 
 [Unreleased]: https://github.com/ghanavati/relay/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/ghanavati/relay/compare/v0.1.0...v0.2.0
+[0.2.0]: https://github.com/ghanavati/relay/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/ghanavati/relay/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ghanavati/relay/releases/tag/v0.1.0

@@ -1,6 +1,6 @@
 {
   "name": "relay",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Solo CLI for delegating bounded coding tasks to AI workers (Codex, OpenRouter, LM Studio, Anthropic) with audit trail, memory, and parallel dispatch.",
   "type": "module",
   "license": "AGPL-3.0-or-later",

@@ -2,7 +2,7 @@
 /**
  * Relay solo CLI — entry point.
  *
- * v0.1.0 surface: memory + run + parallel + history + diff + compare + doctor +
+ * v0.1.1 surface: memory + run + parallel + history + diff + compare + doctor +
  * init + completion. See `relay --help` for the full menu, or the README for
  * commands and flags.
  */
@@ -13,7 +13,7 @@ import { setColorMode, type ColorMode } from './cli/colors.js';
 // T50: env-driven cwd default for `relay memory recall` / `show-context`.
 import { resolveMemoryWorkdir } from './cli/resolve-memory-workdir.js';
 
-const VERSION = '0.1.0';
+const VERSION = '0.1.1';
 
 const io: CliIO = {
   cwd: cwd(),
