@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { CliIO } from './commands.js';
@@ -147,6 +148,61 @@ export async function checkLastRecall(): Promise<ProviderProbe> {
   }
 }
 
+/**
+ * Check auto-extract activity over the last 24h by reading
+ * `${RELAY_AUTO_EXTRACT_LOG ?? ~/.relay/auto-extract.log}`.
+ *
+ * Each line is a JSON object with at least `ts` (ISO timestamp) and `status`
+ * (e.g. "ok", "skipped:no-consent", "error:bad-payload").
+ *
+ * Returned probe statuses (mapped to existing ProviderProbe values):
+ *   - log missing / unreadable / 0 entries / parse-failed → 'missing' ("never ran" warning)
+ *   - any error:* entries                                 → 'missing' (warn — informational, not a hard failure)
+ *   - only ok / skipped entries (no errors)               → 'ok'
+ */
+export function checkAutoExtractStatus(now: Date = new Date()): ProviderProbe {
+  const logPath = process.env['RELAY_AUTO_EXTRACT_LOG'] ?? join(homedir(), '.relay', 'auto-extract.log');
+  let raw: string;
+  try {
+    raw = readFileSync(logPath, 'utf-8');
+  } catch {
+    return { name: 'auto-extract (24h)', status: 'missing', detail: 'log missing — auto-extract has never run' };
+  }
+
+  const cutoff = now.getTime() - 24 * 60 * 60 * 1000;
+  let okCount = 0;
+  let skippedCount = 0;
+  let errorCount = 0;
+
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    let entry: { ts?: unknown; status?: unknown };
+    try {
+      entry = JSON.parse(trimmed) as { ts?: unknown; status?: unknown };
+    } catch {
+      continue;
+    }
+    if (typeof entry.ts !== 'string' || typeof entry.status !== 'string') continue;
+    const ts = Date.parse(entry.ts);
+    if (Number.isNaN(ts) || ts < cutoff) continue;
+    if (entry.status === 'ok') okCount++;
+    else if (entry.status.startsWith('skipped:')) skippedCount++;
+    else if (entry.status.startsWith('error:')) errorCount++;
+  }
+
+  const total = okCount + skippedCount + errorCount;
+  const detail = `${okCount} ok, ${skippedCount} skipped, ${errorCount} error`;
+
+  if (total === 0) {
+    return { name: 'auto-extract (24h)', status: 'missing', detail: '0 entries — auto-extract has not run in last 24h' };
+  }
+  if (errorCount > 0) {
+    return { name: 'auto-extract (24h)', status: 'missing', detail };
+  }
+  return { name: 'auto-extract (24h)', status: 'ok', detail };
+}
+
 export async function executeDoctorCommand(args: DoctorArgs, io: CliIO): Promise<number> {
   const checks: ProviderProbe[] = [];
   let summary = { ok: 0, missing: 0, failed: 0 };
@@ -192,13 +248,16 @@ export async function executeDoctorCommand(args: DoctorArgs, io: CliIO): Promise
   // 9. Last successful recall timestamp from memory_reads
   record(await checkLastRecall());
 
+  // 10. Auto-extract activity (last 24h)
+  record(checkAutoExtractStatus());
+
   // Output
   if (args.json) {
     io.stdout(JSON.stringify({ checks, summary }) + '\n');
   } else {
     io.stdout(c.bold('relay doctor') + '\n\n');
     checks.forEach(check => {
-      io.stdout(`${check.name.padEnd(16)} ${statusBadge(check.status)} ${c.dim(check.detail)}\n`);
+      io.stdout(`${check.name.padEnd(18)} ${statusBadge(check.status)} ${c.dim(check.detail)}\n`);
     });
     if (summary.failed === 0 && summary.missing === 0) {
       io.stdout(`\n${c.green('All checks passed.')}\n`);
