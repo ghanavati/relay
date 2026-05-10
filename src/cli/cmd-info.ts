@@ -28,6 +28,26 @@ interface DbInfo {
   entries: number;
   sizeBytes: number | null;
   sizeMb: string | null;
+  memoryCounts: MemoryCounts;
+}
+
+interface MemoryCounts {
+  fact: number;
+  decision: number;
+  lesson: number;
+  context: number;
+  state: number;
+  handoff: number;
+}
+
+interface ActivityCounts {
+  recalls: number;
+  writes: number;
+  autoExtracts: number;
+}
+
+interface Activity {
+  last24h: ActivityCounts;
 }
 
 interface HookInfo {
@@ -40,6 +60,7 @@ interface HooksState {
   settingsPath: string;
   sessionStart: HookInfo;
   sessionEnd: HookInfo;
+  lastFireTs: number | null;
 }
 
 interface ProviderInfo {
@@ -63,6 +84,7 @@ interface InfoReport {
   hooks: HooksState;
   providers: ProviderInfo[];
   lastActivity: LastActivity;
+  activity: Activity;
 }
 
 async function probeBinaryPath(): Promise<string | null> {
@@ -93,7 +115,31 @@ async function getDbInfo(): Promise<DbInfo> {
       sizeMb = (s.size / (1024 * 1024)).toFixed(1);
     } catch { /* file not yet created */ }
   }
-  return { path: display, entries, sizeBytes, sizeMb };
+  const memoryCounts = await getMemoryCountsByType();
+  return { path: display, entries, sizeBytes, sizeMb, memoryCounts };
+}
+
+/**
+ * Group active (non-superseded) memories by type. Always returns a row per
+ * known type (zero-filled) so the JSON shape is stable for downstream tooling.
+ */
+async function getMemoryCountsByType(): Promise<MemoryCounts> {
+  const counts: MemoryCounts = { fact: 0, decision: 0, lesson: 0, context: 0, state: 0, handoff: 0 };
+  try {
+    const { getDb } = await import('../runtime/store/db.js');
+    const db = getDb();
+    const rows = db
+      .prepare(
+        'SELECT memory_type AS type, COUNT(*) AS cnt FROM memories WHERE superseded_by IS NULL GROUP BY memory_type'
+      )
+      .all() as Array<{ type: string; cnt: number }>;
+    for (const r of rows) {
+      if (r.type in counts) {
+        (counts as unknown as Record<string, number>)[r.type] = r.cnt;
+      }
+    }
+  } catch { /* db unreachable — leave zero-filled */ }
+  return counts;
 }
 
 /**
@@ -113,7 +159,26 @@ async function readHooksState(): Promise<HooksState> {
     settingsPath,
     sessionStart: detectRelayHook(hooks['SessionStart'], settingsPath),
     sessionEnd: detectRelayHook(hooks['SessionEnd'], settingsPath),
+    lastFireTs: await getLastHookFireTs(),
   };
+}
+
+/**
+ * Newest memory_reads.created_at acts as a proxy for the last hook fire — every
+ * SessionStart recall writes a row, so this is the most recent timestamp the
+ * recall pipeline observed. Returns null when no recalls have ever happened.
+ */
+async function getLastHookFireTs(): Promise<number | null> {
+  try {
+    const { getDb } = await import('../runtime/store/db.js');
+    const db = getDb();
+    const row = db
+      .prepare('SELECT MAX(created_at) AS ts FROM memory_reads')
+      .get() as { ts: number | null } | undefined;
+    return row?.ts ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function detectRelayHook(eventList: unknown, settingsPath: string): HookInfo {
@@ -135,6 +200,51 @@ function countAutoExtractWorkdirs(): number {
   const raw = process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'];
   if (!raw) return 0;
   return raw.split(':').map((p) => p.trim()).filter(Boolean).length;
+}
+
+/**
+ * Counts of memory recalls / writes / auto-extracts in the last 24h.
+ *
+ * - recalls: rows in memory_reads with created_at > now-24h
+ * - writes:  rows in memories       with created_at > now-24h (active only)
+ * - autoExtracts: lines in `~/.relay/auto-extract.log` whose ISO `ts` is < 24h old
+ *   (the auto-extract pipeline writes one ndjson line per fire — see cmd-doctor.ts)
+ */
+async function readActivityCounts(): Promise<Activity> {
+  const cutoffMs = Date.now() - 24 * 60 * 60 * 1000;
+  let recalls = 0;
+  let writes = 0;
+  try {
+    const { getDb } = await import('../runtime/store/db.js');
+    const db = getDb();
+    const recallRow = db
+      .prepare('SELECT COUNT(*) AS cnt FROM memory_reads WHERE created_at > ?')
+      .get(cutoffMs) as { cnt: number } | undefined;
+    recalls = recallRow?.cnt ?? 0;
+    const writeRow = db
+      .prepare('SELECT COUNT(*) AS cnt FROM memories WHERE superseded_by IS NULL AND created_at > ?')
+      .get(cutoffMs) as { cnt: number } | undefined;
+    writes = writeRow?.cnt ?? 0;
+  } catch { /* db unreachable — leave zero */ }
+
+  let autoExtracts = 0;
+  try {
+    const logPath = process.env['RELAY_AUTO_EXTRACT_LOG'] ?? join(homedir(), '.relay', 'auto-extract.log');
+    const raw = await readFile(logPath, 'utf-8');
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) continue;
+      try {
+        const entry = JSON.parse(trimmed) as { ts?: unknown };
+        if (typeof entry.ts !== 'string') continue;
+        const t = Date.parse(entry.ts);
+        if (Number.isNaN(t)) continue;
+        if (t > cutoffMs) autoExtracts++;
+      } catch { /* skip unparseable line */ }
+    }
+  } catch { /* log missing — leave zero */ }
+
+  return { last24h: { recalls, writes, autoExtracts } };
 }
 
 async function readLastActivity(): Promise<LastActivity> {
@@ -193,7 +303,10 @@ export async function executeInfoCommand(args: InfoArgs, io: CliIO, version: str
   ]);
   const openrouter = probeEnvKey('OPENROUTER_API_KEY', 'openrouter');
   const anthropic = probeEnvKey('ANTHROPIC_API_KEY', 'anthropic');
-  const lastActivity = await readLastActivity();
+  const [lastActivity, activity] = await Promise.all([
+    readLastActivity(),
+    readActivityCounts(),
+  ]);
 
   const providers: ProviderInfo[] = [
     { name: 'codex', status: codex.status, detail: codex.detail },
@@ -211,6 +324,7 @@ export async function executeInfoCommand(args: InfoArgs, io: CliIO, version: str
     hooks,
     providers,
     lastActivity,
+    activity,
   };
 
   if (args.json) {
@@ -223,19 +337,26 @@ export async function executeInfoCommand(args: InfoArgs, io: CliIO, version: str
   io.stdout(`  Binary:           ${binary ?? c.dim('not on PATH')}\n`);
   const dbSize = db.sizeMb !== null ? `, ${db.sizeMb} MB` : '';
   io.stdout(`  DB:               ${db.path} (${db.entries} entries${dbSize})\n`);
+  io.stdout(`  Memory counts:    ${formatMemoryCounts(db.memoryCounts)}\n`);
   io.stdout(`  Workdir scope:    ${report.workdirScope ?? c.dim('not set')}  ${c.dim('(RELAY_MEMORY_ALLOWED_WORKDIRS)')}\n`);
   io.stdout(`  Auto-extract:     enabled in ${report.autoExtract.enabledWorkdirs} workdirs\n`);
   io.stdout(`  Hooks installed:\n`);
   io.stdout(`    SessionStart    ${badge(hooks.sessionStart.installed)} ${c.dim(hooks.sessionStart.path ?? 'missing')}\n`);
   io.stdout(`    SessionEnd      ${badge(hooks.sessionEnd.installed)} ${c.dim(hooks.sessionEnd.path ?? 'missing')}\n`);
+  io.stdout(`    last fire       ${hooks.lastFireTs !== null ? formatAgo(Date.now() - hooks.lastFireTs) : 'never'}\n`);
   io.stdout(`  Providers:\n`);
   for (const p of providers) {
     io.stdout(`    ${p.name.padEnd(12)}${providerBadge(p)} ${c.dim(p.detail)}\n`);
   }
+  io.stdout(`  Activity (24h):   ${activity.last24h.recalls} recalls, ${activity.last24h.writes} writes, ${activity.last24h.autoExtracts} auto-extracts\n`);
   io.stdout(`  Last activity:\n`);
   io.stdout(`    last recall     ${formatAgo(lastActivity.lastRecallAgoMs)}\n`);
   io.stdout(`    last remember   ${formatAgo(lastActivity.lastRememberAgoMs)}\n`);
   io.stdout(`    last extract    ${formatAgo(lastActivity.lastExtractAgoMs)}\n`);
 
   return 0;
+}
+
+function formatMemoryCounts(m: MemoryCounts): string {
+  return `fact:${m.fact} decision:${m.decision} lesson:${m.lesson} context:${m.context} state:${m.state} handoff:${m.handoff}`;
 }
