@@ -201,6 +201,7 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
       remember: handleRemember,
       auditPath,
       now: () => 1_700_000_000_000,
+      discoverModel: async (): Promise<string | null> => 'qwen/qwen3-coder-next',
     };
 
     const cap = makeIO(projectCwd);
@@ -259,6 +260,7 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
       },
       remember: handleRemember,
       auditPath,
+      discoverModel: async (): Promise<string | null> => 'qwen/qwen3-coder-next',
     };
 
     const cap = makeIO(projectCwd);
@@ -289,6 +291,7 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
       },
       remember: handleRemember,
       auditPath,
+      discoverModel: async (): Promise<string | null> => 'qwen/qwen3-coder-next',
     };
 
     const cap = makeIO(projectCwd);
@@ -320,6 +323,7 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
       }),
       remember: handleRemember,
       auditPath,
+      discoverModel: async (): Promise<string | null> => 'qwen/qwen3-coder-next',
     };
 
     const cap = makeIO(projectCwd);
@@ -359,6 +363,7 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
       }),
       remember: handleRemember,
       auditPath,
+      discoverModel: async (): Promise<string | null> => 'qwen/qwen3-coder-next',
     };
 
     const cap = makeIO(projectCwd);
@@ -402,6 +407,7 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
       }),
       remember: handleRemember,
       auditPath,
+      discoverModel: async (): Promise<string | null> => 'qwen/qwen3-coder-next',
     };
 
     const cap = makeIO(projectCwd);
@@ -432,6 +438,7 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
         ({ ok: 'flagged', details: { reason: 'unsupported' } }),
       remember: handleRemember,
       auditPath,
+      discoverModel: async (): Promise<string | null> => 'qwen/qwen3-coder-next',
     };
 
     const cap = makeIO(projectCwd);
@@ -483,6 +490,7 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
           : { ok: 'pass' },
       remember: handleRemember,
       auditPath,
+      discoverModel: async (): Promise<string | null> => 'qwen/qwen3-coder-next',
     };
 
     const cap = makeIO(projectCwd);
@@ -531,6 +539,7 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
       }),
       remember: handleRemember,
       auditPath,
+      discoverModel: async (): Promise<string | null> => 'qwen/qwen3-coder-next',
     };
 
     const cap = makeIO(projectCwd);
@@ -564,6 +573,7 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
       },
       remember: handleRemember,
       auditPath,
+      discoverModel: async (): Promise<string | null> => 'qwen/qwen3-coder-next',
     };
 
     const cap = makeIO(projectCwd);
@@ -583,6 +593,7 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
     assert.strictEqual(readMemories(projectCwd).length, 0);
   });
 
+<<<<<<< HEAD
   // ── T3 + T10 (error-handling improvements) ───────────────────────────────
 
   test('10. T3 — uncaught exception inside pipeline → status error:uncaught + exit 0 (hook never blocks)', async () => {
@@ -596,11 +607,34 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
       },
       remember: handleRemember,
       auditPath,
+=======
+  // ── T9: model resolution ──────────────────────────────────────────────────
+
+  test('T9: discoverModel returns null + no env + no consent.model → error:no-model', async () => {
+    let extractCalled = false;
+    const deps: AutoExtractDeps = {
+      loadConsent: async () => ({ ok: true, consent: consentEnabled() }),
+      loadTranscript: () => fakeWindow(),
+      redact: (s) => s,
+      extractLessons: async (_opts: ExtractionOptions) => {
+        extractCalled = true;
+        return happyExtraction();
+      },
+      remember: handleRemember,
+      auditPath,
+      // Auto-discovery returns nothing — no IDLE model loaded.
+      discoverModel: async (): Promise<string | null> => null,
+      env: {} as NodeJS.ProcessEnv,
+>>>>>>> 4d0c14a (feat(auto-extract): endpoint validation + dynamic model selection)
     };
 
     const cap = makeIO(projectCwd);
     const code = await withStdin(
+<<<<<<< HEAD
       makePayload({ sessionId: 'sess-uncaught', cwd: projectCwd, transcriptPath }),
+=======
+      makePayload({ sessionId: 'sess-no-model', cwd: projectCwd, transcriptPath }),
+>>>>>>> 4d0c14a (feat(auto-extract): endpoint validation + dynamic model selection)
       () =>
         executeMemoryAutoExtractCommand(
           { fromStdin: true, maxBytes: undefined, json: true },
@@ -609,6 +643,7 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
         )
     );
 
+<<<<<<< HEAD
     assert.strictEqual(code, 0, 'hooks must never block — uncaught exception still exits 0');
     const out = JSON.parse(cap.stdout.join('').trim()) as { status: string; error?: string };
     assert.strictEqual(out.status, 'error:uncaught');
@@ -693,10 +728,28 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
     const lessonA = makeLesson('lesson A', 0.8);
     const lessonB = makeLesson('lesson B', 0.8);
 
+=======
+    assert.strictEqual(code, 0, 'hooks must never block — exit 0 even when no model');
+    const out = JSON.parse(cap.stdout.join('').trim()) as {
+      status: string;
+      error?: string;
+    };
+    assert.strictEqual(out.status, 'error:no-model');
+    // Error message must be actionable
+    assert.match(out.error ?? '', /RELAY_AUTO_EXTRACT_MODEL/);
+    assert.match(out.error ?? '', /lms ps/);
+    assert.strictEqual(extractCalled, false, 'extractLessons must not run without a resolved model');
+    assert.strictEqual(readMemories(projectCwd).length, 0);
+  });
+
+  test('T9: discoverModel returns idle id → that id is passed to extractLessons', async () => {
+    let observedModel: string | undefined;
+>>>>>>> 4d0c14a (feat(auto-extract): endpoint validation + dynamic model selection)
     const deps: AutoExtractDeps = {
       loadConsent: async () => ({ ok: true, consent: consentEnabled() }),
       loadTranscript: () => fakeWindow(),
       redact: (s) => s,
+<<<<<<< HEAD
       extractLessons: async (_opts: ExtractionOptions) => ({
         status: 'ok',
         rawOutput: JSON.stringify({ lessons: [lessonA, lessonB] }),
@@ -710,11 +763,26 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
         ({ ok: 'pass' }),
       remember,
       auditPath,
+=======
+      extractLessons: async (opts: ExtractionOptions) => {
+        observedModel = opts.model;
+        return happyExtraction();
+      },
+      checkBerry: async (_opts: CheckLessonOptions): Promise<BerryCheckResult> => ({ ok: 'pass' }),
+      remember: handleRemember,
+      auditPath,
+      discoverModel: async (): Promise<string | null> => 'discovered/local-llm',
+      env: {} as NodeJS.ProcessEnv,
+>>>>>>> 4d0c14a (feat(auto-extract): endpoint validation + dynamic model selection)
     };
 
     const cap = makeIO(projectCwd);
     const code = await withStdin(
+<<<<<<< HEAD
       makePayload({ sessionId: 'sess-all-fail', cwd: projectCwd, transcriptPath }),
+=======
+      makePayload({ sessionId: 'sess-discover', cwd: projectCwd, transcriptPath }),
+>>>>>>> 4d0c14a (feat(auto-extract): endpoint validation + dynamic model selection)
       () =>
         executeMemoryAutoExtractCommand(
           { fromStdin: true, maxBytes: undefined, json: true },
@@ -724,6 +792,7 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
     );
 
     assert.strictEqual(code, 0);
+<<<<<<< HEAD
     const out = JSON.parse(cap.stdout.join('').trim()) as {
       status: string;
       lessons_written: number;
@@ -733,5 +802,216 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
     assert.strictEqual(out.lessons_written, 0);
     assert.strictEqual(out.lessons_failed, 2);
     assert.strictEqual(readMemories(projectCwd).length, 0);
+=======
+    const out = JSON.parse(cap.stdout.join('').trim()) as { status: string; model?: string };
+    assert.strictEqual(out.status, 'ok');
+    assert.strictEqual(observedModel, 'discovered/local-llm');
+    assert.strictEqual(out.model, 'discovered/local-llm');
+  });
+
+  test('T9: env var overrides consent.model and discoverModel (priority order)', async () => {
+    let observedModel: string | undefined;
+    let discoverCalled = false;
+    const consentWithModel: ConsentConfig = Object.freeze({
+      enabled: true,
+      allow_remote: false,
+      max_bytes: 32_768,
+      min_confidence: 0.6,
+      extra_redaction_patterns: [],
+      model: 'consent/model-id',
+    });
+    const deps: AutoExtractDeps = {
+      loadConsent: async () => ({ ok: true, consent: consentWithModel }),
+      loadTranscript: () => fakeWindow(),
+      redact: (s) => s,
+      extractLessons: async (opts: ExtractionOptions) => {
+        observedModel = opts.model;
+        return happyExtraction();
+      },
+      checkBerry: async (_opts: CheckLessonOptions): Promise<BerryCheckResult> => ({ ok: 'pass' }),
+      remember: handleRemember,
+      auditPath,
+      discoverModel: async (): Promise<string | null> => {
+        discoverCalled = true;
+        return 'discovered/should-not-win';
+      },
+      env: { RELAY_AUTO_EXTRACT_MODEL: 'env/wins' } as NodeJS.ProcessEnv,
+    };
+
+    const cap = makeIO(projectCwd);
+    const code = await withStdin(
+      makePayload({ sessionId: 'sess-env-wins', cwd: projectCwd, transcriptPath }),
+      () =>
+        executeMemoryAutoExtractCommand(
+          { fromStdin: true, maxBytes: undefined, json: true },
+          cap.io,
+          deps
+        )
+    );
+
+    assert.strictEqual(code, 0);
+    const out = JSON.parse(cap.stdout.join('').trim()) as { status: string };
+    assert.strictEqual(out.status, 'ok');
+    assert.strictEqual(observedModel, 'env/wins', 'env var must beat consent.model and discovery');
+    assert.strictEqual(discoverCalled, false, 'discoverModel must not run when env wins');
+  });
+
+  test('T9: consent.model used when env unset, beats discoverModel', async () => {
+    let observedModel: string | undefined;
+    let discoverCalled = false;
+    const consentWithModel: ConsentConfig = Object.freeze({
+      enabled: true,
+      allow_remote: false,
+      max_bytes: 32_768,
+      min_confidence: 0.6,
+      extra_redaction_patterns: [],
+      model: 'consent/pinned-model',
+    });
+    const deps: AutoExtractDeps = {
+      loadConsent: async () => ({ ok: true, consent: consentWithModel }),
+      loadTranscript: () => fakeWindow(),
+      redact: (s) => s,
+      extractLessons: async (opts: ExtractionOptions) => {
+        observedModel = opts.model;
+        return happyExtraction();
+      },
+      checkBerry: async (_opts: CheckLessonOptions): Promise<BerryCheckResult> => ({ ok: 'pass' }),
+      remember: handleRemember,
+      auditPath,
+      discoverModel: async (): Promise<string | null> => {
+        discoverCalled = true;
+        return 'discovered/should-not-win';
+      },
+      env: {} as NodeJS.ProcessEnv,
+    };
+
+    const cap = makeIO(projectCwd);
+    const code = await withStdin(
+      makePayload({ sessionId: 'sess-consent-model', cwd: projectCwd, transcriptPath }),
+      () =>
+        executeMemoryAutoExtractCommand(
+          { fromStdin: true, maxBytes: undefined, json: true },
+          cap.io,
+          deps
+        )
+    );
+
+    assert.strictEqual(code, 0);
+    const out = JSON.parse(cap.stdout.join('').trim()) as { status: string };
+    assert.strictEqual(out.status, 'ok');
+    assert.strictEqual(observedModel, 'consent/pinned-model');
+    assert.strictEqual(discoverCalled, false, 'discoverModel must not run when consent.model is set');
+  });
+
+  // ── T4: endpoint validation (deps-injected) ───────────────────────────────
+
+  test('T4: localhost variants pass — 127.0.0.1, ::1, localhost', async () => {
+    // The pure-function unit-tests below are the comprehensive guarantee;
+    // this E2E test proves the wiring uses the helper correctly by setting
+    // a localhost env URL and confirming the request reaches extractLessons.
+    let observedModel: string | undefined;
+    const deps: AutoExtractDeps = {
+      loadConsent: async () => ({ ok: true, consent: consentEnabled() }),
+      loadTranscript: () => fakeWindow(),
+      redact: (s) => s,
+      extractLessons: async (opts: ExtractionOptions) => {
+        observedModel = opts.model;
+        return happyExtraction();
+      },
+      checkBerry: async (_opts: CheckLessonOptions): Promise<BerryCheckResult> => ({ ok: 'pass' }),
+      remember: handleRemember,
+      auditPath,
+      discoverModel: async (): Promise<string | null> => 'qwen/qwen3-coder-next',
+      env: { RELAY_AUTO_EXTRACT_ENDPOINT: 'http://[::1]:1234' } as NodeJS.ProcessEnv,
+    };
+
+    const cap = makeIO(projectCwd);
+    const code = await withStdin(
+      makePayload({ sessionId: 'sess-ipv6-local', cwd: projectCwd, transcriptPath }),
+      () =>
+        executeMemoryAutoExtractCommand(
+          { fromStdin: true, maxBytes: undefined, json: true },
+          cap.io,
+          deps
+        )
+    );
+
+    assert.strictEqual(code, 0);
+    const out = JSON.parse(cap.stdout.join('').trim()) as { status: string };
+    assert.strictEqual(out.status, 'ok', `IPv6 ::1 must be treated as local, got ${out.status}`);
+    assert.strictEqual(observedModel, 'qwen/qwen3-coder-next');
+  });
+});
+
+// ── Pure-function unit tests for T4 / T9 helpers ─────────────────────────────
+
+import { isLocalEndpoint, parseLmsPsOutput } from './cmd-memory-auto-extract.js';
+
+describe('isLocalEndpoint (T4)', () => {
+  test('matches 127.0.0.1, ::1, localhost — case insensitive on host', () => {
+    assert.strictEqual(isLocalEndpoint('http://127.0.0.1:1234'), true);
+    assert.strictEqual(isLocalEndpoint('http://localhost:1234'), true);
+    assert.strictEqual(isLocalEndpoint('http://LOCALHOST:1234'), true);
+    assert.strictEqual(isLocalEndpoint('http://[::1]:1234'), true);
+    assert.strictEqual(isLocalEndpoint('https://localhost'), true);
+  });
+
+  test('rejects every non-localhost host', () => {
+    assert.strictEqual(isLocalEndpoint('http://10.0.0.1:1234'), false);
+    assert.strictEqual(isLocalEndpoint('https://api.openai.com'), false);
+    assert.strictEqual(isLocalEndpoint('http://192.168.1.50:8080'), false);
+    assert.strictEqual(isLocalEndpoint('http://example.com'), false);
+    // Subdomain of localhost is NOT localhost
+    assert.strictEqual(isLocalEndpoint('http://evil.localhost'), false);
+  });
+
+  test('unparseable URL → false (fail-closed)', () => {
+    assert.strictEqual(isLocalEndpoint('not-a-url'), false);
+    assert.strictEqual(isLocalEndpoint(''), false);
+    assert.strictEqual(isLocalEndpoint('::1'), false);
+  });
+});
+
+describe('parseLmsPsOutput (T9)', () => {
+  test('returns first IDLE model identifier from `lms ps --json`', () => {
+    const stdout = JSON.stringify([
+      { identifier: 'qwen/qwen3-coder-next', state: 'idle' },
+      { identifier: 'other/loaded', state: 'busy' },
+    ]);
+    assert.strictEqual(parseLmsPsOutput(stdout), 'qwen/qwen3-coder-next');
+  });
+
+  test('skips non-idle entries, returns first idle', () => {
+    const stdout = JSON.stringify([
+      { identifier: 'busy/one', state: 'busy' },
+      { identifier: 'loading/two', state: 'loading' },
+      { identifier: 'idle/three', state: 'idle' },
+      { identifier: 'idle/four', state: 'idle' },
+    ]);
+    assert.strictEqual(parseLmsPsOutput(stdout), 'idle/three');
+  });
+
+  test('falls back to modelKey when identifier missing', () => {
+    const stdout = JSON.stringify([{ modelKey: 'fallback-key', state: 'idle' }]);
+    assert.strictEqual(parseLmsPsOutput(stdout), 'fallback-key');
+  });
+
+  test('empty array → null', () => {
+    assert.strictEqual(parseLmsPsOutput('[]'), null);
+  });
+
+  test('invalid JSON → null', () => {
+    assert.strictEqual(parseLmsPsOutput('not-json'), null);
+    assert.strictEqual(parseLmsPsOutput(''), null);
+  });
+
+  test('non-array JSON → null', () => {
+    assert.strictEqual(parseLmsPsOutput('{"foo":"bar"}'), null);
+  });
+
+  test('case-insensitive state matching', () => {
+    const stdout = JSON.stringify([{ identifier: 'idle/one', state: 'IDLE' }]);
+    assert.strictEqual(parseLmsPsOutput(stdout), 'idle/one');
+>>>>>>> 4d0c14a (feat(auto-extract): endpoint validation + dynamic model selection)
   });
 });

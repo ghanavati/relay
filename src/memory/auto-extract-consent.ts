@@ -17,6 +17,14 @@ export const ConsentFile = z.object({
   enabled: z.boolean(),
   enabled_at: z.number().optional(),
   allow_remote: z.boolean().default(false),
+  /**
+   * Optional explicit model id (e.g. `qwen/qwen3-coder-next`). When unset, the
+   * pipeline resolves a model from `RELAY_AUTO_EXTRACT_MODEL` or by querying
+   * `lms ps --json` for the first IDLE local model. There is no hard-coded
+   * default — leaving every layer empty surfaces `error:no-model` instead of
+   * silently picking a stale id (T9).
+   */
+  model: z.string().min(1).max(200).optional(),
   max_bytes: z.number().int().positive().default(32_768),
   min_confidence: z.number().min(0).max(1).default(0.6),
   extra_redaction_patterns: z
