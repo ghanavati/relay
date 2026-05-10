@@ -555,6 +555,222 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
     assert.strictEqual(readMemories(projectCwd).length, 0);
   });
 
+  test('10. T5: consent.extra_redaction_patterns is wired through to redactor', async () => {
+    // Use the real redactor so we prove end-to-end wiring (not just a stub).
+    // The consent declares an EMP-NNNNNN pattern; the transcript contains one.
+    let observedRedacted = '';
+    const consentWithExtras: ConsentConfig = Object.freeze({
+      enabled: true,
+      allow_remote: false,
+      max_bytes: 32_768,
+      min_confidence: 0.6,
+      extra_redaction_patterns: [
+        { name: 'employee_id', pattern: 'EMP-[0-9]{6}', replacement: '[ignored]' },
+      ],
+    });
+
+    const deps: AutoExtractDeps = {
+      loadConsent: async () => ({ ok: true, consent: consentWithExtras }),
+      loadTranscript: () =>
+        Object.freeze({
+          jsonl: 'employee EMP-123456 ran the build\n',
+          turnsRead: 1,
+          bytes: 36,
+        }),
+      // intentionally NO `redact` override → exercises the real
+      // redactSecretsAndPII + extras wiring.
+      extractLessons: async (opts: ExtractionOptions) => {
+        observedRedacted = opts.transcript;
+        return happyExtraction();
+      },
+      checkBerry: async () => ({ ok: 'pass' as const }),
+      remember: handleRemember,
+      auditPath,
+    };
+
+    const cap = makeIO(projectCwd);
+    const code = await withStdin(
+      makePayload({ sessionId: 'sess-extras', cwd: projectCwd, transcriptPath }),
+      () =>
+        executeMemoryAutoExtractCommand(
+          { fromStdin: true, maxBytes: undefined, json: true },
+          cap.io,
+          deps,
+        ),
+    );
+    assert.strictEqual(code, 0);
+    const out = JSON.parse(cap.stdout.join('').trim()) as { status: string };
+    assert.strictEqual(out.status, 'ok');
+    assert.match(observedRedacted, /\[REDACTED:USER_PATTERN\]/);
+    assert.doesNotMatch(observedRedacted, /EMP-123456/);
+  });
+
+  test('11. T5: malformed extra pattern is logged + skipped (pipeline still runs)', async () => {
+    let observedRedacted = '';
+    const consentWithBadPattern: ConsentConfig = Object.freeze({
+      enabled: true,
+      allow_remote: false,
+      max_bytes: 32_768,
+      min_confidence: 0.6,
+      extra_redaction_patterns: [
+        { name: 'broken', pattern: '[unclosed', replacement: '[X]' },
+        { name: 'emp', pattern: 'EMP-[0-9]+', replacement: '[X]' },
+      ],
+    });
+
+    const deps: AutoExtractDeps = {
+      loadConsent: async () => ({ ok: true, consent: consentWithBadPattern }),
+      loadTranscript: () =>
+        Object.freeze({
+          jsonl: 'AKIAIOSFODNN7EXAMPLE and EMP-123456\n',
+          turnsRead: 1,
+          bytes: 38,
+        }),
+      // real redactor exercised
+      extractLessons: async (opts: ExtractionOptions) => {
+        observedRedacted = opts.transcript;
+        return happyExtraction();
+      },
+      checkBerry: async () => ({ ok: 'pass' as const }),
+      remember: handleRemember,
+      auditPath,
+    };
+
+    const cap = makeIO(projectCwd);
+    const code = await withStdin(
+      makePayload({ sessionId: 'sess-bad-pattern', cwd: projectCwd, transcriptPath }),
+      () =>
+        executeMemoryAutoExtractCommand(
+          { fromStdin: true, maxBytes: undefined, json: true },
+          cap.io,
+          deps,
+        ),
+    );
+    assert.strictEqual(code, 0, 'pipeline must NOT crash on a malformed user pattern');
+    const out = JSON.parse(cap.stdout.join('').trim()) as { status: string; note?: string };
+    assert.strictEqual(out.status, 'ok');
+    // Built-in AWS pattern still applied → proves pipeline kept running.
+    assert.match(observedRedacted, /\[REDACTED:AWS_KEY\]/);
+    // Valid second pattern still applied.
+    assert.match(observedRedacted, /\[REDACTED:USER_PATTERN\]/);
+    assert.doesNotMatch(observedRedacted, /EMP-123456/);
+    // Audit note records the bad pattern by name.
+    assert.match(out.note ?? '', /bad-user-pattern.*broken/);
+  });
+
+  test('12. T29: berry-not-configured does NOT block writes, audit notes the skip', async () => {
+    const deps: AutoExtractDeps = {
+      loadConsent: async () => ({ ok: true, consent: consentEnabled() }),
+      loadTranscript: () => fakeWindow(),
+      redact: (s) => s,
+      extractLessons: async () => happyExtraction(),
+      checkBerry: async (): Promise<BerryCheckResult> => ({
+        ok: 'unavailable',
+        details: { reason: 'berry-not-configured' },
+      }),
+      remember: handleRemember,
+      auditPath,
+    };
+
+    const cap = makeIO(projectCwd);
+    const code = await withStdin(
+      makePayload({ sessionId: 'sess-berry-noconfig', cwd: projectCwd, transcriptPath }),
+      () =>
+        executeMemoryAutoExtractCommand(
+          { fromStdin: true, maxBytes: undefined, json: true },
+          cap.io,
+          deps,
+        ),
+    );
+    assert.strictEqual(code, 0);
+    const out = JSON.parse(cap.stdout.join('').trim()) as {
+      status: string;
+      lessons_written: number;
+      note?: string;
+    };
+    // Lesson DID write through despite Berry being unconfigured.
+    assert.strictEqual(out.status, 'ok');
+    assert.strictEqual(out.lessons_written, 1);
+    assert.match(out.note ?? '', /skipped:berry-not-configured/);
+    assert.strictEqual(readMemories(projectCwd).length, 1);
+  });
+
+  test('13. T29: berry-not-configured bypasses RELAY_AUTO_EXTRACT_REQUIRE_BERRY=1', async () => {
+    const prev = process.env['RELAY_AUTO_EXTRACT_REQUIRE_BERRY'];
+    process.env['RELAY_AUTO_EXTRACT_REQUIRE_BERRY'] = '1';
+    try {
+      const deps: AutoExtractDeps = {
+        loadConsent: async () => ({ ok: true, consent: consentEnabled() }),
+        loadTranscript: () => fakeWindow(),
+        redact: (s) => s,
+        extractLessons: async () => happyExtraction(),
+        checkBerry: async (): Promise<BerryCheckResult> => ({
+          ok: 'unavailable',
+          details: { reason: 'berry-not-configured' },
+        }),
+        remember: handleRemember,
+        auditPath,
+      };
+
+      const cap = makeIO(projectCwd);
+      const code = await withStdin(
+        makePayload({ sessionId: 'sess-berry-noconfig-strict', cwd: projectCwd, transcriptPath }),
+        () =>
+          executeMemoryAutoExtractCommand(
+            { fromStdin: true, maxBytes: undefined, json: true },
+            cap.io,
+            deps,
+          ),
+      );
+      assert.strictEqual(code, 0);
+      const out = JSON.parse(cap.stdout.join('').trim()) as { status: string; lessons_written: number };
+      // Even with REQUIRE_BERRY=1, an unconfigured Berry must NOT block.
+      assert.strictEqual(out.status, 'ok');
+      assert.strictEqual(out.lessons_written, 1);
+    } finally {
+      if (prev === undefined) delete process.env['RELAY_AUTO_EXTRACT_REQUIRE_BERRY'];
+      else process.env['RELAY_AUTO_EXTRACT_REQUIRE_BERRY'] = prev;
+    }
+  });
+
+  test('14. T29: REQUIRE_BERRY=1 still blocks on other unavailable reasons (timeout / spawn err)', async () => {
+    const prev = process.env['RELAY_AUTO_EXTRACT_REQUIRE_BERRY'];
+    process.env['RELAY_AUTO_EXTRACT_REQUIRE_BERRY'] = '1';
+    try {
+      const deps: AutoExtractDeps = {
+        loadConsent: async () => ({ ok: true, consent: consentEnabled() }),
+        loadTranscript: () => fakeWindow(),
+        redact: (s) => s,
+        extractLessons: async () => happyExtraction(),
+        checkBerry: async (): Promise<BerryCheckResult> => ({
+          ok: 'unavailable',
+          details: { reason: 'timeout', timeoutMs: 50 },
+        }),
+        remember: handleRemember,
+        auditPath,
+      };
+
+      const cap = makeIO(projectCwd);
+      const code = await withStdin(
+        makePayload({ sessionId: 'sess-berry-timeout', cwd: projectCwd, transcriptPath }),
+        () =>
+          executeMemoryAutoExtractCommand(
+            { fromStdin: true, maxBytes: undefined, json: true },
+            cap.io,
+            deps,
+          ),
+      );
+      assert.strictEqual(code, 0);
+      const out = JSON.parse(cap.stdout.join('').trim()) as { status: string };
+      // No survivors: REQUIRE_BERRY=1 + timeout-style unavailable → blocked.
+      assert.strictEqual(out.status, 'error:berry-flagged');
+      assert.strictEqual(readMemories(projectCwd).length, 0);
+    } finally {
+      if (prev === undefined) delete process.env['RELAY_AUTO_EXTRACT_REQUIRE_BERRY'];
+      else process.env['RELAY_AUTO_EXTRACT_REQUIRE_BERRY'] = prev;
+    }
+  });
+
   test('9. transcript window has 0 turns → status skipped:empty-window, 0 written', async () => {
     const deps: AutoExtractDeps = {
       loadConsent: async () => ({ ok: true, consent: consentEnabled() }),

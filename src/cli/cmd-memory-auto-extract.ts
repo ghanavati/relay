@@ -309,7 +309,21 @@ async function runPipeline(
   }
 
   // 6. PII / secret redaction
-  const redact = deps.redact ?? redactSecretsAndPII;
+  // T5: extend the built-in patterns with the user's
+  // `consent.extra_redaction_patterns`. Each entry is compiled as
+  // `new RegExp(pattern, 'g')` inside a try/catch in `redactSecretsAndPII` —
+  // a malformed user pattern is logged here and silently skipped so it can
+  // never break the pipeline. Unified replacement for every user match is
+  // `[REDACTED:USER_PATTERN]` (per-pattern `replacement` is intentionally
+  // ignored to prevent the user file from smuggling structured tokens).
+  const patternErrors: Array<{ name: string; error: string }> = [];
+  const redactDefault = (text: string): string =>
+    redactSecretsAndPII(
+      text,
+      consent.extra_redaction_patterns,
+      (name, err) => patternErrors.push({ name, error: err.message }),
+    );
+  const redact = deps.redact ?? redactDefault;
   const redactedTranscript = redact(window.jsonl);
   const redactionHits = countRedactionHits(window.jsonl, redactedTranscript);
 
@@ -428,7 +442,18 @@ async function runPipeline(
     return 0;
   }
 
-  // 9. optional Berry hallucination check (per lesson)
+  // 9. optional Berry hallucination check (per lesson) — see T29.
+  //
+  // When `RELAY_BERRY_CMD` is unset, the helper returns
+  // `{ ok: 'unavailable', details: { reason: 'berry-not-configured' } }` and
+  // we MUST NOT block the write — the gate is opt-in, not mandatory. We
+  // record per-lesson `skipped:berry-not-configured` in the audit `note`
+  // field for visibility.
+  //
+  // When the helper returns any *other* `unavailable` outcome (timeout,
+  // spawn error), the existing `RELAY_AUTO_EXTRACT_REQUIRE_BERRY=1` policy
+  // still applies — strict operators can still hard-fail on infrastructure
+  // problems they care about.
   const requireBerry = env['RELAY_AUTO_EXTRACT_REQUIRE_BERRY'] === '1';
   const berryCheck = deps.checkBerry ?? checkLessonViaBerry;
   const transcriptSpans = [
@@ -437,6 +462,7 @@ async function runPipeline(
 
   const survivors: ExtractedLessonT[] = [];
   let anyFlagged = false;
+  let berrySkippedNotConfigured = 0;
   for (const lesson of cleanup.lessons) {
     let outcome: BerryCheckResult;
     try {
@@ -448,10 +474,25 @@ async function runPipeline(
       // Defensive: berry helper itself should not throw, but never crash.
       outcome = { ok: 'unavailable', details: { error: (err as Error).message } };
     }
+    const reason =
+      outcome.ok === 'unavailable' &&
+      outcome.details &&
+      typeof outcome.details === 'object' &&
+      (outcome.details as { reason?: unknown }).reason === 'berry-not-configured'
+        ? 'berry-not-configured'
+        : undefined;
+
     if (outcome.ok === 'flagged') {
       anyFlagged = true;
       continue;
     }
+    // Berry not configured → never blocks (per T29 spec).
+    if (reason === 'berry-not-configured') {
+      berrySkippedNotConfigured += 1;
+      survivors.push(lesson);
+      continue;
+    }
+    // Other unavailable outcomes (timeout, spawn error) honour REQUIRE_BERRY.
     if (outcome.ok === 'unavailable' && requireBerry) {
       anyFlagged = true;
       continue;
@@ -559,6 +600,20 @@ async function runPipeline(
   }
 
   const finalStatus: AutoExtractStatus = anyFlagged ? 'partial:berry-flag' : 'ok';
+  // Build audit `note` aggregating per-lesson Berry skips + bad consent
+  // patterns. Keeps the audit log honest about why some lessons may have
+  // bypassed the gate.
+  const noteParts: string[] = [];
+  if (berrySkippedNotConfigured > 0) {
+    noteParts.push(`skipped:berry-not-configured x${berrySkippedNotConfigured}`);
+  }
+  if (patternErrors.length > 0) {
+    noteParts.push(
+      `bad-user-pattern: ${patternErrors.map((p) => p.name).join(',')}`,
+    );
+  }
+  const note = noteParts.length > 0 ? noteParts.join('; ') : undefined;
+
   await emit(io, args, finalStatus, audit, {
     ts: new Date().toISOString(),
     session_id: payload.value.session_id,
@@ -571,6 +626,7 @@ async function runPipeline(
     redaction_hits: redactionHits,
     lessons_written: written,
     duration_ms: now() - startedAt,
+    ...(writeErrors.length > 0 ? { error: writeErrors.join(' | ') } : {}),
   });
   return 0;
 }
