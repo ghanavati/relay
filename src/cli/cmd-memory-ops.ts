@@ -170,6 +170,15 @@ export const HOOK_SCRIPT_SESSION_END =
   'mkdir -p "$HOME/.relay" && relay memory auto-extract --from-stdin 2>>"$HOME/.relay/auto-extract.log" || true';
 const HOOK_ID_SESSION_END = 'relay-memory-session-end';
 
+// Stable marker we attach to every Relay-managed hook entry so install/uninstall
+// can identify our own entries without ever matching foreign hooks by command
+// substring. CC ignores extra fields on hook entries, so this is schema-safe.
+// We bump the version suffix only if the hook script changes in a backward-
+// incompatible way that requires a forced replace of legacy entries.
+export const HOOK_MARKER_FIELD = '_relay_id';
+export const HOOK_MARKER_SESSION_START = 'relay-context-emit-v1';
+export const HOOK_MARKER_SESSION_END = 'relay-session-end-v1';
+
 /** Resolve the settings.json path. `global=true` targets the user-wide
  *  `~/.claude/settings.json` so the hook fires in every project; otherwise
  *  the project-local `<cwd>/.claude/settings.json`. */
@@ -180,9 +189,44 @@ export function resolveHookSettingsPath(cwd: string, global: boolean): string {
 }
 
 /**
+ * True iff this hook entry is one Relay manages for the given event.
+ *
+ * Match precedence:
+ * 1. New marker — entry carries `_relay_id` matching the expected marker.
+ *    This is the ONLY identifier we trust going forward; it survives users
+ *    editing the inner command, and it never collides with foreign hooks
+ *    that happen to share a substring.
+ * 2. Legacy migration — older Relay versions wrote either
+ *    (a) the legacy top-level `id` field, or
+ *    (b) a current-format entry without a marker but whose inner hooks[]
+ *        contains the EXACT current `hookScript` string.
+ *    We treat both as "this is ours" so a fresh install replaces them
+ *    cleanly. We never match by substring — only by full equality of the
+ *    command string — to keep the foreign-hook blast radius at zero.
+ */
+function isRelayManagedHookEntry(
+  entry: Record<string, unknown>,
+  marker: string,
+  legacyHookId: string,
+  hookScript: string
+): boolean {
+  if (entry[HOOK_MARKER_FIELD] === marker) return true;
+  if (entry['id'] === legacyHookId) return true;
+  const inner = (Array.isArray(entry['hooks']) ? entry['hooks'] : []) as Array<Record<string, unknown>>;
+  return inner.some(i => i['command'] === hookScript);
+}
+
+/**
  * Install or remove a CC hook (SessionStart by default; SessionEnd when
  * `sessionEnd: true`). The two hook variants are independent — installing
  * one does not touch the other, so users can opt into either or both.
+ *
+ * Identification is marker-based: every entry we write carries an
+ * `_relay_id` field (CC ignores unknown fields). Install replaces any
+ * existing entry with the matching marker (idempotent), and uninstall
+ * removes only entries whose marker matches. We never use a substring
+ * match against the inner command — that would risk wiping a user's own
+ * hook that happens to look like ours.
  */
 export async function executeMemoryHookCommand(
   command: { install: boolean; json: boolean; global?: boolean; sessionEnd?: boolean },
@@ -194,6 +238,7 @@ export async function executeMemoryHookCommand(
   const hookEventName = sessionEnd ? 'SessionEnd' : 'SessionStart';
   const hookScript = sessionEnd ? HOOK_SCRIPT_SESSION_END : HOOK_SCRIPT;
   const legacyHookId = sessionEnd ? HOOK_ID_SESSION_END : HOOK_ID;
+  const marker = sessionEnd ? HOOK_MARKER_SESSION_END : HOOK_MARKER_SESSION_START;
 
   let settings: Record<string, unknown> = {};
   try {
@@ -205,19 +250,19 @@ export async function executeMemoryHookCommand(
   const hooks = (settings['hooks'] ?? {}) as Record<string, unknown>;
   const existing = (Array.isArray(hooks[hookEventName]) ? hooks[hookEventName] : []) as Array<Record<string, unknown>>;
 
-  // Strip any stale relay hook entries for THIS event: legacy { id, run } shape AND any
-  // current-format entry whose inner hooks[] contains our hookScript. Makes install
-  // idempotent and self-heals settings.json files written by a prior buggy version.
-  const cleaned = existing.filter(h => {
-    if (h['id'] === legacyHookId) return false;
-    const inner = (Array.isArray(h['hooks']) ? h['hooks'] : []) as Array<Record<string, unknown>>;
-    if (inner.some(i => i['command'] === hookScript)) return false;
-    return true;
-  });
+  // Drop any Relay-managed entry for THIS event (matched by marker, with
+  // legacy-id and exact-command fallbacks for migration). Foreign hooks are
+  // preserved untouched — that is the whole point of this fix.
+  const cleaned = existing.filter(h => !isRelayManagedHookEntry(h, marker, legacyHookId, hookScript));
 
   if (command.install) {
-    // CC hook schema: each entry is { hooks: [{ type, command }] }, optionally with matcher.
-    cleaned.push({ hooks: [{ type: 'command', command: hookScript }] });
+    // CC hook schema: each entry is { hooks: [{ type, command }] }, optionally
+    // with matcher. We add `_relay_id` so future runs can find this entry by
+    // marker instead of by command-string equality. CC ignores the extra field.
+    cleaned.push({
+      [HOOK_MARKER_FIELD]: marker,
+      hooks: [{ type: 'command', command: hookScript }],
+    });
     hooks[hookEventName] = cleaned;
     settings['hooks'] = hooks;
     await mkdir(dirname(settingsPath), { recursive: true });

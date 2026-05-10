@@ -9,6 +9,10 @@ import {
   executeMemoryHookCommand,
   resolveHookSettingsPath,
   HOOK_SCRIPT,
+  HOOK_SCRIPT_SESSION_END,
+  HOOK_MARKER_FIELD,
+  HOOK_MARKER_SESSION_START,
+  HOOK_MARKER_SESSION_END,
 } from './cmd-memory-ops.js';
 import type { CliIO } from './commands.js';
 
@@ -28,11 +32,19 @@ function makeIO(cwd: string): CapturedIO {
   };
 }
 
+interface CcHookEntry {
+  hooks?: Array<{ type?: string; command?: string }>;
+  // The marker field carried by Relay-managed entries. Optional because
+  // foreign / legacy entries do not have it.
+  _relay_id?: string;
+  // Legacy id field written by very old Relay versions.
+  id?: string;
+}
+
 interface CcSettings {
   hooks?: {
-    SessionStart?: Array<{
-      hooks?: Array<{ type?: string; command?: string }>;
-    }>;
+    SessionStart?: Array<CcHookEntry>;
+    SessionEnd?: Array<CcHookEntry>;
   };
 }
 
@@ -384,5 +396,267 @@ describe('executeMemoryHookCommand — backwards compatibility', () => {
     assert.strictEqual(code, 0);
     const projectStat = await stat(join(tmp, '.claude', 'settings.json'));
     assert.ok(projectStat.isFile());
+  });
+});
+
+describe('executeMemoryHookCommand — marker-based identification', () => {
+  let tmp: string;
+
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'relay-hook-marker-'));
+  });
+
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  test('install writes _relay_id marker on the SessionStart entry', async () => {
+    const cap = makeIO(tmp);
+    await executeMemoryHookCommand({ install: true, json: false }, cap.io, tmp);
+    const settings = await readSettings(join(tmp, '.claude', 'settings.json'));
+    const entries = settings.hooks?.SessionStart ?? [];
+    assert.strictEqual(entries.length, 1);
+    assert.strictEqual(entries[0]?.[HOOK_MARKER_FIELD as '_relay_id'], HOOK_MARKER_SESSION_START);
+  });
+
+  test('install writes _relay_id marker on the SessionEnd entry', async () => {
+    const cap = makeIO(tmp);
+    await executeMemoryHookCommand(
+      { install: true, json: false, sessionEnd: true },
+      cap.io,
+      tmp
+    );
+    const settings = await readSettings(join(tmp, '.claude', 'settings.json'));
+    const entries = settings.hooks?.SessionEnd ?? [];
+    assert.strictEqual(entries.length, 1);
+    assert.strictEqual(entries[0]?.[HOOK_MARKER_FIELD as '_relay_id'], HOOK_MARKER_SESSION_END);
+  });
+
+  test('uninstall does NOT remove a foreign hook whose command happens to start with "relay"', async () => {
+    // User wrote their own hook that calls a relay-named binary. It is NOT ours
+    // (no marker, different command). Uninstall must leave it alone.
+    const settingsPath = join(tmp, '.claude', 'settings.json');
+    await mkdir(join(tmp, '.claude'), { recursive: true });
+    const foreignCommand = 'relay context emit --custom-flag-user-wrote';
+    await writeFile(
+      settingsPath,
+      JSON.stringify(
+        { hooks: { SessionStart: [{ hooks: [{ type: 'command', command: foreignCommand }] }] } },
+        null,
+        2
+      ) + '\n',
+      'utf8'
+    );
+
+    // Uninstall (no Relay-managed entry exists)
+    const cap = makeIO(tmp);
+    const code = await executeMemoryHookCommand({ install: false, json: false }, cap.io, tmp);
+    assert.strictEqual(code, 0);
+
+    const settings = await readSettings(settingsPath);
+    const entries = settings.hooks?.SessionStart ?? [];
+    assert.strictEqual(entries.length, 1, 'foreign hook must survive uninstall');
+    assert.strictEqual(entries[0]?.hooks?.[0]?.command, foreignCommand);
+  });
+
+  test('uninstall removes only the marked entry — foreign hook with same command shape is preserved', async () => {
+    // Pathological case: a user has a hook with the EXACT same command string
+    // as Relay's HOOK_SCRIPT, but no marker (e.g. they copy-pasted from docs and
+    // never ran `relay setup`). Uninstall should still remove only the entry we
+    // own (the marker-bearing one), and leave the unmarked twin alone.
+    //
+    // NOTE: this is the strict-safety guarantee the new design provides. Before
+    // this fix, both entries would be removed by command-string match.
+    const settingsPath = join(tmp, '.claude', 'settings.json');
+    await mkdir(join(tmp, '.claude'), { recursive: true });
+    await writeFile(
+      settingsPath,
+      JSON.stringify(
+        {
+          hooks: {
+            SessionStart: [
+              // Foreign clone — no marker
+              { hooks: [{ type: 'command', command: HOOK_SCRIPT }] },
+            ],
+          },
+        },
+        null,
+        2
+      ) + '\n',
+      'utf8'
+    );
+
+    // Install (this should add a marked entry, AND migrate the legacy unmarked
+    // twin away — that is the documented backward-compat behavior).
+    const capInstall = makeIO(tmp);
+    await executeMemoryHookCommand({ install: true, json: false }, capInstall.io, tmp);
+
+    let settings = await readSettings(settingsPath);
+    let entries = settings.hooks?.SessionStart ?? [];
+    // After install, exactly one Relay-managed entry must remain.
+    const relayEntries = entries.filter(
+      (e) => e[HOOK_MARKER_FIELD as '_relay_id'] === HOOK_MARKER_SESSION_START
+    );
+    assert.strictEqual(relayEntries.length, 1, 'install is idempotent — single marked entry');
+
+    // Now manually inject a foreign hook AFTER install. This represents the
+    // user's own hook that we must never touch on uninstall.
+    const foreignCommand = 'echo "user-wrote-this" >> /tmp/whatever.log';
+    settings.hooks!.SessionStart!.push({
+      hooks: [{ type: 'command', command: foreignCommand }],
+    });
+    await writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
+
+    // Uninstall — removes only our marked entry.
+    const capUninstall = makeIO(tmp);
+    await executeMemoryHookCommand({ install: false, json: false }, capUninstall.io, tmp);
+
+    settings = await readSettings(settingsPath);
+    entries = settings.hooks?.SessionStart ?? [];
+    const allCommands = entries.flatMap((e) => (e.hooks ?? []).map((h) => h.command));
+    assert.ok(allCommands.includes(foreignCommand), 'foreign hook preserved');
+    assert.strictEqual(
+      entries.some((e) => e[HOOK_MARKER_FIELD as '_relay_id'] === HOOK_MARKER_SESSION_START),
+      false,
+      'all marked Relay entries removed'
+    );
+  });
+
+  test('install replaces an existing marker-bearing entry without duplicating', async () => {
+    // First install — writes a marked entry.
+    const cap1 = makeIO(tmp);
+    await executeMemoryHookCommand({ install: true, json: false }, cap1.io, tmp);
+
+    // Second install — should REPLACE the prior marked entry, not duplicate.
+    const cap2 = makeIO(tmp);
+    await executeMemoryHookCommand({ install: true, json: false }, cap2.io, tmp);
+
+    const settings = await readSettings(join(tmp, '.claude', 'settings.json'));
+    const marked = (settings.hooks?.SessionStart ?? []).filter(
+      (e) => e[HOOK_MARKER_FIELD as '_relay_id'] === HOOK_MARKER_SESSION_START
+    );
+    assert.strictEqual(marked.length, 1, 'no duplicate marked entries');
+  });
+
+  test('install migrates legacy { id } entry to a marker-bearing entry', async () => {
+    // Legacy shape from old Relay versions: top-level `id` field, no marker.
+    const settingsPath = join(tmp, '.claude', 'settings.json');
+    await mkdir(join(tmp, '.claude'), { recursive: true });
+    await writeFile(
+      settingsPath,
+      JSON.stringify(
+        {
+          hooks: {
+            SessionStart: [
+              { id: 'relay-memory-session-start', run: 'old-legacy-command' },
+            ],
+          },
+        },
+        null,
+        2
+      ) + '\n',
+      'utf8'
+    );
+
+    const cap = makeIO(tmp);
+    await executeMemoryHookCommand({ install: true, json: false }, cap.io, tmp);
+
+    const settings = await readSettings(settingsPath);
+    const entries = settings.hooks?.SessionStart ?? [];
+    const legacyStillThere = entries.some((e) => e.id === 'relay-memory-session-start');
+    assert.strictEqual(legacyStillThere, false, 'legacy entry migrated away');
+    const marked = entries.filter(
+      (e) => e[HOOK_MARKER_FIELD as '_relay_id'] === HOOK_MARKER_SESSION_START
+    );
+    assert.strictEqual(marked.length, 1, 'single marker-bearing entry remains');
+  });
+
+  test('SessionStart install does NOT touch SessionEnd entries (and vice versa)', async () => {
+    // Install BOTH variants. They live under different event keys and use
+    // different markers — neither install should disturb the other.
+    const cap = makeIO(tmp);
+    await executeMemoryHookCommand({ install: true, json: false }, cap.io, tmp);
+    await executeMemoryHookCommand(
+      { install: true, json: false, sessionEnd: true },
+      cap.io,
+      tmp
+    );
+
+    const settings = await readSettings(join(tmp, '.claude', 'settings.json'));
+    const start = settings.hooks?.SessionStart ?? [];
+    const end = settings.hooks?.SessionEnd ?? [];
+    assert.strictEqual(
+      start.filter((e) => e[HOOK_MARKER_FIELD as '_relay_id'] === HOOK_MARKER_SESSION_START).length,
+      1
+    );
+    assert.strictEqual(
+      end.filter((e) => e[HOOK_MARKER_FIELD as '_relay_id'] === HOOK_MARKER_SESSION_END).length,
+      1
+    );
+
+    // Now uninstall ONLY SessionStart. SessionEnd marker must remain.
+    await executeMemoryHookCommand({ install: false, json: false }, cap.io, tmp);
+    const after = await readSettings(join(tmp, '.claude', 'settings.json'));
+    assert.strictEqual(
+      (after.hooks?.SessionStart ?? []).filter(
+        (e) => e[HOOK_MARKER_FIELD as '_relay_id'] === HOOK_MARKER_SESSION_START
+      ).length,
+      0,
+      'SessionStart marker removed'
+    );
+    assert.strictEqual(
+      (after.hooks?.SessionEnd ?? []).filter(
+        (e) => e[HOOK_MARKER_FIELD as '_relay_id'] === HOOK_MARKER_SESSION_END
+      ).length,
+      1,
+      'SessionEnd marker untouched'
+    );
+  });
+
+  test('foreign SessionEnd hook with command containing relay substring is preserved', async () => {
+    // A user has their own SessionEnd hook that wraps a relay subcommand. It is
+    // NOT one of ours (different command, no marker). Install + uninstall must
+    // leave it 100% intact.
+    const settingsPath = join(tmp, '.claude', 'settings.json');
+    await mkdir(join(tmp, '.claude'), { recursive: true });
+    const foreignCommand = 'relay memory wipe --confirm "WIPE /tmp/foo"';
+    await writeFile(
+      settingsPath,
+      JSON.stringify(
+        { hooks: { SessionEnd: [{ hooks: [{ type: 'command', command: foreignCommand }] }] } },
+        null,
+        2
+      ) + '\n',
+      'utf8'
+    );
+
+    const cap = makeIO(tmp);
+    await executeMemoryHookCommand(
+      { install: true, json: false, sessionEnd: true },
+      cap.io,
+      tmp
+    );
+    let settings = await readSettings(settingsPath);
+    let allCommands = (settings.hooks?.SessionEnd ?? []).flatMap((e) =>
+      (e.hooks ?? []).map((h) => h.command)
+    );
+    assert.ok(allCommands.includes(foreignCommand), 'foreign hook survives install');
+    assert.ok(allCommands.includes(HOOK_SCRIPT_SESSION_END), 'relay hook installed');
+
+    await executeMemoryHookCommand(
+      { install: false, json: false, sessionEnd: true },
+      cap.io,
+      tmp
+    );
+    settings = await readSettings(settingsPath);
+    allCommands = (settings.hooks?.SessionEnd ?? []).flatMap((e) =>
+      (e.hooks ?? []).map((h) => h.command)
+    );
+    assert.ok(allCommands.includes(foreignCommand), 'foreign hook survives uninstall');
+    assert.strictEqual(
+      allCommands.includes(HOOK_SCRIPT_SESSION_END),
+      false,
+      'relay hook removed'
+    );
   });
 });
