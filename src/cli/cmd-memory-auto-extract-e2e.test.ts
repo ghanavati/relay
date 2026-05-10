@@ -509,4 +509,73 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
     const tags = JSON.parse(row.tags_json) as string[];
     assert.ok(tags.includes('auto-extract'));
   });
+
+  test('8. cleanupAndValidate returns schema-error → status error:schema, 0 written', async () => {
+    const deps: AutoExtractDeps = {
+      loadConsent: async () => ({ ok: true, consent: consentEnabled() }),
+      loadTranscript: () => fakeWindow(),
+      redact: (s) => s,
+      extractLessons: async (_opts: ExtractionOptions) => ({
+        status: 'ok',
+        rawOutput: JSON.stringify({ lessons: [{ wrong: 'shape' }] }),
+        durationMs: 7,
+      }),
+      cleanupAndValidate: (_raw: string, _min: number): CleanupResult => ({
+        ok: false,
+        reason: 'schema-error',
+        detail: 'lessons[0].content: required',
+      }),
+      remember: handleRemember,
+      auditPath,
+    };
+
+    const cap = makeIO(projectCwd);
+    const code = await withStdin(
+      makePayload({ sessionId: 'sess-schema', cwd: projectCwd, transcriptPath }),
+      () =>
+        executeMemoryAutoExtractCommand(
+          { fromStdin: true, maxBytes: undefined, json: true },
+          cap.io,
+          deps
+        )
+    );
+
+    assert.strictEqual(code, 0);
+    const out = JSON.parse(cap.stdout.join('').trim()) as { status: string };
+    assert.strictEqual(out.status, 'error:schema');
+    assert.strictEqual(readMemories(projectCwd).length, 0);
+  });
+
+  test('9. transcript window has 0 turns → status skipped:empty-window, 0 written', async () => {
+    const deps: AutoExtractDeps = {
+      loadConsent: async () => ({ ok: true, consent: consentEnabled() }),
+      // Empty window — turnsRead === 0 triggers the skipped:empty-window branch
+      loadTranscript: () => Object.freeze({ jsonl: '', turnsRead: 0, bytes: 0 }),
+      // Anything past empty-window check should NEVER run — wire as throwers
+      redact: () => {
+        throw new Error('redact should not run on empty window');
+      },
+      extractLessons: async () => {
+        throw new Error('extractLessons should not run on empty window');
+      },
+      remember: handleRemember,
+      auditPath,
+    };
+
+    const cap = makeIO(projectCwd);
+    const code = await withStdin(
+      makePayload({ sessionId: 'sess-empty', cwd: projectCwd, transcriptPath }),
+      () =>
+        executeMemoryAutoExtractCommand(
+          { fromStdin: true, maxBytes: undefined, json: true },
+          cap.io,
+          deps
+        )
+    );
+
+    assert.strictEqual(code, 0);
+    const out = JSON.parse(cap.stdout.join('').trim()) as { status: string };
+    assert.strictEqual(out.status, 'skipped:empty-window');
+    assert.strictEqual(readMemories(projectCwd).length, 0);
+  });
 });
