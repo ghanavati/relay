@@ -86,7 +86,10 @@ symlink in `$REAL_HOME/.npm-global/bin` after the run.
 ## Re-run
 
 ```bash
-./scripts/smoke-test.sh
+relay verify
 ```
 
 Re-run after each subagent merge to keep the gap list honest.
+
+> Note: `scripts/smoke-test.sh` was deprecated by T16 and now thinly wraps
+> `relay verify`. Invoke the CLI command directly going forward.
