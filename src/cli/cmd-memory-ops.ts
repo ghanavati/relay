@@ -164,8 +164,10 @@ const HOOK_ID = 'relay-memory-session-start';
 // SessionEnd hook: pipes CC's SessionEnd payload (JSON on stdin) to the auto-extract
 // command, which runs the consent-gated transcript distillation pipeline. Errors are
 // appended to the relay log so the hook never blocks CC from terminating cleanly.
+// Codex review BLOCKER fix: shell `2>>` opens log path BEFORE relay runs, so
+// `~/.relay/` must exist first or the hook silently fails on a fresh install.
 export const HOOK_SCRIPT_SESSION_END =
-  'relay memory auto-extract --from-stdin 2>>$HOME/.relay/auto-extract.log || true';
+  'mkdir -p "$HOME/.relay" && relay memory auto-extract --from-stdin 2>>"$HOME/.relay/auto-extract.log" || true';
 const HOOK_ID_SESSION_END = 'relay-memory-session-end';
 
 /** Resolve the settings.json path. `global=true` targets the user-wide
