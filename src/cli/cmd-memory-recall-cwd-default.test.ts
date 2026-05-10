@@ -130,6 +130,7 @@ describe('executeRecallCommand under T50 cwd-default semantics', () => {
       createdBefore: undefined,
       file: undefined,
       json: true,
+      minTrust: undefined,
     }, cap.io);
 
     assert.strictEqual(code, 0, `recall should succeed; stderr=${cap.stderr.join('')}`);
@@ -161,6 +162,7 @@ describe('executeRecallCommand under T50 cwd-default semantics', () => {
       createdBefore: undefined,
       file: undefined,
       json: true,
+      minTrust: undefined,
     }, cap.io);
 
     assert.strictEqual(code, 0, `recall should succeed; stderr=${cap.stderr.join('')}`);
@@ -196,6 +198,7 @@ describe('executeRecallCommand under T50 cwd-default semantics', () => {
       createdBefore: undefined,
       file: undefined,
       json: true,
+      minTrust: undefined,
     }, cap.io);
 
     assert.strictEqual(code, 0, `recall should succeed; stderr=${cap.stderr.join('')}`);
