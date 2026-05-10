@@ -168,6 +168,7 @@ DELEGATION COMMANDS
     [--json]
 
   relay doctor [--json]                    Probe provider + DB health
+  relay verify [--json]                    End-to-end smoke (memory + context + hook + db)
   relay history [--limit N] [--provider P] [--status S] [--json]
   relay diff <run_id> [--json]             Show files_changed + diffs for a run
   relay compare <run_a> <run_b> [--json]   Side-by-side diff of two runs
@@ -531,6 +532,12 @@ async function dispatchContext(rest: readonly string[]): Promise<number> {
   return 2;
 }
 
+async function dispatchVerify(rest: readonly string[]): Promise<number> {
+  const flags = parseFlags(rest);
+  const { executeVerifyCommand } = await import('./cli/cmd-verify.js');
+  return executeVerifyCommand({ json: isBool(flags, 'json') }, io);
+}
+
 const VALID_COLOR_MODES = new Set<ColorMode>(['auto', 'always', 'never']);
 
 function isColorMode(v: string): v is ColorMode {
@@ -587,6 +594,7 @@ async function main(): Promise<number> {
   }
 
   if (cmd === 'run') return dispatchRun(rest);
+  if (cmd === 'verify') return dispatchVerify(rest);
   if (cmd === 'doctor') {
     const flags = parseFlags(rest);
     const { executeDoctorCommand } = await import('./cli/cmd-doctor.js');
