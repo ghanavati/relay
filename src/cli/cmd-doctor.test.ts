@@ -13,6 +13,9 @@ import {
   checkEnvConsistency,
   checkLastRecall,
   checkAutoExtractStatus,
+  checkBerryReachability,
+  checkLmStudioModelLoaded,
+  checkConsentFiles,
 } from './cmd-doctor.js';
 import type { CliIO } from './commands.js';
 
@@ -642,5 +645,177 @@ describe('checkAutoExtractStatus', () => {
     const ae = parsed.checks.find(c => c.name === 'auto-extract (24h)');
     assert.ok(ae, 'auto-extract check should be present in doctor output');
     assert.strictEqual(ae.status, 'ok');
+  });
+});
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Unit tests for the three NEW additive checks.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+describe('checkBerryReachability', () => {
+  let savedBerry: string | undefined;
+
+  beforeEach(() => {
+    savedBerry = process.env['RELAY_BERRY_CMD'];
+    delete process.env['RELAY_BERRY_CMD'];
+  });
+
+  afterEach(() => {
+    if (savedBerry === undefined) delete process.env['RELAY_BERRY_CMD'];
+    else process.env['RELAY_BERRY_CMD'] = savedBerry;
+  });
+
+  test('RELAY_BERRY_CMD unset → status ok "not configured"', async () => {
+    const probe = await checkBerryReachability();
+    assert.strictEqual(probe.name, 'berry');
+    assert.strictEqual(probe.status, 'ok');
+    assert.match(probe.detail, /not configured/);
+  });
+
+  test('command exits 0 → status ok "reachable"', async () => {
+    process.env['RELAY_BERRY_CMD'] = 'true';
+    const probe = await checkBerryReachability();
+    assert.strictEqual(probe.status, 'ok');
+    assert.strictEqual(probe.detail, 'reachable');
+  });
+
+  test('command exits non-zero → status missing "configured but not reachable"', async () => {
+    process.env['RELAY_BERRY_CMD'] = 'false';
+    const probe = await checkBerryReachability();
+    assert.strictEqual(probe.status, 'missing');
+    assert.match(probe.detail, /configured but not reachable/);
+  });
+
+  test('command not found → status missing', async () => {
+    process.env['RELAY_BERRY_CMD'] = 'definitely-not-a-real-binary-xyz-12345';
+    const probe = await checkBerryReachability();
+    assert.strictEqual(probe.status, 'missing');
+  });
+});
+
+describe('checkLmStudioModelLoaded', () => {
+  let tempBin: string;
+  let savedPath: string | undefined;
+
+  beforeEach(async () => {
+    tempBin = await mkdtemp(join(tmpdir(), 'doctor-lms-'));
+    savedPath = process.env['PATH'];
+  });
+
+  afterEach(async () => {
+    if (savedPath === undefined) delete process.env['PATH'];
+    else process.env['PATH'] = savedPath;
+    await rm(tempBin, { recursive: true, force: true });
+  });
+
+  test('lms binary missing → status missing "lms not in PATH"', async () => {
+    // Restrict PATH to a directory with no lms binary.
+    process.env['PATH'] = tempBin;
+    const probe = await checkLmStudioModelLoaded();
+    assert.strictEqual(probe.name, 'lmstudio-loaded');
+    assert.strictEqual(probe.status, 'missing');
+    assert.match(probe.detail, /lms not in PATH/);
+  });
+
+  test('lms returns empty list → status missing "no models loaded"', async () => {
+    await writeFile(
+      join(tempBin, 'lms'),
+      '#!/usr/bin/env bash\necho "[]"\n',
+      'utf8',
+    );
+    const { chmod } = await import('node:fs/promises');
+    await chmod(join(tempBin, 'lms'), 0o755);
+    process.env['PATH'] = `${tempBin}:${savedPath ?? '/usr/bin:/bin'}`;
+    const probe = await checkLmStudioModelLoaded();
+    assert.strictEqual(probe.status, 'missing');
+    assert.match(probe.detail, /no models loaded/);
+  });
+
+  test('lms returns ≥1 model → status ok with count + names', async () => {
+    await writeFile(
+      join(tempBin, 'lms'),
+      '#!/usr/bin/env bash\necho \'[{"identifier":"qwen-coder"},{"identifier":"llama-3"}]\'\n',
+      'utf8',
+    );
+    const { chmod } = await import('node:fs/promises');
+    await chmod(join(tempBin, 'lms'), 0o755);
+    process.env['PATH'] = `${tempBin}:${savedPath ?? '/usr/bin:/bin'}`;
+    const probe = await checkLmStudioModelLoaded();
+    assert.strictEqual(probe.status, 'ok');
+    assert.match(probe.detail, /2 model\(s\) loaded/);
+    assert.match(probe.detail, /qwen-coder/);
+    assert.match(probe.detail, /llama-3/);
+  });
+
+  test('lms returns invalid JSON → status missing', async () => {
+    await writeFile(
+      join(tempBin, 'lms'),
+      '#!/usr/bin/env bash\necho "not-json-at-all"\n',
+      'utf8',
+    );
+    const { chmod } = await import('node:fs/promises');
+    await chmod(join(tempBin, 'lms'), 0o755);
+    process.env['PATH'] = `${tempBin}:${savedPath ?? '/usr/bin:/bin'}`;
+    const probe = await checkLmStudioModelLoaded();
+    assert.strictEqual(probe.status, 'missing');
+    assert.match(probe.detail, /not JSON/);
+  });
+});
+
+describe('checkConsentFiles', () => {
+  let tempA: string;
+  let tempB: string;
+  let savedAllowed: string | undefined;
+
+  beforeEach(async () => {
+    tempA = await mkdtemp(join(tmpdir(), 'doctor-consent-a-'));
+    tempB = await mkdtemp(join(tmpdir(), 'doctor-consent-b-'));
+    savedAllowed = process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'];
+  });
+
+  afterEach(async () => {
+    if (savedAllowed === undefined) delete process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'];
+    else process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = savedAllowed;
+    await rm(tempA, { recursive: true, force: true });
+    await rm(tempB, { recursive: true, force: true });
+  });
+
+  test('no consent file in any workdir → status missing', async () => {
+    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = `${tempA},${tempB}`;
+    const probe = await checkConsentFiles();
+    assert.strictEqual(probe.name, 'consent-files');
+    assert.strictEqual(probe.status, 'missing');
+    assert.match(probe.detail, /no workdirs have consent/);
+    assert.match(probe.detail, /0\/2/);
+  });
+
+  test('1 of 2 workdirs has consent → status ok "1/2"', async () => {
+    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = `${tempA},${tempB}`;
+    await mkdir(join(tempA, '.relay'), { recursive: true });
+    await writeFile(join(tempA, '.relay', 'auto-extract.json'), '{}', 'utf8');
+    const probe = await checkConsentFiles();
+    assert.strictEqual(probe.status, 'ok');
+    assert.match(probe.detail, /1\/2 workdirs have consent/);
+  });
+
+  test('all workdirs have consent → status ok "2/2"', async () => {
+    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = `${tempA},${tempB}`;
+    await mkdir(join(tempA, '.relay'), { recursive: true });
+    await mkdir(join(tempB, '.relay'), { recursive: true });
+    await writeFile(join(tempA, '.relay', 'auto-extract.json'), '{}', 'utf8');
+    await writeFile(join(tempB, '.relay', 'auto-extract.json'), '{}', 'utf8');
+    const probe = await checkConsentFiles();
+    assert.strictEqual(probe.status, 'ok');
+    assert.match(probe.detail, /2\/2 workdirs have consent/);
+  });
+
+  test('RELAY_MEMORY_ALLOWED_WORKDIRS unset → falls back to cwd, missing if no consent', async () => {
+    delete process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'];
+    // cwd is the worktree root; no .relay/auto-extract.json there in this test repo.
+    const probe = await checkConsentFiles();
+    // Either missing (no file) or ok (file happens to exist) — assert structure either way.
+    assert.strictEqual(probe.name, 'consent-files');
+    assert.ok(probe.status === 'missing' || probe.status === 'ok');
+    assert.match(probe.detail, /\/1/);
   });
 });

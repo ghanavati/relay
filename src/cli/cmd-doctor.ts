@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { readFile, access } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -241,6 +241,113 @@ export function checkAutoExtractStatus(now: Date = new Date()): ProviderProbe {
   return { name: 'auto-extract (24h)', status: 'ok', detail };
 }
 
+/**
+ * Check whether Berry is reachable.
+ *
+ * Reads `RELAY_BERRY_CMD` env. If unset → status 'ok' detail 'not configured (Berry checks disabled)'.
+ * If set → run command with empty stdin and 5s timeout.
+ *   - exit 0       → 'ok'      detail 'reachable'
+ *   - non-zero/timeout → 'missing' detail 'configured but not reachable'
+ */
+export async function checkBerryReachability(): Promise<ProviderProbe> {
+  const cmd = process.env['RELAY_BERRY_CMD'];
+  if (!cmd || cmd.trim().length === 0) {
+    return { name: 'berry', status: 'ok', detail: 'not configured (Berry checks disabled)' };
+  }
+  return new Promise<ProviderProbe>((resolve) => {
+    const child = execFile('bash', ['-c', cmd], { encoding: 'utf-8', timeout: 5000 }, (err) => {
+      if (err) {
+        resolve({ name: 'berry', status: 'missing', detail: 'configured but not reachable' });
+        return;
+      }
+      resolve({ name: 'berry', status: 'ok', detail: 'reachable' });
+    });
+    // Close stdin immediately so the command sees EOF and can exit.
+    if (child.stdin) child.stdin.end();
+  });
+}
+
+/**
+ * Check whether LM Studio has at least one model loaded via `lms ps --json`.
+ *
+ *   - lms not in PATH        → 'missing' detail 'lms not in PATH'
+ *   - JSON parse + ≥1 model  → 'ok'      detail '<count> model(s) loaded: <names>'
+ *   - empty list             → 'missing' detail 'no models loaded'
+ *   - other failure          → 'missing' detail 'lms ps failed'
+ */
+export async function checkLmStudioModelLoaded(): Promise<ProviderProbe> {
+  return new Promise<ProviderProbe>((resolve) => {
+    execFile('lms', ['ps', '--json'], { encoding: 'utf-8', timeout: 5000 }, (err, stdoutData) => {
+      if (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT') {
+          resolve({ name: 'lmstudio-loaded', status: 'missing', detail: 'lms not in PATH' });
+          return;
+        }
+        resolve({ name: 'lmstudio-loaded', status: 'missing', detail: 'lms ps failed' });
+        return;
+      }
+      const out = (stdoutData as string).trim();
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(out);
+      } catch {
+        resolve({ name: 'lmstudio-loaded', status: 'missing', detail: 'lms ps output not JSON' });
+        return;
+      }
+      const list = Array.isArray(parsed)
+        ? (parsed as Array<Record<string, unknown>>)
+        : Array.isArray((parsed as { data?: unknown }).data)
+          ? ((parsed as { data: unknown[] }).data as Array<Record<string, unknown>>)
+          : Array.isArray((parsed as { models?: unknown }).models)
+            ? ((parsed as { models: unknown[] }).models as Array<Record<string, unknown>>)
+            : [];
+      if (list.length === 0) {
+        resolve({ name: 'lmstudio-loaded', status: 'missing', detail: 'no models loaded' });
+        return;
+      }
+      const names = list
+        .map((m) => {
+          const v = m['identifier'] ?? m['id'] ?? m['name'] ?? m['path'];
+          return typeof v === 'string' ? v : '';
+        })
+        .filter((v) => v.length > 0);
+      const summary = names.length > 0 ? names.join(', ') : '<unnamed>';
+      resolve({ name: 'lmstudio-loaded', status: 'ok', detail: `${list.length} model(s) loaded: ${summary}` });
+    });
+  });
+}
+
+/**
+ * Check presence of `.relay/auto-extract.json` consent files across known workdirs.
+ *
+ * Workdirs come from `RELAY_MEMORY_ALLOWED_WORKDIRS` (comma-separated). If unset, the
+ * single workdir is `process.cwd()`.
+ *
+ *   - N/M workdirs have file → 'ok' if N>0, otherwise 'missing'
+ */
+export async function checkConsentFiles(): Promise<ProviderProbe> {
+  const raw = process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'];
+  const workdirs = raw && raw.trim().length > 0
+    ? raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
+    : [process.cwd()];
+  let present = 0;
+  for (const dir of workdirs) {
+    const file = join(dir, '.relay', 'auto-extract.json');
+    try {
+      await access(file);
+      present++;
+    } catch {
+      // missing — counted by absence
+    }
+  }
+  const total = workdirs.length;
+  if (present === 0) {
+    return { name: 'consent-files', status: 'missing', detail: `no workdirs have consent (0/${total})` };
+  }
+  return { name: 'consent-files', status: 'ok', detail: `${present}/${total} workdirs have consent` };
+}
+
 export async function executeDoctorCommand(args: DoctorArgs, io: CliIO): Promise<number> {
   const checks: ProviderProbe[] = [];
   let summary = { ok: 0, missing: 0, failed: 0 };
@@ -288,6 +395,15 @@ export async function executeDoctorCommand(args: DoctorArgs, io: CliIO): Promise
 
   // 10. Auto-extract activity (last 24h)
   record(checkAutoExtractStatus());
+
+  // 11. Berry reachability (additive — opt-in via RELAY_BERRY_CMD)
+  record(await checkBerryReachability());
+
+  // 12. LM Studio model loaded (additive — separate from HTTP probe)
+  record(await checkLmStudioModelLoaded());
+
+  // 13. Consent files presence in known workdirs (additive)
+  record(await checkConsentFiles());
 
   // Output
   if (args.json) {
