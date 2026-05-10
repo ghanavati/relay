@@ -228,4 +228,171 @@ describe('relay memory consolidate', () => {
     assert.match(text, /threshold=0\.85/);
     assert.match(text, /dry-run/);
   });
+
+  // --- T31: --workdir scoping coverage (additive) ---
+
+  test('--workdir <A> consolidates only workdir A dupes; workdir B untouched', async () => {
+    const store = new MemoryStore();
+    const wdirA = '/tmp/relay-test/workdirA';
+    const wdirB = '/tmp/relay-test/workdirB';
+    // Two duplicates in workdir A.
+    const a1 = store.remember({
+      content: 'Workdir A scoped duplicate content for consolidate test scenario alpha.',
+      memory_type: 'lesson',
+      workdir: wdirA,
+    });
+    const a2 = store.remember({
+      content: 'Workdir A scoped duplicate content for consolidate test scenario alpha.',
+      memory_type: 'fact',
+      workdir: wdirA,
+    });
+    bumpRecall(a1, 5);
+    bumpRecall(a2, 1);
+    // Two duplicates in workdir B that MUST remain untouched by the scoped run.
+    const b1 = store.remember({
+      content: 'Workdir B scoped duplicate content for consolidate test scenario beta.',
+      memory_type: 'lesson',
+      workdir: wdirB,
+    });
+    const b2 = store.remember({
+      content: 'Workdir B scoped duplicate content for consolidate test scenario beta.',
+      memory_type: 'fact',
+      workdir: wdirB,
+    });
+    bumpRecall(b1, 5);
+    bumpRecall(b2, 1);
+
+    const cap = makeIO();
+    const exit = await executeMemoryConsolidateCommand(
+      { dryRun: false, json: true, similarityThreshold: 0.85, workdir: wdirA },
+      cap.io
+    );
+    assert.equal(exit, 0);
+    const out = JSON.parse(cap.stdout[0]!) as {
+      marked: number; actions: Array<{ memory_id: string; superseded_by: string }>;
+    };
+    assert.equal(out.marked, 1, 'only one duplicate (in workdir A) should be marked');
+    assert.equal(out.actions.length, 1);
+    assert.equal(out.actions[0]!.memory_id, a2);
+    assert.equal(out.actions[0]!.superseded_by, a1);
+    // Workdir B remains fully active.
+    const activeB = activeIds(wdirB).sort();
+    assert.deepEqual(activeB, [b1, b2].sort(), 'workdir B must remain untouched by --workdir A run');
+    // Workdir A keeper survived; loser superseded.
+    const activeA = activeIds(wdirA);
+    assert.ok(activeA.includes(a1));
+    assert.ok(!activeA.includes(a2));
+  });
+
+  test('cross-workdir near-duplicates: unscoped consolidates both, scoped only matching', async () => {
+    const wdirA = '/tmp/relay-test/wdA';
+    const wdirB = '/tmp/relay-test/wdB';
+    const store = new MemoryStore();
+    // Near-duplicate pair in workdir A.
+    const a1 = store.remember({
+      content: 'Repository pattern encapsulates database access logic for testability and clarity.',
+      memory_type: 'lesson',
+      workdir: wdirA,
+    });
+    const a2 = store.remember({
+      content: 'Repository pattern encapsulates database access logic for testability with clarity.',
+      memory_type: 'lesson',
+      workdir: wdirA,
+    });
+    bumpRecall(a1, 4);
+    // Near-duplicate pair in workdir B.
+    const b1 = store.remember({
+      content: 'Caching layer using Redis for session data persistence and fast lookups.',
+      memory_type: 'lesson',
+      workdir: wdirB,
+    });
+    const b2 = store.remember({
+      content: 'Caching layer using Redis for session data persistence with fast lookups.',
+      memory_type: 'lesson',
+      workdir: wdirB,
+    });
+    bumpRecall(b1, 4);
+
+    // First: scoped to A. Only A's loser must be marked.
+    const cap1 = makeIO();
+    const exit1 = await executeMemoryConsolidateCommand(
+      { dryRun: false, json: true, similarityThreshold: 0.7, workdir: wdirA },
+      cap1.io
+    );
+    assert.equal(exit1, 0);
+    const scoped = JSON.parse(cap1.stdout[0]!) as { marked: number; actions: Array<{ memory_id: string }> };
+    assert.equal(scoped.marked, 1, 'scoped run should only mark workdir-A duplicate');
+    assert.equal(scoped.actions[0]!.memory_id, a2);
+    // workdir B pair still both active.
+    assert.deepEqual(activeIds(wdirB).sort(), [b1, b2].sort());
+
+    // Then: unscoped run consolidates the remaining workdir-B pair.
+    const cap2 = makeIO();
+    const exit2 = await executeMemoryConsolidateCommand(
+      { dryRun: false, json: true, similarityThreshold: 0.7 },
+      cap2.io
+    );
+    assert.equal(exit2, 0);
+    const unscoped = JSON.parse(cap2.stdout[0]!) as { marked: number; actions: Array<{ memory_id: string }> };
+    assert.equal(unscoped.marked, 1, 'unscoped run should mark the remaining workdir-B duplicate');
+    assert.equal(unscoped.actions[0]!.memory_id, b2);
+  });
+
+  test('--workdir excludes pinned entries from supersession', async () => {
+    const wdir = '/tmp/relay-test/pinned-scope';
+    const store = new MemoryStore();
+    const p1 = store.remember({
+      content: 'Pinned scoped content stays put across consolidation runs forever and ever.',
+      memory_type: 'fact',
+      workdir: wdir,
+      pinned: true,
+    });
+    const p2 = store.remember({
+      content: 'Pinned scoped content stays put across consolidation runs forever and ever.',
+      memory_type: 'lesson',
+      workdir: wdir,
+      pinned: true,
+    });
+
+    const cap = makeIO();
+    const exit = await executeMemoryConsolidateCommand(
+      { dryRun: false, json: true, similarityThreshold: 0.85, workdir: wdir },
+      cap.io
+    );
+    assert.equal(exit, 0);
+    const out = JSON.parse(cap.stdout[0]!) as { marked: number };
+    assert.equal(out.marked, 0, 'pinned entries must never be superseded, even within scope');
+    const remaining = activeIds(wdir).sort();
+    assert.deepEqual(remaining, [p1, p2].sort());
+  });
+
+  test('--workdir with no matching memories returns empty result, no error', async () => {
+    const store = new MemoryStore();
+    // Seed unrelated memories in a different workdir so the store isn't empty.
+    store.remember({
+      content: 'Unrelated memory in another workdir that the scoped run must ignore entirely.',
+      memory_type: 'lesson',
+      workdir: '/tmp/relay-test/other-workdir',
+    });
+
+    const cap = makeIO();
+    const exit = await executeMemoryConsolidateCommand(
+      {
+        dryRun: false,
+        json: true,
+        similarityThreshold: 0.85,
+        workdir: '/tmp/relay-test/nonexistent-workdir-xyz',
+      },
+      cap.io
+    );
+    assert.equal(exit, 0, 'empty scope is not an error');
+    const out = JSON.parse(cap.stdout[0]!) as {
+      marked: number; duplicates: number; supersessions: number; actions: unknown[];
+    };
+    assert.equal(out.marked, 0);
+    assert.equal(out.duplicates, 0);
+    assert.equal(out.supersessions, 0);
+    assert.equal(out.actions.length, 0);
+    assert.equal(cap.stderr.length, 0, 'no stderr on empty-scope success');
+  });
 });
