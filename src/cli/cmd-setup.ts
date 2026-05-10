@@ -163,42 +163,40 @@ export async function executeSetupCommand(
   const results: StepResult[] = [];
 
   // T15 — Optional --clean: strip stale Relay-managed hook entries first.
-  // We target both global SessionStart (HOOK_MARKER_SESSION_START =
-  // 'relay-context-emit-v1') and global SessionEnd (HOOK_MARKER_SESSION_END =
-  // 'relay-session-end-v1'). The underlying executeMemoryHookCommand uses the
-  // marker fields to identify Relay's entries — it never matches by command
-  // substring, so foreign hooks are preserved untouched. Idempotent: running
-  // --clean twice is a no-op the second time.
+  // We target BOTH the global settings (`~/.claude/settings.json`) and the
+  // project settings (`<cwd>/.claude/settings.json`), and within each file
+  // both SessionStart (HOOK_MARKER_SESSION_START = 'relay-context-emit-v1')
+  // and SessionEnd (HOOK_MARKER_SESSION_END = 'relay-session-end-v1').
+  //
+  // The underlying executeMemoryHookCommand uses the marker fields to
+  // identify Relay's entries — it never matches by command substring, so
+  // foreign hooks are preserved untouched. Idempotent: running --clean
+  // twice is a no-op the second time (uninstall on an empty hook list still
+  // returns 0 and leaves foreign entries alone).
   if (args.clean) {
-    results.push(
-      await runStep(
-        'relay memory hook --uninstall --global (SessionStart cleanup)',
-        io,
-        args.json,
-        (childIo) =>
-          runHookInstall(
-            { install: false, json: args.json, global: true, sessionEnd: false },
-            childIo,
-            io.cwd
-          )
-      )
-    );
-    if (!results.at(-1)!.ok) return finalize(io, args.json, results);
+    const cleanupTargets: Array<{ global: boolean; sessionEnd: boolean; label: string }> = [
+      { global: true, sessionEnd: false, label: 'relay memory hook --uninstall --global (SessionStart cleanup)' },
+      { global: true, sessionEnd: true, label: 'relay memory hook --uninstall --global --session-end (SessionEnd cleanup)' },
+      { global: false, sessionEnd: false, label: 'relay memory hook --uninstall (project SessionStart cleanup)' },
+      { global: false, sessionEnd: true, label: 'relay memory hook --uninstall --session-end (project SessionEnd cleanup)' },
+    ];
 
-    results.push(
-      await runStep(
-        'relay memory hook --uninstall --global --session-end (SessionEnd cleanup)',
-        io,
-        args.json,
-        (childIo) =>
-          runHookInstall(
-            { install: false, json: args.json, global: true, sessionEnd: true },
-            childIo,
-            io.cwd
-          )
-      )
-    );
-    if (!results.at(-1)!.ok) return finalize(io, args.json, results);
+    for (const target of cleanupTargets) {
+      results.push(
+        await runStep(
+          target.label,
+          io,
+          args.json,
+          (childIo) =>
+            runHookInstall(
+              { install: false, json: args.json, global: target.global, sessionEnd: target.sessionEnd },
+              childIo,
+              io.cwd
+            )
+        )
+      );
+      if (!results.at(-1)!.ok) return finalize(io, args.json, results);
+    }
   }
 
   // --clean alone (without --everything) returns after cleanup — idempotent

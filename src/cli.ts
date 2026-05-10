@@ -187,8 +187,8 @@ SETUP
   relay setup --everything [--workdir P] [--lm-model M] [--yes] [--json]
                                            One-command installer (init + hooks + auto-extract)
     [--interactive]                        Re-enable init's Y/n prompts (default: non-interactive)
-    [--clean]                              Strip stale Relay-managed hooks before re-installing
-  relay setup --clean [--json]             Idempotent: remove Relay-managed CC hooks (no install)
+    [--clean]                              Strip stale Relay-managed hooks (global + project) before re-installing
+  relay setup --clean [--json]             Idempotent: remove Relay-managed CC hooks from ~/.claude AND project .claude (no install)
   relay update [--check|--apply] [--json]  Self-update Relay (default: --check)
     [--force]                              Bypass signed-tag-ahead requirement
   relay setup-llm <target> [--write] [--json]
