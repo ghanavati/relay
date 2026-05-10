@@ -121,3 +121,47 @@ This repo was extracted from `relay-mcp` on 2026-05-02. If you need that context
 ## Provenance
 
 Extracted from `github.com/ghanavati/relay-mcp` on 2026-05-02. See `docs/findings/2026-05-02-extract-session-learnings.md` for the extraction methodology.
+
+## Wave 4 Lessons
+
+Lessons surfaced during the wave 4 parallel-subagent run. Read these before dispatching subagents that touch loggers, hooks, settings files, LIKE queries, init flows, doctor checks, or LLM context emission.
+
+### 1. Path unification discipline
+
+When migrating loggers or log paths, every reader and every writer must change in the same atomic commit. Wave 4 shipped a state where `relay memory tail` read one path while the auto-extract pipeline wrote a different one — Codex review flagged this HIGH because the user saw an "empty" tail despite live writes happening. If you split the migration across PRs, at least one revision will be observably broken. Grep for the old path before declaring done.
+
+### 2. Hook marker discipline
+
+Install/uninstall must match by a stable marker field (e.g. `name: "relay-context"`), not by substring-matching the command line. Codex flagged a Wave 4 uninstaller that grep'd for `relay context emit` in user shell hooks — a user with their own hook calling that command would have it silently removed. Always pair install with a unique marker and uninstall by exact-marker equality.
+
+### 3. Settings ENOENT vs EPARSE
+
+When manipulating user JSON config files (settings, hooks, env), distinguish missing-file from parse-error. Missing → safe to write a fresh file. Parse error → STOP and surface the error; do not overwrite. Wave 4 had an init path that treated both cases the same way and would have nuked a user's broken-but-recoverable JSON. Read first, parse with try/catch, branch on the error code.
+
+### 4. Wildcard escape in LIKE queries
+
+Every `LIKE` query against user-supplied strings must use `ESCAPE '\'` and pre-escape `_`, `%`, and `\` in the user input. Without it, a search for `foo_bar` matches `fooXbar` and a search for `100%` matches everything. Wave 4 added a memory-search filter that was missing this — caught before it shipped. Pattern: `escapeLike(s)` helper that returns `s.replace(/[\\_%]/g, '\\$&')`, then pass the result with `ESCAPE '\\'`.
+
+### 5. Hardcoded model names violate model-agnostic spec
+
+Restating "What must not regress" with a Wave 4 incident: a new LM Studio caller hardcoded a specific model id as a fallback default. This violates the spec ("Relay is model-agnostic"). Pull the model id from `RELAY_LMSTUDIO_MODEL`, or discover via `lms ps` at runtime. If neither yields a value, fail with `RelayError`, do not paper over with a literal.
+
+### 6. Status taxonomy completeness
+
+When you add a new pipeline branch, audit the status enum before merging. Wave 4 introduced multi-lesson auto-extract, which created a new partial-failure case (some lessons written, some failed). The existing `success | failure` enum could not represent it, so we added `partial:write`. If your new code has any branch the existing taxonomy can't describe, extend the enum in the same PR — do not silently coerce to the closest existing value.
+
+### 7. Berry MCP path, not HTTP
+
+Berry hallucination-detection integration must call the MCP tool `mcp__berry__detect_hallucination`. Do not assume an HTTP endpoint at `http://localhost:<port>/detect` or similar — Berry is exposed via MCP, not REST, and any HTTP path will silently fail. If you are tempted to add a `fetch()` call to Berry, you have the wrong mental model.
+
+### 8. Auto-detect + auto-wire in init
+
+Providers detected during `relay init` (Codex CLI, LM Studio, OpenRouter API key) should be wired automatically with a confirm prompt — or skipped silently in `--auto` mode. Wave 4 found a flow that detected LM Studio but then required a separate `relay setup-llm` invocation to actually wire it. That is two mental steps where one will do. Detection without wiring is friction; wire on detect, prompt for confirmation in interactive mode, write through in `--auto`.
+
+### 9. Doctor checks are append-only (T23 repeat)
+
+This is the second time we have hit it. Adding a new doctor check must NOT touch existing exports, signatures, or check IDs. T23 (wave 2) broke the doctor JSON output because a new check's refactor renamed an existing field. Wave 4 had a near-miss with the same shape. Treat `src/doctor.ts` as append-only: add new check functions, register them in the checks array, do not edit the existing check signatures or their output keys.
+
+### 10. Default `--min-trust provisional` for LLM context emission
+
+Context emission to live LLM sessions should default `--min-trust provisional`, not `--min-trust speculative`. Wave 4 shipped an early default of speculative which would have surfaced unverified, low-trust memories into running LLM sessions as authoritative context. The provisional floor matches what a human reviewer would expect: "include things we have at least one signal for, exclude raw guesses." If the user wants speculative content they can opt in explicitly.
