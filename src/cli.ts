@@ -137,6 +137,12 @@ MEMORY COMMANDS
     [--hard]                               Permanent delete (default: soft-delete)
     [--json]
 
+  relay memory consolidate                 Dedup + supersede stale entries
+    [--dry-run]                            (analyze without mutating)
+    [--similarity-threshold <0..1>]        (default: 0.85)
+    [--workdir <path>]
+    [--json]
+
 CONTEXT COMMANDS
   relay context emit --target <t>          Emit recalled memories in a per-LLM
                                            wrapper format (replaces hook jq pipeline)
@@ -449,7 +455,19 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     }, io);
   }
 
-  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract, wipe, tail, why, forget, rollback\n`);
+  if (action === 'consolidate') {
+    const thresholdRaw = lastOption(flags, 'similarity-threshold');
+    const threshold = thresholdRaw !== undefined ? Number.parseFloat(thresholdRaw) : 0.85;
+    const { executeMemoryConsolidateCommand } = await import('./cli/cmd-memory-consolidate.js');
+    return executeMemoryConsolidateCommand({
+      dryRun: isBool(flags, 'dry-run'),
+      json: isBool(flags, 'json'),
+      similarityThreshold: threshold,
+      workdir: lastOption(flags, 'workdir'),
+    }, io);
+  }
+
+  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract, wipe, tail, why, forget, rollback, consolidate\n`);
   return 2;
 }
 
