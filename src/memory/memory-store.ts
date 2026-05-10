@@ -66,6 +66,15 @@ function extractKeywords(text: string): string[] {
   )].slice(0, 8);
 }
 
+/**
+ * T7: Escape SQL LIKE wildcards (`%`, `_`) and the escape char (`\`) so that a
+ * raw user value matches itself literally. Pair with `LIKE ? ESCAPE '\\'` in
+ * the query, otherwise a tag like `pi_` would silently match `pii`, `pix`, etc.
+ */
+function escapeLikeWildcards(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+}
+
 function rowToMemory(row: MemoryRow): Memory {
   return {
     memory_id: row.memory_id,
@@ -676,8 +685,14 @@ export class MemoryStore {
         false
       ));
     }
-    const tagClause = options.tag ? ` AND tags_json LIKE ?` : '';
-    const tagParam: unknown[] = options.tag ? [`%"${options.tag}"%`] : [];
+    // T7: tag matches via LIKE on tags_json. Escape LIKE wildcards (% and _)
+    // and backslash so a tag containing literal `_` or `%` matches only itself
+    // — otherwise a pathological tag like `pi_` would also match `pii`, `piX`
+    // etc. and silently wipe more than intended.
+    const tagClause = options.tag ? ` AND tags_json LIKE ? ESCAPE '\\'` : '';
+    const tagParam: unknown[] = options.tag
+      ? [`%"${escapeLikeWildcards(options.tag)}"%`]
+      : [];
 
     if (options.hard) {
       const result = this.db.prepare(

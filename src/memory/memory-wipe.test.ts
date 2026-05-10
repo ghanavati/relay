@@ -110,4 +110,84 @@ describe('MemoryStore.wipeWorkdir()', () => {
     assert.strictEqual(result.soft_deleted, 0);
     assert.strictEqual(result.hard_deleted, 0);
   });
+
+  // T7: workdir literal-match — `_` in the workdir argument must NOT match
+  // arbitrary single-character substitutes (which is what an unescaped LIKE
+  // would do). The SQL uses `workdir = ?` (equality), so this passes even
+  // without escaping; the test guards against accidental regression to LIKE.
+  test('underscore in workdir matches only the literal path (not any single char)', () => {
+    const store = new MemoryStore();
+    const target = '/tmp/foo_bar';
+    const decoy = '/tmp/fooXbar'; // would match `/tmp/foo_bar` under naive LIKE
+    const targetId = store.remember({ content: 'target', memory_type: 'fact', workdir: target });
+    const decoyId = store.remember({ content: 'decoy', memory_type: 'fact', workdir: decoy });
+
+    const result = store.wipeWorkdir(target);
+
+    assert.strictEqual(result.soft_deleted, 1, 'only the literal workdir should be wiped');
+    assert.strictEqual(store.getMemory(targetId), null, 'target must be gone');
+    assert.ok(store.getMemory(decoyId), 'decoy with `X` instead of `_` must survive');
+  });
+
+  test('percent in workdir matches only the literal path (not any substring)', () => {
+    const store = new MemoryStore();
+    const target = '/tmp/foo%bar';
+    const decoy = '/tmp/fooanybar'; // would match `/tmp/foo%bar` under naive LIKE
+    const targetId = store.remember({ content: 'target', memory_type: 'fact', workdir: target });
+    const decoyId = store.remember({ content: 'decoy', memory_type: 'fact', workdir: decoy });
+
+    const result = store.wipeWorkdir(target);
+
+    assert.strictEqual(result.soft_deleted, 1, 'only the literal workdir should be wiped');
+    assert.strictEqual(store.getMemory(targetId), null, 'target must be gone');
+    assert.ok(store.getMemory(decoyId), 'decoy with `any` instead of `%` must survive');
+  });
+
+  // T7: tag clause IS a LIKE — the escape must prevent `_` and `%` in the tag
+  // argument from matching unintended tags.
+  test('underscore in tag matches only the literal tag (not any single char)', () => {
+    const store = new MemoryStore();
+    const wd = '/Users/test/project-tag-underscore';
+    const targetId = store.remember({
+      content: 'target',
+      memory_type: 'fact',
+      workdir: wd,
+      tags: ['pi_'],
+    });
+    const decoyId = store.remember({
+      content: 'decoy',
+      memory_type: 'fact',
+      workdir: wd,
+      tags: ['pii'], // naive LIKE on `pi_` would match this
+    });
+
+    const result = store.wipeWorkdir(wd, { tag: 'pi_' });
+
+    assert.strictEqual(result.soft_deleted, 1, 'only the literal `pi_` tag should be wiped');
+    assert.strictEqual(store.getMemory(targetId), null, 'pi_ memory must be gone');
+    assert.ok(store.getMemory(decoyId), 'pii memory must survive');
+  });
+
+  test('percent in tag matches only the literal tag (not any substring)', () => {
+    const store = new MemoryStore();
+    const wd = '/Users/test/project-tag-percent';
+    const targetId = store.remember({
+      content: 'target',
+      memory_type: 'fact',
+      workdir: wd,
+      tags: ['rate%limit'],
+    });
+    const decoyId = store.remember({
+      content: 'decoy',
+      memory_type: 'fact',
+      workdir: wd,
+      tags: ['rateXlimit'], // naive LIKE on `rate%limit` would match this
+    });
+
+    const result = store.wipeWorkdir(wd, { tag: 'rate%limit' });
+
+    assert.strictEqual(result.soft_deleted, 1, 'only the literal `rate%limit` tag should be wiped');
+    assert.strictEqual(store.getMemory(targetId), null, 'rate%limit memory must be gone');
+    assert.ok(store.getMemory(decoyId), 'rateXlimit memory must survive');
+  });
 });
