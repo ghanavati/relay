@@ -195,6 +195,8 @@ SETUP
                                            Per-LLM init helper
                                            targets: codex | lmstudio | openrouter | anthropic
   relay info [--json]                      Overall status summary (binary, DB, hooks, providers)
+  relay tui [--json]                       Interactive Ink dashboard
+                                           (--json prints one snapshot then exits)
   relay completion <bash|zsh|fish>         Emit shell completion script
 
 EXPORT
@@ -683,6 +685,11 @@ async function main(): Promise<number> {
     const flags = parseFlags(rest);
     const { executeInfoCommand } = await import('./cli/cmd-info.js');
     return executeInfoCommand({ json: isBool(flags, 'json') }, io, VERSION);
+  }
+  if (cmd === 'tui') {
+    const flags = parseFlags(rest);
+    const { executeTuiCommand } = await import('./cli/cmd-tui.js');
+    return executeTuiCommand({ json: isBool(flags, 'json'), cwd: io.cwd, version: VERSION }, io);
   }
   if (cmd === 'compare') {
     const flags = parseFlags(rest);
