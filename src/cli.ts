@@ -89,6 +89,12 @@ ${c.cyan('MEMORY COMMANDS')}
     [--min-trust unverified|provisional|trusted]   (default: unverified — no filter)
     [--json]
 
+  relay memory search <regex>              Regex content search (exact match,
+                                           companion to FTS-scored recall)
+    [--workdir <path>]                     restrict to a workdir
+    [--limit <N>]                          (default: 50, max: 1000)
+    [--json]
+
   relay memory show-context <query>        Preview the recalled_lessons context layer
     [--type <t>] (repeatable, default: lesson + decision)
     [--token-budget <N>]                   (default: 800)
@@ -275,7 +281,7 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
   const action = flags.positionals[0];
 
   if (!action) {
-    io.stderr('relay memory requires an action: remember | recall | show-context | get | hook | to-rules\n');
+    io.stderr('relay memory requires an action: remember | recall | search | show-context | get | hook | to-rules\n');
     return 2;
   }
 
@@ -548,7 +554,20 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     }, io);
   }
 
-  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract, wipe, tail, recent, why, forget, rollback, consolidate, diff, chain, tag-stats\n`);
+  if (action === 'search') {
+    const pattern = flags.positionals.slice(1).join(' ').trim();
+    const limitRaw = lastOption(flags, 'limit');
+    const limit = limitRaw ? Number.parseInt(limitRaw, 10) : 50;
+    const { executeMemorySearchCommand } = await import('./cli/cmd-memory-search.js');
+    return executeMemorySearchCommand({
+      pattern,
+      workdir: lastOption(flags, 'workdir'),
+      limit,
+      json: isBool(flags, 'json'),
+    }, io);
+  }
+
+  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, search, show-context, get, hook, to-rules, auto-extract, wipe, tail, recent, why, forget, rollback, consolidate, diff, chain, tag-stats\n`);
   return 2;
 }
 
