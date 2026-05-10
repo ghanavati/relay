@@ -156,6 +156,14 @@ export interface ConsolidateResult {
   readonly actions: readonly ConsolidateAction[];
 }
 
+/** One row in tagStats() output: aggregate metrics for a single tag value. */
+export interface TagStatEntry {
+  readonly tag: string;
+  readonly memory_count: number;       // number of active memories carrying this tag
+  readonly total_recall_count: number; // SUM(recall_count) across those memories
+  readonly last_used_at: number | null; // MAX(accessed_at) — null only if no rows
+}
+
 /** Lower-case, collapse whitespace, strip non-token chars for exact-dup matching. */
 function normalizeContent(content: string): string {
   return content.toLowerCase().replace(/\s+/g, ' ').replace(/[^\w\s]/g, '').trim();
@@ -1286,6 +1294,7 @@ export class MemoryStore {
   }
 
   /**
+<<<<<<< HEAD
    * Raw single-row fetch including superseded entries — chain walking needs
    * to traverse rows that `getMemory()` deliberately hides. Returns the row
    * (or null) plus its raw `superseded_by` value so callers can decide whether
@@ -1365,5 +1374,71 @@ export class MemoryStore {
     }
 
     return { root: head.memory, root_superseded_by: head.superseded_by, ancestors, descendants };
+=======
+   * Aggregate per-tag analytics across all active (non-superseded) memories.
+   *
+   * For each unique tag, returns:
+   *   - memory_count:       number of memories carrying it
+   *   - total_recall_count: SUM(recall_count) across those memories
+   *   - last_used_at:       MAX(accessed_at) across those memories
+   *
+   * Tags are stored as a JSON array in the `tags_json` column, so aggregation
+   * happens in JS (one row scan, accumulate into a Map). Sorted by
+   * memory_count DESC; ties broken by tag (stable lexicographic order).
+   *
+   * Optional `workdir` filter narrows the scan to memories in that workdir
+   * (or with NULL workdir). Empty store → empty array.
+   */
+  tagStats(opts: { workdir?: string } = {}): TagStatEntry[] {
+    const where = opts.workdir
+      ? `WHERE superseded_by IS NULL AND (workdir = ? OR workdir IS NULL)`
+      : `WHERE superseded_by IS NULL`;
+    const params = opts.workdir ? [opts.workdir] : [];
+    const rows = this.db
+      .prepare(`SELECT tags_json, recall_count, accessed_at FROM memories ${where}`)
+      .all(...(params as Parameters<Database.Statement['all']>)) as Array<{
+        tags_json: string;
+        recall_count: number | null;
+        accessed_at: number | null;
+      }>;
+
+    const agg = new Map<string, { memory_count: number; total_recall_count: number; last_used_at: number | null }>();
+    for (const row of rows) {
+      let tags: string[];
+      try {
+        const parsed = JSON.parse(row.tags_json ?? '[]') as unknown;
+        tags = Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === 'string') : [];
+      } catch {
+        // Malformed tags_json — skip but never throw on a single bad row.
+        continue;
+      }
+      const recallCount = row.recall_count ?? 0;
+      const accessedAt = row.accessed_at ?? null;
+      // Dedup tags within a single memory so the same tag listed twice does not double-count.
+      const uniqueTags = new Set(tags);
+      for (const tag of uniqueTags) {
+        const entry = agg.get(tag) ?? { memory_count: 0, total_recall_count: 0, last_used_at: null };
+        agg.set(tag, {
+          memory_count: entry.memory_count + 1,
+          total_recall_count: entry.total_recall_count + recallCount,
+          last_used_at: accessedAt !== null && (entry.last_used_at === null || accessedAt > entry.last_used_at)
+            ? accessedAt
+            : entry.last_used_at,
+        });
+      }
+    }
+
+    return [...agg.entries()]
+      .map(([tag, v]): TagStatEntry => ({
+        tag,
+        memory_count: v.memory_count,
+        total_recall_count: v.total_recall_count,
+        last_used_at: v.last_used_at,
+      }))
+      .sort((a, b) => {
+        if (b.memory_count !== a.memory_count) return b.memory_count - a.memory_count;
+        return a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0;
+      });
+>>>>>>> 8395f9c (feat(memory): tag-stats analytics command)
   }
 }

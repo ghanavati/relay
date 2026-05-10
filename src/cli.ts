@@ -155,6 +155,11 @@ ${c.cyan('MEMORY COMMANDS')}
   relay memory diff <id1> <id2>            Unified line-diff of two memories' content
     [--json]                               (red/green hunks; structured payload with --json)
 
+  relay memory tag-stats                   Per-tag analytics (count, recalls, last used)
+    [--workdir <path>]                     restrict to a workdir
+    [--limit <N>]                          (default: 20; <=0 ⇒ no cap)
+    [--json]
+
 ${c.cyan('CONTEXT COMMANDS')}
   relay context emit --target <t>          Emit recalled memories in a per-LLM
                                            wrapper format (replaces hook jq pipeline)
@@ -532,7 +537,18 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     }, io);
   }
 
-  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract, wipe, tail, recent, why, forget, rollback, consolidate, diff, chain\n`);
+  if (action === 'tag-stats') {
+    const limitRaw = lastOption(flags, 'limit');
+    const { DEFAULT_TAG_STATS_LIMIT, executeMemoryTagStatsCommand } = await import('./cli/cmd-memory-tag-stats.js');
+    const limit = limitRaw !== undefined ? Number.parseInt(limitRaw, 10) : DEFAULT_TAG_STATS_LIMIT;
+    return executeMemoryTagStatsCommand({
+      workdir: lastOption(flags, 'workdir'),
+      limit,
+      json: isBool(flags, 'json'),
+    }, io);
+  }
+
+  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract, wipe, tail, recent, why, forget, rollback, consolidate, diff, chain, tag-stats\n`);
   return 2;
 }
 
