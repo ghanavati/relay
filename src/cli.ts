@@ -127,6 +127,10 @@ MEMORY COMMANDS
     --confirm "WIPE <path>"                   required confirmation phrase
     [--json]                                  ("WIPE HARD <path>" with --hard)
 
+  relay memory forget <memory_id>          Forget a single memory entry
+    [--hard]                               Hard-delete row (default: soft, superseded_by='forget')
+    [--json]
+
 CONTEXT COMMANDS
   relay context emit --target <t>          Emit recalled memories in a per-LLM
                                            wrapper format (replaces hook jq pipeline)
@@ -408,7 +412,21 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     return executeMemoryWhyCommand({ memoryId, json: isBool(flags, 'json') }, io);
   }
 
-  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract, wipe, tail, why\n`);
+  if (action === 'forget') {
+    const memoryId = flags.positionals[1];
+    if (!memoryId) {
+      io.stderr('relay memory forget requires <memory_id>\n');
+      return 2;
+    }
+    const { executeForgetCommand } = await import('./cli/cmd-memory-ops.js');
+    return executeForgetCommand({
+      memoryId,
+      hard: isBool(flags, 'hard'),
+      json: isBool(flags, 'json'),
+    }, io);
+  }
+
+  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract, wipe, tail, why, forget\n`);
   return 2;
 }
 
