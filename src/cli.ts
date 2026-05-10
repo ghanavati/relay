@@ -148,6 +148,10 @@ ${c.cyan('MEMORY COMMANDS')}
     [--workdir <path>]
     [--json]
 
+  relay memory chain <memory_id>           Walk the superseded_by provenance chain
+    [--depth <N>]                          (default: 5; both directions)
+    [--json]                               structured tree
+
   relay memory diff <id1> <id2>            Unified line-diff of two memories' content
     [--json]                               (red/green hunks; structured payload with --json)
 
@@ -508,7 +512,27 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     return executeMemoryDiffCommand({ idA, idB, json: isBool(flags, 'json') }, io);
   }
 
-  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract, wipe, tail, recent, why, forget, rollback, consolidate, diff\n`);
+  if (action === 'chain') {
+    const memoryId = flags.positionals[1];
+    if (!memoryId) {
+      io.stderr('relay memory chain requires <memory_id>\n');
+      return 2;
+    }
+    const depthRaw = lastOption(flags, 'depth');
+    const depth = depthRaw !== undefined ? Number.parseInt(depthRaw, 10) : 5;
+    if (!Number.isFinite(depth) || depth < 0) {
+      io.stderr('relay memory chain --depth must be a non-negative integer\n');
+      return 2;
+    }
+    const { executeMemoryChainCommand } = await import('./cli/cmd-memory-chain.js');
+    return executeMemoryChainCommand({
+      memoryId,
+      depth,
+      json: isBool(flags, 'json'),
+    }, io);
+  }
+
+  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract, wipe, tail, recent, why, forget, rollback, consolidate, diff, chain\n`);
   return 2;
 }
 

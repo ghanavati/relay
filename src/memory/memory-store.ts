@@ -119,6 +119,31 @@ export interface ConsolidateAction {
   readonly similarity: number;       // 0..1; 1 for exact dup
 }
 
+/**
+ * One node in a provenance chain returned by `getChain()`.
+ *
+ * `superseded_by` is the raw column value: a UUID memory_id when this entry
+ * was replaced by another live row, or a sentinel string ('forget',
+ * 'rollback:*', 'gc-*', 'wipe-workdir', etc.) when it was tombstoned for a
+ * non-supersession reason. Null means the entry is still active.
+ */
+export interface ChainNode {
+  readonly memory: Memory;
+  readonly depth: number;                // hops from root (0 = root itself)
+  readonly superseded_by: string | null; // raw column value (UUID or sentinel)
+}
+
+/** Result of getChain(): the root entry plus its provenance neighbours. */
+export interface MemoryChain {
+  readonly root: Memory | null;          // null when the id does not exist
+  readonly root_superseded_by: string | null; // raw column value on the root (UUID, sentinel, or null)
+  readonly ancestors: readonly ChainNode[];   // entries the root supersedes (transitively)
+  readonly descendants: readonly ChainNode[]; // entries that supersede the root (linear forward chain)
+}
+
+/** UUID v4 shape — used to distinguish a real memory_id from a tombstone sentinel. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** Aggregate result of consolidate(). */
 export interface ConsolidateResult {
   readonly groups_found: number;
@@ -1258,5 +1283,87 @@ export class MemoryStore {
       evicted++;
     }
     return evicted;
+  }
+
+  /**
+   * Raw single-row fetch including superseded entries — chain walking needs
+   * to traverse rows that `getMemory()` deliberately hides. Returns the row
+   * (or null) plus its raw `superseded_by` value so callers can decide whether
+   * to follow it.
+   */
+  private getChainRow(memoryId: string): { memory: Memory; superseded_by: string | null } | null {
+    const row = this.db
+      .prepare('SELECT * FROM memories WHERE memory_id = ?')
+      .get(memoryId) as MemoryRow | undefined;
+    if (!row) return null;
+    return { memory: rowToMemory(row), superseded_by: row.superseded_by };
+  }
+
+  /** Fetch every row whose superseded_by points at the given memory_id. */
+  private getDirectAncestors(memoryId: string): Array<{ memory: Memory; superseded_by: string | null }> {
+    const rows = this.db
+      .prepare('SELECT * FROM memories WHERE superseded_by = ? ORDER BY created_at ASC')
+      .all(memoryId) as MemoryRow[];
+    return rows.map(r => ({ memory: rowToMemory(r), superseded_by: r.superseded_by }));
+  }
+
+  /**
+   * Walk the provenance chain around a memory in BOTH directions.
+   *
+   * - `descendants` follows the linear forward chain via `current.superseded_by`
+   *   when that value is a real memory_id (UUID-shaped). Sentinel values like
+   *   `'forget'`, `'rollback:*'`, `'gc-*'`, `'wipe-workdir'` are recorded on
+   *   the node but not followed.
+   * - `ancestors` collects every row whose `superseded_by` equals the current
+   *   id, breadth-first, so multi-merge supersessions surface as siblings.
+   *
+   * `depth` controls how many hops are walked in each direction. `depth=0`
+   * returns just the root with empty arrays. Visited ids are tracked to keep
+   * the walk safe against cyclic data.
+   *
+   * Returns `{ root: null, ancestors: [], descendants: [] }` when the id
+   * does not exist — callers (CLI) decide how to surface that.
+   */
+  getChain(memoryId: string, depth: number): MemoryChain {
+    const safeDepth = Math.max(0, Math.floor(depth));
+    const head = this.getChainRow(memoryId);
+    if (!head) return { root: null, root_superseded_by: null, ancestors: [], descendants: [] };
+
+    const visited = new Set<string>([memoryId]);
+
+    // Forward: linear walk via .superseded_by
+    const descendants: ChainNode[] = [];
+    let cursorId: string | null = head.superseded_by;
+    let hop = 1;
+    while (cursorId !== null && hop <= safeDepth) {
+      if (!UUID_RE.test(cursorId)) break;          // tombstone sentinel — chain ends
+      if (visited.has(cursorId)) break;            // cycle guard
+      const next = this.getChainRow(cursorId);
+      if (!next) break;                            // dangling pointer — chain ends
+      visited.add(cursorId);
+      descendants.push({ memory: next.memory, depth: hop, superseded_by: next.superseded_by });
+      cursorId = next.superseded_by;
+      hop++;
+    }
+
+    // Backward: BFS over rows whose superseded_by points at the current frontier
+    const ancestors: ChainNode[] = [];
+    let frontier: string[] = [memoryId];
+    for (let d = 1; d <= safeDepth; d++) {
+      const nextFrontier: string[] = [];
+      for (const id of frontier) {
+        const parents = this.getDirectAncestors(id);
+        for (const p of parents) {
+          if (visited.has(p.memory.memory_id)) continue;
+          visited.add(p.memory.memory_id);
+          ancestors.push({ memory: p.memory, depth: d, superseded_by: p.superseded_by });
+          nextFrontier.push(p.memory.memory_id);
+        }
+      }
+      if (nextFrontier.length === 0) break;
+      frontier = nextFrontier;
+    }
+
+    return { root: head.memory, root_superseded_by: head.superseded_by, ancestors, descendants };
   }
 }
