@@ -219,4 +219,69 @@ describe('executeInfoCommand', () => {
     const code2 = await executeInfoCommand({ json: false }, c2.io, '0.1.0');
     assert.strictEqual(code2, 0);
   });
+
+  test('--json mode reports memoryCounts grouped by type with all keys', async () => {
+    applyEnv({ openrouter: 'sk-test' });
+    const cap = makeIO();
+    await executeInfoCommand({ json: true }, cap.io, '0.1.0');
+    const parsed = JSON.parse(cap.stdout.join('').trim()) as {
+      db: { memoryCounts: Record<string, unknown> };
+    };
+    const m = parsed.db.memoryCounts;
+    for (const key of ['fact', 'decision', 'lesson', 'context', 'state', 'handoff']) {
+      assert.ok(key in m, `memoryCounts.${key} present`);
+      assert.strictEqual(typeof m[key], 'number');
+    }
+  });
+
+  test('--json mode reports activity.last24h with recalls/writes/autoExtracts', async () => {
+    applyEnv({ openrouter: 'sk-test' });
+    const cap = makeIO();
+    await executeInfoCommand({ json: true }, cap.io, '0.1.0');
+    const parsed = JSON.parse(cap.stdout.join('').trim()) as {
+      activity: { last24h: { recalls: unknown; writes: unknown; autoExtracts: unknown } };
+    };
+    assert.ok(parsed.activity, 'activity key present');
+    assert.ok(parsed.activity.last24h, 'activity.last24h key present');
+    assert.strictEqual(typeof parsed.activity.last24h.recalls, 'number');
+    assert.strictEqual(typeof parsed.activity.last24h.writes, 'number');
+    assert.strictEqual(typeof parsed.activity.last24h.autoExtracts, 'number');
+    // 24h counts must be non-negative
+    assert.ok((parsed.activity.last24h.recalls as number) >= 0);
+    assert.ok((parsed.activity.last24h.writes as number) >= 0);
+    assert.ok((parsed.activity.last24h.autoExtracts as number) >= 0);
+  });
+
+  test('--json mode reports hooks.lastFireTs as number-or-null', async () => {
+    applyEnv({ openrouter: 'sk-test' });
+    const cap = makeIO();
+    await executeInfoCommand({ json: true }, cap.io, '0.1.0');
+    const parsed = JSON.parse(cap.stdout.join('').trim()) as {
+      hooks: { lastFireTs: unknown };
+    };
+    assert.ok('lastFireTs' in parsed.hooks, 'hooks.lastFireTs present');
+    const v = parsed.hooks.lastFireTs;
+    assert.ok(v === null || typeof v === 'number', 'lastFireTs is null or number');
+  });
+
+  test('text mode renders memory counts and 24h activity rows', async () => {
+    applyEnv({ openrouter: 'sk-test' });
+    const cap = makeIO();
+    await executeInfoCommand({ json: false }, cap.io, '0.1.0');
+    const out = cap.stdout.join('');
+    assert.match(out, /Memory counts:\s+fact:\d+ decision:\d+ lesson:\d+ context:\d+ state:\d+ handoff:\d+/);
+    assert.match(out, /Activity \(24h\):\s+\d+ recalls, \d+ writes, \d+ auto-extracts/);
+    assert.match(out, /last fire\s+/);
+  });
+
+  test('--json mode reports db.sizeBytes as number-or-null', async () => {
+    applyEnv({ openrouter: 'sk-test' });
+    const cap = makeIO();
+    await executeInfoCommand({ json: true }, cap.io, '0.1.0');
+    const parsed = JSON.parse(cap.stdout.join('').trim()) as {
+      db: { sizeBytes: unknown };
+    };
+    // :memory: DB → sizeBytes is null
+    assert.ok(parsed.db.sizeBytes === null || typeof parsed.db.sizeBytes === 'number');
+  });
 });
