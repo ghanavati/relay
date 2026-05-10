@@ -158,6 +158,13 @@ SETUP
     [--force]                              Bypass signed-tag-ahead requirement
   relay completion <bash|zsh|fish>         Emit shell completion script
 
+EXPORT
+  relay export [--safe]                    Export memories (sanitized by default)
+    [--workdir <path>]                     (default: current cwd)
+    [--format json|md]                     (default: json)
+    [--out <file>]                         (default: stdout)
+    [--json]                               (machine summary when --out is set)
+
 GENERAL
   relay --help, -h                         Show this help
   relay --version, -V                      Show version
@@ -559,6 +566,28 @@ async function main(): Promise<number> {
     }
     const { executeCompletionCommand } = await import('./cli/cmd-completion.js');
     return executeCompletionCommand({ shell: shell as 'bash' | 'zsh' | 'fish' }, io);
+  }
+  if (cmd === 'export') {
+    const flags = parseFlags(rest);
+    // --safe is the default (and only mode in v0.1.0). --unsafe is reserved for future use
+    // and currently rejected so behavior cannot drift silently.
+    if (isBool(flags, 'unsafe')) {
+      io.stderr('relay export: --unsafe is not supported in this version. Drop the flag (--safe is the default).\n');
+      return 2;
+    }
+    const formatRaw = lastOption(flags, 'format') ?? 'json';
+    if (formatRaw !== 'json' && formatRaw !== 'md') {
+      io.stderr(`relay export: --format must be json or md (got: ${formatRaw})\n`);
+      return 2;
+    }
+    const { executeExportCommand } = await import('./cli/cmd-export.js');
+    return executeExportCommand({
+      safe: true,
+      workdir: lastOption(flags, 'workdir'),
+      format: formatRaw,
+      out: lastOption(flags, 'out'),
+      json: isBool(flags, 'json'),
+    }, io);
   }
 
   const futureCmds = ['corpus', 'budget'];
