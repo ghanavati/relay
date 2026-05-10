@@ -1,104 +1,165 @@
 # Architecture
 
-Relay is a solo CLI (~70 source files) extracted from the relay-mcp monorepo. This doc explains the layout for someone making changes.
+System overview for contributors. The companion to [AGENTS.md](../AGENTS.md): AGENTS.md tells you the rules, this tells you the map.
 
-## Repo layout
+## 1. High-level purpose
 
-```
-src/
-├── cli.ts                    # Entry point: argv parsing + dispatch
-├── cli/                      # Subcommands
-│   ├── commands.ts           # CliIO type (only)
-│   ├── cmd-memory-ops.ts     # remember/recall/show-context/get/hook/to-rules
-│   ├── cmd-corpus.ts         # Corpus subsystem (deferred for v0.1.0)
-│   ├── cmd-run.ts            # Single-task delegation
-│   ├── cmd-doctor.ts         # Provider/DB health probe
-│   ├── cmd-history.ts        # Browse past runs
-│   ├── cmd-diff.ts           # Show files_changed for a run
-│   ├── cmd-compare.ts        # Side-by-side run comparison
-│   └── cmd-init.ts           # Interactive setup wizard
-├── memory/                   # MemoryStore (FTS5 + lint + GC)
-├── workers/
-│   ├── codex.ts              # Subprocess via codex-cli 0.128+
-│   ├── generic-http-runner.ts# Slim chat-completions client (base for OR + LMS)
-│   ├── lmstudio.ts
-│   ├── openrouter.ts
-│   ├── runner.ts             # WorkerRunner interface
-│   └── types.ts              # WorkerTask + WorkerResult
-├── tools/                    # MCP-tool-style handlers, used by cmd-* CLI
-├── runtime/
-│   ├── store/                # SQLite + db.ts + run-store + cost-store
-│   ├── budget/               # Per-scope cost cap tracking
-│   ├── capability/           # Worker capability registry
-│   └── intent-classifier.ts  # Used during delegate
-├── context/                  # Context layer providers (recalled_lessons, etc.)
-├── contracts/                # Zod schemas + TS types
-├── config/                   # providers.ts + runtime.ts + constants.ts
-├── security/redaction.ts     # API key redaction in sanitizeContent
-└── errors.ts                 # RelayError + makeError
+Relay is a model-agnostic, local-first CLI that bridges AI delegation and persistent memory across the four frontier surfaces a solo developer actually uses (Claude Code, Codex CLI, LM Studio, OpenRouter/Anthropic). It carries hard-won lessons forward across stateless sessions by writing a single SQLite store, then injects relevant entries into each new session through per-target wrappers. No external services, no hosted backend, no provider lock-in — every byte of memory lives in `~/.relay/relay.db` and every API key stays in your shell.
 
-scripts/
-└── extract-from-relay-mcp.sh # One-time bootstrap (kept for provenance)
+## 2. Module map
 
-src/scripts/
-└── migrate-cc-memory.ts      # Compiled to dist/scripts/migrate-cc-memory.js
+| Module | Path | Responsibility |
+|---|---|---|
+| CLI entry | [`src/cli.ts`](../src/cli.ts) | argv parsing, command dispatch, `--help` text, version |
+| Subcommands | [`src/cli/`](../src/cli/) | one file per command (`cmd-*.ts`); thin glue between argv and tools/memory |
+| Memory store | [`src/memory/`](../src/memory/) | `MemoryStore` (CRUD + FTS5), scoring (`memory-engine.ts`), trust tiers (`computeTrustLevel`), GC, lint, schema migrations |
+| Context layers | [`src/context/`](../src/context/) | `loadRecalledLessonsContent` + provider registry (recalled_lessons, brief, run history, session scope) |
+| Runtime | [`src/runtime/`](../src/runtime/) | SQLite (`store/db.ts`), `RunStore`, `relay-log.ts` (NDJSON), capability + budget tables |
+| Security | [`src/security/`](../src/security/) | secret redaction (`redaction.ts`) at write-time, PII redaction (`redaction-pii.ts`) for auto-extract |
+| Workers | [`src/workers/`](../src/workers/) | per-provider runners: `codex.ts`, `openrouter.ts`, `lmstudio.ts`, `anthropic.ts`, base `generic-http-runner.ts` |
+| Tools | [`src/tools/`](../src/tools/) | MCP-style handlers wrapped by the CLI (`remember.ts`, `recall.ts`, `get_memory.ts`, …) |
+| Contracts | [`src/contracts/`](../src/contracts/) | Zod schemas + TS types shared across boundaries |
+| Config | [`src/config/`](../src/config/) | env var resolution, provider config, constants |
+| One-shot scripts | [`src/scripts/`](../src/scripts/) | `migrate-cc-memory.ts` — port Claude Code auto-memory into SQLite |
+| Errors | [`src/errors.ts`](../src/errors.ts) | `RelayError` + `makeError` (canonical user-facing failure type) |
 
-docs/                        # User-facing docs
-AGENTS.md                    # Rules for AI agents working on this code
-```
-
-## Data flow: a single `relay run`
+## 3. Data flow — write path
 
 ```
-1. user runs:   relay run "<task>" --provider lmstudio --model glm-4.7-flash
-2. cli.ts       parseFlags + dispatch to executeRunCommand
-3. cmd-run.ts   RunStore.create({status: 'running'}) → inserts row, returns void
-                RunStore.recordEvent('started', ...)
-4. cmd-run.ts   instantiates LmStudioRunner from src/workers/lmstudio.ts
-5. LmStudioRunner.run(task) → GenericHttpRunner.run
-                (HTTP POST to /v1/chat/completions, 5min timeout)
-6. cmd-run.ts   on response: RunStore.complete(run_id, {status, duration_ms, token_usage, ...})
-                or RunStore.recordError on failure
-7. cmd-run.ts   emit JSON or human-readable to stdout
+user (CLI or Codex MCP)
+  → src/cli.ts                 parseFlags, dispatch
+  → src/cli/cmd-memory-ops.ts  executeRememberCommand
+  → src/tools/remember.ts      handleRemember(args, source)
+  → src/memory/memory-store.ts MemoryStore.remember()
+                                 ├─ sanitizeContent (strip <private>, redact secrets, cap length)
+                                 ├─ assertWorkdirAllowed (RELAY_MEMORY_ALLOWED_WORKDIRS)
+                                 ├─ INSERT into memories + memories_fts (FTS5 trigger)
+                                 ├─ gcByTokenBudget (evict non-pinned if over cap)
+                                 └─ purgeSuperseded (drop 30+ day tombstones)
+  → SQLite ~/.relay/relay.db   tables: memories, memories_fts
 ```
 
-## Data flow: memory recall
+`memory_source` is unforgeable from the CLI: `relay memory remember` always passes `'human'`; only internal `handleRemember(args, sourceArg)` callers (auto-extract, migration) can set other sources. See [memory-store.ts:31](../src/memory/memory-store.ts) `computeTrustLevel` for the tier derivation.
+
+## 4. Data flow — read path
 
 ```
-1. user runs:   relay memory recall "berry hallucination check"
-2. cmd-memory-ops.ts → handleRecall (from src/tools/recall.ts)
-3. handleRecall builds RecallQuery{ query, types, token_budget, ... }
-4. MemoryStore.getCandidates(query) → SQLite FTS5 + recency fallback
-5. budgetedRecall(candidates, query, now) → ranks within token budget,
-                                            increments recall_count
-6. Output: array of {memory_id, content, score, ...} as JSON or text
+hook fires (CC SessionStart, or `relay context emit`)
+  → src/cli/cmd-context-emit.ts  executeContextEmitCommand(target)
+  → src/context/layers.ts        loadRecalledLessonsContent(workdir, task, opts)
+  → src/memory/memory-store.ts   MemoryStore.getCandidates(query)
+                                   ├─ FTS5 match on memories_fts
+                                   ├─ recency fallback when query empty
+                                   ├─ min_trust SQL guard
+                                   └─ workdir scope (or global)
+  → src/memory/memory-engine.ts  budgetedRecall (rank within token_budget)
+                                   ├─ score = recency × type weight × tag boost
+                                   └─ increment recall_count (audit)
+  → guardMemoryContent           strip markdown headers, HTML, injection phrases
+  → render per-target            cc | codex | lmstudio-http | lmstudio-cli
+  → memory_reads audit row       INSERT (memory_id, run_id, read_source, workdir, created_at)
 ```
 
-## Database
+The same loader feeds both the SessionStart hook and `relay run` delegations when `RELAY_RECALLED_LESSONS=1` is set ([layers.ts:263](../src/context/layers.ts)).
 
-Single SQLite file at `~/.relay/relay.db` (or `$RELAY_DB_PATH`). Schema includes:
+## 5. Auto-extract pipeline
 
-- `runs` — every dispatch (status, provider, model, duration, tokens, files_changed_json)
-- `run_events` — timeline events per run
-- `run_diffs` — per-file diff text (optional, only populated when filesystem snapshot diff is computed)
-- `memories` — the MemoryStore
-- `memory_reads` — recall access log
-- `cost_events` — per-run cost records
-- `budget_limits` — caps + spend tracking
-- `idempotency_keys` — dedup window for repeated dispatches
+Wires Claude Code's SessionEnd hook to a local model that mines lessons from the transcript and writes them back as unverified memories.
 
-Everything is single-writer. Don't run two `relay` processes against the same DB simultaneously.
+```
+CC SessionEnd hook
+  → relay memory auto-extract --from-stdin
+  → src/cli/cmd-memory-auto-extract.ts executeMemoryAutoExtractCommand
+       1. parse + Zod-validate hook payload (session_id, transcript_path, cwd)
+       2. loadConsent(cwd) → <cwd>/.relay/auto-extract.json (opt-in; ENOENT → skip)
+       3. block remote providers when consent.allow_remote=false (v1 local only)
+       4. loadRecentTranscriptWindow (trailing N bytes, configurable)
+       5. redactSecretsAndPII (src/security/redaction-pii.ts)
+       6. extractLessonsViaLmStudio (LM Studio chat completion → raw JSON)
+       7. cleanupAndValidate (Zod schema + min_confidence floor)
+       8. checkLessonViaBerry (optional; RELAY_AUTO_EXTRACT_REQUIRE_BERRY=1)
+       9. handleRemember(args, 'auto-run-recorder') per surviving lesson
+            tag: 'auto-extract' → trust-tier fence blocks auto-pin (memory-store.ts:529)
+      10. appendAudit → ~/.relay/auto-extract.log (one ndjson line per run)
+```
 
-## Key invariants (don't break)
+Status taxonomy is closed: `ok`, `skipped:*`, `error:*`, `partial:berry-flag` ([cmd-memory-auto-extract.ts:70](../src/cli/cmd-memory-auto-extract.ts)). Hook discards exit code and stderr — every failure path catches, logs, exits 0.
 
-- `delegate.ts` (when re-added in v0.2) stays thin: validate → create run → dispatch → record. Logic goes into helpers.
-- No hardcoded model names — env vars or config only.
-- SQLite is the sole canonical store — no parallel persistence systems.
-- AGENTS.md stays under ~5KB. New rules earn their always-loaded slot.
+## 6. Hook system
 
-## v0.1.0 limitations
+Two hooks installed by `relay memory hook --install [--session-end]`:
 
-- No agentic tool-loop in workers (single-shot text generation only). Codex has its own tool surface.
-- Anthropic worker dropped (re-added in v0.2 with text-only first, agentic later).
-- `relay parallel`, `relay budget`, `relay corpus` deferred to v0.2.
-- Test suite inherited from relay-mcp — several tests have broken imports from dropped modules and need triage.
+- **SessionStart** runs `relay context emit --target cc --workdir "$PWD"` → injects recalled memories as `hookSpecificOutput.additionalContext`. Pause sentinel (`~/.relay/paused` or `<workdir>/.relay/paused`) short-circuits before any DB read.
+- **SessionEnd** runs `relay memory auto-extract --from-stdin` → see section 5.
+
+Install/uninstall match by **stable marker field** (`_relay_id: 'relay-context-cc'`), never by substring on the command line. The matcher (`isRelayManagedHookEntry` in [cmd-memory-ops.ts:207](../src/cli/cmd-memory-ops.ts)) accepts three signals: marker equality, legacy `id` field, exact `command` string match. A user's own hook that happens to mention `relay context emit` is never silently removed. ENOENT vs EPARSE on the settings file is distinguished — missing → write fresh, parse error → abort.
+
+## 7. Trust tiers
+
+[`computeTrustLevel`](../src/memory/memory-store.ts) is the single derivation, applied at read time:
+
+| Tier | Rule |
+|---|---|
+| `trusted` | `memory_source='human'` AND `pinned=true` (explicit human endorsement) |
+| `trusted` | `success_recall_count >= 3` (proven useful across 3+ successful runs) |
+| `provisional` | `memory_source='human'` OR `success_recall_count >= 1` |
+| `unverified` | default for auto-written entries |
+
+Threshold is overridable via `RELAY_MEMORY_AUTOPIN_THRESHOLD`. The recalled_lessons renderer prefixes unverified entries with `[UNVERIFIED]` and failure-tagged entries with `⚠ FAILED:` so workers can weight them. `relay context emit` defaults `--min-trust=provisional` to keep unverified auto-extracts out of live LLM sessions unless explicitly requested.
+
+## 8. Logging
+
+Two log streams, both append-only NDJSON:
+
+- **`~/.relay/relay.ndjson`** — activity log: every recall, remember, wipe, forget, hook fire/skip, doctor run, context emit, pause/resume. Tailed by `relay memory tail`. Rotates at 10 MB or 30 days; archive format `relay.ndjson.<timestamp>`. See [runtime/relay-log.ts](../src/runtime/relay-log.ts).
+- **`memory_reads` table** — per-recall audit row inside SQLite: `memory_id`, `run_id`, `read_source` (`mcp` / `context-layer` / `cli`), `workdir`, `created_at`. Lets `relay memory why <id>` reconstruct surfacing history. See [db.ts:243](../src/runtime/store/db.ts).
+- **`~/.relay/auto-extract.log`** — one-line-per-run audit for the SessionEnd pipeline (status, model, turns_read, redaction_hits, lessons_written, duration_ms).
+
+POSIX `O_APPEND` semantics make line-sized writes multi-process safe on local disks; rotation is decided by [`shouldRotate`](../src/runtime/relay-log.ts) (pure function, testable without filesystem mocking).
+
+## 9. Per-LLM injection contracts
+
+`relay context emit --target <t>` ([cmd-context-emit.ts](../src/cli/cmd-context-emit.ts)) emits a single command's stdout in the exact shape each LLM front-end expects — no jq pipelines downstream:
+
+| Target | Output shape | Consumer wiring |
+|---|---|---|
+| `cc` | `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"..."}}` (one line) | `.claude/settings.json` SessionStart hook stdout |
+| `codex` | plain markdown, no envelope, no trailing newline | pipe to a file, pass via `codex -c model_instructions_file=<path>` |
+| `lmstudio-http` | `{"role":"system","content":"..."}` (one line) | concat into OpenAI-compatible chat completions `messages` array |
+| `lmstudio-cli` | single-line text (newlines escaped as `\n`) | `lms chat -s "<text>"` |
+
+When no memories match, every target emits an empty-but-valid wrapper so callers don't need conditional handling.
+
+## 10. Privacy boundaries
+
+Defence in depth, ordered by enforcement point:
+
+1. **Per-workdir consent** — auto-extract refuses to run without `<cwd>/.relay/auto-extract.json` (opt-in; default opt-out). Consent declares `allow_remote`, `max_bytes`, `min_confidence`, `extra_redaction_patterns`. See [auto-extract-consent.ts](../src/memory/auto-extract-consent.ts).
+2. **`RELAY_MEMORY_ALLOWED_WORKDIRS`** — colon-separated allowlist of workdir prefixes; unset = all allowed; set + non-matching workdir = `MEMORY_WORKDIR_FORBIDDEN`. Enforced in `assertWorkdirAllowed` at the store layer.
+3. **`.relayignore`** — gitignore-syntax filter that scrubs tool-call results before transcript redaction (`relay project disable` writes one; `relay project enable` removes it).
+4. **Redaction passes** — `redactSecrets` at write time (AWS / OpenAI / GitHub / Slack / Bearer / env-assignments / PEM keys), `redactSecretsAndPII` before any LLM send (adds emails, phone, IP, IBAN).
+5. **`<private>...</private>` blocks** — stripped at write time inside `sanitizeContent`.
+6. **Pause sentinel** — `~/.relay/paused` or `<workdir>/.relay/paused` blocks both hooks before any work. Created by `relay pause`, removed by `relay resume`.
+7. **Provider API keys** — env vars only; never written to SQLite, never logged.
+
+## 11. Build + test layout
+
+```bash
+npm install                              # better-sqlite3 native module + zod + typescript
+npm run build                            # tsc → dist/; chmod +x dist/cli.js
+npm run typecheck                        # tsc --noEmit (authoritative compile check)
+npm test                                 # node --test --test-concurrency=1 dist/**/*.test.js
+npm run clean                            # rm -rf dist tsconfig.tsbuildinfo
+```
+
+Tests are colocated next to source (`memory-store.ts` + `memory-remember.test.ts`, etc.). Test runtime is `node:test`; mocking patterns from Jest do not apply. SQLite tests set `process.env['RELAY_DB_PATH'] = ':memory:'` **before** any db import — the in-memory DB is opened lazily on first `getDb()` call.
+
+`better-sqlite3` is a native module: requires Node >=20, a working C++ toolchain (Xcode CLT on macOS, `build-essential python3` on Linux), and is rebuilt on `npm install`. All DB operations are **synchronous** by design — never use `async`/`await` on `db.prepare(...)` chains.
+
+## See also
+
+- [AGENTS.md](../AGENTS.md) — contributor operating manual (code rules, recurrent failure patterns)
+- [docs/memory.md](./memory.md) — memory model, trust tiers, FTS5 recall, GC
+- [docs/configuration.md](./configuration.md) — env vars, config.json, consent files
+- [docs/providers.md](./providers.md) — Codex / OpenRouter / LM Studio / Anthropic setup
+- [docs/commands.md](./commands.md) — every command, every flag
