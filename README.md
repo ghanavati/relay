@@ -3,7 +3,9 @@
 Solo CLI for delegating bounded coding tasks to AI workers (Codex, OpenRouter, LM Studio, Anthropic) and carrying persistent memory across Claude Code sessions. Local-first, model-agnostic, single SQLite store. No external services required.
 
 [![Status](https://img.shields.io/badge/status-pre--release-yellow)](#status)
-[![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](#install)
+[![Version](https://img.shields.io/badge/version-0.1.1-blue)](CHANGELOG.md)
+[![Node](https://img.shields.io/badge/node-20%20%7C%2022-brightgreen)](#install)
+[![Tests](https://img.shields.io/badge/tests-946%20passing-brightgreen)](.github/workflows/test.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 
 ## Install
@@ -21,42 +23,88 @@ Requires Node >=20 and `better-sqlite3` (native module). On macOS install Xcode 
 ## Quickstart
 
 ```bash
-relay init           # interactive setup: providers, hooks, memory migration
-relay doctor         # probe provider + DB health
-relay --help         # full menu
+relay setup --everything   # one-command: init + hooks + auto-extract (non-interactive)
+relay verify               # end-to-end smoke (memory + recall + emit + hook + db)
+relay doctor               # 10-check provider + DB + hook + auto-extract health
+relay --help               # full menu
 ```
 
 See [docs/quickstart.md](docs/quickstart.md) for the full walkthrough.
 
 ### One-command setup
 
-`relay init` walks through:
+`relay setup --everything` runs:
 
-1. Detects installed LLM CLIs (Codex, LM Studio, OpenRouter API key, Anthropic).
-2. Creates `~/.relay/relay.db` and `~/.relay/config.json`.
-3. Installs the Claude Code `SessionStart` hook (`relay memory hook --install`) so recalled lessons inject into every CC session.
-4. Optionally migrates existing Claude Code auto-memory into the SQLite store.
+1. `relay init --auto` — detects installed LLM CLIs (Codex, LM Studio, OpenRouter, Anthropic), wires each automatically.
+2. `relay memory hook --install --global` — `SessionStart` context-emit hook into `~/.claude/settings.json`.
+3. `relay memory hook --install --session-end --global` — `SessionEnd` auto-extract hook (consent-gated).
+4. `relay memory auto-extract --enable` — opt IN per workdir (writes `<cwd>/.relay/auto-extract.json`).
 
-Run `relay init --auto` to accept all defaults non-interactively.
+Add `--clean` to remove duplicate Relay-managed hooks before reinstalling. Add `--interactive` to re-enable prompts.
+
+`relay init` alone (interactive) is still available for guided setup.
 
 ## Core commands
 
+### Memory
 | Command | What it does |
 |---|---|
-| `relay memory remember <content>` | Save a fact / decision / lesson with optional tags, pinned flag, expiry. |
+| `relay memory remember <content>` | Save fact / decision / lesson with tags, pinned flag, expiry. |
 | `relay memory recall [<query>]` | FTS5 + recency-fallback recall with token budget. |
-| `relay memory show-context <query>` | Preview the `recalled_lessons` context layer for a query. |
+| `relay memory search <regex>` | Exact regex content search (companion to FTS-scored recall). |
+| `relay memory recent [--limit N]` | List most recently created memories. |
+| `relay memory show-context <query>` | Preview the `recalled_lessons` context layer. |
 | `relay memory get <memory_id>` | Inspect one entry. |
-| `relay memory hook --install \| --uninstall` | Wire (or remove) the CC `SessionStart` hook. |
-| `relay memory to-rules <memory_id>` | Promote a memory entry to `.claude/CLAUDE.md`. |
+| `relay memory why <memory_id>` | Explain a memory's score breakdown + last 5 surfacings. |
+| `relay memory diff <id1> <id2>` | Unified line-diff of two memories' content. |
+| `relay memory chain <memory_id>` | Walk the `superseded_by` provenance chain (both directions). |
+| `relay memory tag-stats` | Per-tag analytics (count, recalls, last used). |
+| `relay memory consolidate` | Dedup + supersede stale entries. |
+| `relay memory rollback <run-id>` | Remove auto-extracted memories from a run. |
+| `relay memory forget <memory_id>` | Forget one entry (soft or `--hard`). |
+| `relay memory wipe --workdir <path>` | GDPR-style per-project memory wipe. |
+| `relay memory to-rules <memory_id>` | Promote memory to `.claude/CLAUDE.md`. |
+| `relay memory hook --install \| --uninstall` | Wire (or remove) the CC `SessionStart` / `SessionEnd` hook. |
+| `relay memory auto-extract --enable` | Opt IN to SessionEnd auto-extraction (per workdir). |
+| `relay memory tail [--filter <event>]` | Tail the relay activity log. |
+
+### Cross-LLM context injection
+| Command | What it does |
+|---|---|
+| `relay context emit --target <cc\|codex\|lmstudio-http\|lmstudio-cli>` | Emit recalled memories in per-LLM wrapper format (replaces hook jq pipeline). Defaults `--min-trust=provisional` to block unverified leaks. |
+
+### Delegation
+| Command | What it does |
+|---|---|
 | `relay run <task>` | Delegate one task to codex / lmstudio / openrouter / anthropic. |
 | `relay parallel <spec.json>` | Dispatch N tasks concurrently with bounded concurrency. |
 | `relay history` | Browse past runs. |
 | `relay diff <run_id>` | Show files_changed + diffs for a run. |
 | `relay compare <run_a> <run_b>` | Side-by-side diff of two runs. |
-| `relay doctor` | Probe provider + DB health. |
-| `relay init` | Interactive setup wizard. |
-| `relay completion <bash\|zsh\|fish>` | Emit a shell completion script. |
+
+### Diagnostics
+| Command | What it does |
+|---|---|
+| `relay doctor` | Probe provider + DB health (10 checks: providers, hooks, env, recall, auto-extract, berry, lmstudio model, consent files). |
+| `relay verify` | End-to-end smoke (memory + recall + context emit + hook + db). |
+| `relay info` | Status summary (binary, db size, type counts, 24h activity, hooks, providers). |
+| `relay tui` | Ink dashboard — recent activity + memory recall preview + status (q to quit). |
+
+### Setup / install
+| Command | What it does |
+|---|---|
+| `relay init [--auto]` | Interactive setup wizard; auto-wires detected LLM CLIs. |
+| `relay setup --everything [--clean] [--interactive]` | One-command installer (init + hooks + auto-extract). |
+| `relay setup-llm <codex\|lmstudio\|openrouter\|anthropic>` | Per-LLM init helper. |
+| `relay update [--check\|--apply]` | Self-update from source. |
+| `relay completion <bash\|zsh\|fish>` | Emit shell completion script. |
+
+### Privacy
+| Command | What it does |
+|---|---|
+| `relay project disable\|enable\|audit` | Per-project opt-out via `.relayignore`. |
+| `relay export --safe [--format json\|md\|html]` | Sanitized export (default-excludes auto-extract + private + unverified). |
+| `relay pause [--minutes N]` / `relay resume` | Off-switch via sentinel file. |
 
 Full flag reference: [docs/commands.md](docs/commands.md). Cheat sheet: [docs/cli-cheatsheet.md](docs/cli-cheatsheet.md).
 
@@ -85,17 +133,19 @@ Local-first by design. All memory lives in a single SQLite file under `~/.relay/
 
 ## Status
 
-Pre-release `0.1.0`. Currently 360+ tests, single-writer SQLite, four worker backends shipped (Codex, LM Studio, OpenRouter, Anthropic). Stable test suite verified across 7/7 stability runs with `--test-concurrency=1`. Public surface is the memory + delegation commands listed above; `relay budget` and `relay corpus` are deferred to v0.2 (see [CHANGELOG.md](CHANGELOG.md)).
+Pre-release `0.1.1`. Currently **946 tests** passing, single-writer SQLite + FTS5, four worker backends (Codex, LM Studio, OpenRouter, Anthropic), four cross-LLM context-injection wrappers (cc / codex / lmstudio-http / lmstudio-cli). CI runs Node 20 + 22 on every push.
 
-### Coming next (v0.2 candidates)
+Wave 4 hardening landed (see [CHANGELOG.md](CHANGELOG.md)):
 
-The following commands are on the roadmap and may land in a follow-up wave alongside this README; check `relay --help` for the authoritative menu in your installed version:
+- **Cross-LLM injection** — `relay context emit` replaces the old jq pipeline; defaults `--min-trust=provisional` to block unverified leaks.
+- **Auto-extract pipeline** — SessionEnd hook → consent gate → PII redaction → LM Studio extraction → schema validation → optional Berry check → `handleRemember`. Top-level try/catch, `partial:write` status, dynamic model resolution (`RELAY_AUTO_EXTRACT_MODEL` → `consent.model` → `lms ps` discovery), endpoint validation (refuses non-localhost unless `consent.allow_remote=true`).
+- **Hook stable-marker matching** — `_relay_id` field prevents accidental removal of foreign hooks. `relay setup --clean` removes only Relay-managed entries idempotently.
+- **Trust tier system** — `unverified` → `provisional` → `trusted`. `relay context emit` filters at `provisional` by default.
+- **`relay tui`** — Ink-based dashboard MVP (3 panels, 5s refresh).
+- **Privacy** — Per-workdir consent (`.relay/auto-extract.json`), `RELAY_MEMORY_ALLOWED_WORKDIRS` allowlist, LIKE wildcard escaping in wipe, settings-file ENOENT-vs-EPARSE distinction.
+- **Distribution** — `scripts/install.sh` with `--dry-run`, node version check, npm-prefix permission probe, post-install `relay verify`.
 
-- `relay verify` — end-to-end smoke test that exercises the install across detected providers.
-- `relay info` — print resolved config, DB path, hook status, and detected provider versions.
-- `relay memory rollback <run_id>` — undo the writes from one auto-extract run.
-- `relay memory consolidate` — dedupe and supersede overlapping memory clusters.
-- `relay update` — self-update from the source checkout.
+`relay budget` and `relay corpus` deferred to v0.2 (BudgetStore needs per-provider scope).
 
 ## Documentation
 
@@ -108,6 +158,7 @@ The following commands are on the roadmap and may land in a follow-up wave along
 - [Memory](docs/memory.md) — memory model, trust tiers, FTS5 recall, lint/gc.
 - [Parallel dispatch](docs/parallel.md) — concurrency rules, worktree isolation, spec format.
 - [Architecture](docs/architecture.md) — codebase layout, data flows, invariants.
+- [Cookbook](docs/cookbook.md) — verified per-LLM recipes (CC, Codex, LM Studio, OpenRouter, Anthropic, multi-LLM).
 - [Recipes](docs/recipes/) — worked examples for common workflows.
 - [Exit codes](docs/exit-codes.md) — what every exit code means.
 - [Short flags](docs/short-flags.md) — short-form aliases for common flags.
