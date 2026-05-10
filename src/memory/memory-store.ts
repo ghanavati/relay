@@ -730,6 +730,40 @@ export class MemoryStore {
   }
 
   /**
+   * List the most recently created non-superseded memories.
+   *
+   * Ordered by created_at DESC. Optional workdir filter narrows to a single
+   * project (workdir IS NULL entries are also included so global memories
+   * still surface alongside project-scoped ones, matching getCandidates()
+   * filter semantics).
+   *
+   * Limit defaults to 10; capped at 1000 to keep query bounded.
+   * Used by `relay memory recent` (last-N listing).
+   */
+  getRecent(limit: number = 10, workdir?: string): Memory[] {
+    if (workdir !== undefined && workdir !== '*') assertWorkdirAllowed(workdir);
+    const cappedLimit = Math.max(1, Math.min(Math.floor(limit), 1000));
+    if (workdir && workdir !== '*') {
+      const rows = this.db
+        .prepare(
+          `SELECT * FROM memories
+           WHERE superseded_by IS NULL AND (workdir = ? OR workdir IS NULL)
+           ORDER BY created_at DESC LIMIT ?`
+        )
+        .all(workdir, cappedLimit) as MemoryRow[];
+      return rows.map(rowToMemory);
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM memories
+         WHERE superseded_by IS NULL
+         ORDER BY created_at DESC LIMIT ?`
+      )
+      .all(cappedLimit) as MemoryRow[];
+    return rows.map(rowToMemory);
+  }
+
+  /**
    * Get a single memory by ID.
    */
   getMemory(memoryId: string): Memory | null {

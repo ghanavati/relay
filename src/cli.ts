@@ -116,6 +116,11 @@ ${c.cyan('MEMORY COMMANDS')}
     [--max-bytes <N>]                      (default: 32768)
     [--json]
 
+  relay memory recent                      List the most recently created memories
+    [--limit <N>]                          (default: 10)
+    [--workdir <path>]                     filter to a single project
+    [--json]                               structured array
+
   relay memory tail                        Tail the relay activity log
     [--filter <event>] (repeatable, substring match)
     [--since <duration>]                   e.g. 30m, 2h, 7d
@@ -438,6 +443,21 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     }, io);
   }
 
+  if (action === 'recent') {
+    const limitRaw = lastOption(flags, 'limit');
+    const limit = limitRaw !== undefined ? Number.parseInt(limitRaw, 10) : 10;
+    if (limitRaw !== undefined && (!Number.isFinite(limit) || limit <= 0)) {
+      io.stderr(`--limit must be a positive integer (got: ${limitRaw})\n`);
+      return 2;
+    }
+    const { executeMemoryRecentCommand } = await import('./cli/cmd-memory-recent.js');
+    return executeMemoryRecentCommand({
+      limit,
+      workdir: lastOption(flags, 'workdir'),
+      json: isBool(flags, 'json'),
+    }, io);
+  }
+
   if (action === 'why') {
     const memoryId = flags.positionals[1];
     if (!memoryId) {
@@ -474,7 +494,7 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     }, io);
   }
 
-  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract, wipe, tail, why, forget, rollback, consolidate\n`);
+  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract, wipe, tail, recent, why, forget, rollback, consolidate\n`);
   return 2;
 }
 
