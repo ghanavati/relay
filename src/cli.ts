@@ -148,6 +148,9 @@ ${c.cyan('MEMORY COMMANDS')}
     [--workdir <path>]
     [--json]
 
+  relay memory diff <id1> <id2>            Unified line-diff of two memories' content
+    [--json]                               (red/green hunks; structured payload with --json)
+
 ${c.cyan('CONTEXT COMMANDS')}
   relay context emit --target <t>          Emit recalled memories in a per-LLM
                                            wrapper format (replaces hook jq pipeline)
@@ -494,7 +497,18 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     }, io);
   }
 
-  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract, wipe, tail, recent, why, forget, rollback, consolidate\n`);
+  if (action === 'diff') {
+    const idA = flags.positionals[1];
+    const idB = flags.positionals[2];
+    if (!idA || !idB) {
+      io.stderr('relay memory diff requires <id1> <id2>\n');
+      return 2;
+    }
+    const { executeMemoryDiffCommand } = await import('./cli/cmd-memory-diff.js');
+    return executeMemoryDiffCommand({ idA, idB, json: isBool(flags, 'json') }, io);
+  }
+
+  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract, wipe, tail, recent, why, forget, rollback, consolidate, diff\n`);
   return 2;
 }
 
