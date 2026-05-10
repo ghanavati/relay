@@ -660,3 +660,292 @@ describe('executeMemoryHookCommand — marker-based identification', () => {
     );
   });
 });
+
+describe('HOOK_SCRIPT_SESSION_END shape', () => {
+  test('contains `mkdir -p "$HOME/.relay"` (Codex BLOCKER fix — log dir must exist before redirect)', () => {
+    // Shell parses `2>>"$HOME/.relay/auto-extract.log"` BEFORE relay runs, so a
+    // missing ~/.relay directory causes the hook to silently no-op on first install.
+    // The mkdir guard must precede the relay invocation.
+    assert.match(HOOK_SCRIPT_SESSION_END, /mkdir -p "\$HOME\/\.relay"/);
+    const mkdirIdx = HOOK_SCRIPT_SESSION_END.indexOf('mkdir -p');
+    const relayIdx = HOOK_SCRIPT_SESSION_END.indexOf('relay memory');
+    assert.ok(mkdirIdx >= 0 && relayIdx > mkdirIdx, 'mkdir must precede relay invocation');
+  });
+
+  test('invokes `relay memory auto-extract --from-stdin` (consumes CC SessionEnd JSON payload)', () => {
+    assert.match(HOOK_SCRIPT_SESSION_END, /relay memory auto-extract --from-stdin/);
+  });
+
+  test('appends stderr to ~/.relay/auto-extract.log (does not block CC on hook failure)', () => {
+    assert.match(HOOK_SCRIPT_SESSION_END, /2>>"\$HOME\/\.relay\/auto-extract\.log"/);
+    assert.match(HOOK_SCRIPT_SESSION_END, /\|\| true$/);
+  });
+});
+
+describe('executeMemoryHookCommand — SessionEnd project-local install', () => {
+  let tmp: string;
+
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'relay-hook-se-proj-'));
+  });
+
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  test('install --session-end writes SessionEnd entry to <cwd>/.claude/settings.json', async () => {
+    const cap = makeIO(tmp);
+    const code = await executeMemoryHookCommand(
+      { install: true, json: false, sessionEnd: true },
+      cap.io,
+      tmp
+    );
+    assert.strictEqual(code, 0);
+
+    const expectedPath = join(tmp, '.claude', 'settings.json');
+    const settings = await readSettings(expectedPath);
+    const sessionEnd = settings.hooks?.SessionEnd ?? [];
+    assert.strictEqual(sessionEnd.length, 1, 'one SessionEnd entry');
+    assert.strictEqual(sessionEnd[0]?.hooks?.[0]?.type, 'command');
+    assert.strictEqual(sessionEnd[0]?.hooks?.[0]?.command, HOOK_SCRIPT_SESSION_END);
+    // SessionStart key absent — install --session-end must not seed an empty SessionStart array
+    assert.strictEqual(settings.hooks?.SessionStart, undefined);
+  });
+
+  test('install --session-end is idempotent — second install leaves a single marked entry', async () => {
+    const cap1 = makeIO(tmp);
+    await executeMemoryHookCommand(
+      { install: true, json: false, sessionEnd: true },
+      cap1.io,
+      tmp
+    );
+
+    const cap2 = makeIO(tmp);
+    const code = await executeMemoryHookCommand(
+      { install: true, json: false, sessionEnd: true },
+      cap2.io,
+      tmp
+    );
+    assert.strictEqual(code, 0);
+
+    const settings = await readSettings(join(tmp, '.claude', 'settings.json'));
+    const marked = (settings.hooks?.SessionEnd ?? []).filter(
+      (e) => e[HOOK_MARKER_FIELD as '_relay_id'] === HOOK_MARKER_SESSION_END
+    );
+    assert.strictEqual(marked.length, 1, 'no duplicate SessionEnd marked entries');
+
+    const allCommands = (settings.hooks?.SessionEnd ?? []).flatMap((e) =>
+      (e.hooks ?? []).map((h) => h.command)
+    );
+    const relayCommandCount = allCommands.filter((c) => c === HOOK_SCRIPT_SESSION_END).length;
+    assert.strictEqual(relayCommandCount, 1, 'single relay command entry');
+  });
+
+  test('install --session-end onto settings with a pre-existing SessionStart marker leaves both intact', async () => {
+    // Pre-seed a SessionStart marker entry (as if `relay memory hook --install`
+    // had been run earlier). Then install --session-end. Both events must end up
+    // with their marker-bearing entry; neither should be disturbed.
+    const settingsPath = join(tmp, '.claude', 'settings.json');
+    await mkdir(join(tmp, '.claude'), { recursive: true });
+    await writeFile(
+      settingsPath,
+      JSON.stringify(
+        {
+          hooks: {
+            SessionStart: [
+              {
+                _relay_id: HOOK_MARKER_SESSION_START,
+                hooks: [{ type: 'command', command: HOOK_SCRIPT }],
+              },
+            ],
+          },
+        },
+        null,
+        2
+      ) + '\n',
+      'utf8'
+    );
+
+    const cap = makeIO(tmp);
+    const code = await executeMemoryHookCommand(
+      { install: true, json: false, sessionEnd: true },
+      cap.io,
+      tmp
+    );
+    assert.strictEqual(code, 0);
+
+    const settings = await readSettings(settingsPath);
+    const startMarked = (settings.hooks?.SessionStart ?? []).filter(
+      (e) => e[HOOK_MARKER_FIELD as '_relay_id'] === HOOK_MARKER_SESSION_START
+    );
+    const endMarked = (settings.hooks?.SessionEnd ?? []).filter(
+      (e) => e[HOOK_MARKER_FIELD as '_relay_id'] === HOOK_MARKER_SESSION_END
+    );
+    assert.strictEqual(startMarked.length, 1, 'pre-existing SessionStart marker preserved');
+    assert.strictEqual(endMarked.length, 1, 'new SessionEnd marker added');
+    assert.strictEqual(startMarked[0]?.hooks?.[0]?.command, HOOK_SCRIPT);
+    assert.strictEqual(endMarked[0]?.hooks?.[0]?.command, HOOK_SCRIPT_SESSION_END);
+  });
+});
+
+describe('executeMemoryHookCommand — SessionEnd global install', () => {
+  let tmp: string;
+  let originalHome: string | undefined;
+
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'relay-hook-se-global-'));
+    originalHome = process.env['HOME'];
+    process.env['HOME'] = tmp;
+  });
+
+  afterEach(async () => {
+    if (originalHome === undefined) delete process.env['HOME'];
+    else process.env['HOME'] = originalHome;
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  test('install --session-end --global writes SessionEnd entry with relay-session-end-v1 marker to ~/.claude/settings.json', async () => {
+    const projectCwd = join(tmp, 'proj-se');
+    await mkdir(projectCwd, { recursive: true });
+
+    const cap = makeIO(projectCwd);
+    const code = await executeMemoryHookCommand(
+      { install: true, json: false, global: true, sessionEnd: true },
+      cap.io,
+      projectCwd
+    );
+    assert.strictEqual(code, 0);
+
+    const homePath = join(homedir(), '.claude', 'settings.json');
+    assert.strictEqual(homePath, join(tmp, '.claude', 'settings.json'));
+
+    const settings = await readSettings(homePath);
+    const sessionEnd = settings.hooks?.SessionEnd ?? [];
+    assert.strictEqual(sessionEnd.length, 1);
+    assert.strictEqual(
+      sessionEnd[0]?.[HOOK_MARKER_FIELD as '_relay_id'],
+      HOOK_MARKER_SESSION_END,
+      'marker must be relay-session-end-v1'
+    );
+    assert.strictEqual(HOOK_MARKER_SESSION_END, 'relay-session-end-v1', 'marker constant value');
+    assert.strictEqual(sessionEnd[0]?.hooks?.[0]?.command, HOOK_SCRIPT_SESSION_END);
+
+    // Project-local file must NOT be created
+    let projectExists = true;
+    try {
+      await stat(join(projectCwd, '.claude', 'settings.json'));
+    } catch {
+      projectExists = false;
+    }
+    assert.strictEqual(projectExists, false, '--global install must not create project-local file');
+  });
+
+  test('JSON mode reports event=SessionEnd and global path on --session-end --global install', async () => {
+    const projectCwd = join(tmp, 'proj-se-json');
+    await mkdir(projectCwd, { recursive: true });
+    const cap = makeIO(projectCwd);
+    const code = await executeMemoryHookCommand(
+      { install: true, json: true, global: true, sessionEnd: true },
+      cap.io,
+      projectCwd
+    );
+    assert.strictEqual(code, 0);
+    const parsed = JSON.parse(cap.stdout.join('').trim()) as {
+      installed: boolean;
+      path: string;
+      event: string;
+    };
+    assert.strictEqual(parsed.installed, true);
+    assert.strictEqual(parsed.event, 'SessionEnd');
+    assert.strictEqual(parsed.path, join(homedir(), '.claude', 'settings.json'));
+  });
+
+  test('uninstall --session-end --global removes only SessionEnd marker, leaves global SessionStart untouched', async () => {
+    const projectCwd = join(tmp, 'proj-se-coexist');
+    await mkdir(projectCwd, { recursive: true });
+
+    // Install BOTH SessionStart and SessionEnd globally.
+    const cap = makeIO(projectCwd);
+    await executeMemoryHookCommand(
+      { install: true, json: false, global: true },
+      cap.io,
+      projectCwd
+    );
+    await executeMemoryHookCommand(
+      { install: true, json: false, global: true, sessionEnd: true },
+      cap.io,
+      projectCwd
+    );
+
+    const homePath = join(homedir(), '.claude', 'settings.json');
+    let settings = await readSettings(homePath);
+    assert.strictEqual(
+      (settings.hooks?.SessionStart ?? []).filter(
+        (e) => e[HOOK_MARKER_FIELD as '_relay_id'] === HOOK_MARKER_SESSION_START
+      ).length,
+      1
+    );
+    assert.strictEqual(
+      (settings.hooks?.SessionEnd ?? []).filter(
+        (e) => e[HOOK_MARKER_FIELD as '_relay_id'] === HOOK_MARKER_SESSION_END
+      ).length,
+      1
+    );
+
+    // Now uninstall ONLY SessionEnd globally.
+    const code = await executeMemoryHookCommand(
+      { install: false, json: false, global: true, sessionEnd: true },
+      cap.io,
+      projectCwd
+    );
+    assert.strictEqual(code, 0);
+
+    settings = await readSettings(homePath);
+    const startStill = (settings.hooks?.SessionStart ?? []).filter(
+      (e) => e[HOOK_MARKER_FIELD as '_relay_id'] === HOOK_MARKER_SESSION_START
+    );
+    const endGone = (settings.hooks?.SessionEnd ?? []).filter(
+      (e) => e[HOOK_MARKER_FIELD as '_relay_id'] === HOOK_MARKER_SESSION_END
+    );
+    assert.strictEqual(startStill.length, 1, 'global SessionStart marker preserved');
+    assert.strictEqual(endGone.length, 0, 'global SessionEnd marker removed');
+  });
+
+  test('global install preserves unrelated user-wide SessionEnd hooks', async () => {
+    const settingsPath = join(homedir(), '.claude', 'settings.json');
+    await mkdir(join(homedir(), '.claude'), { recursive: true });
+    const foreignSessionEnd = 'curl -X POST https://my-logger.example/session-end';
+    await writeFile(
+      settingsPath,
+      JSON.stringify(
+        {
+          hooks: {
+            SessionEnd: [
+              { hooks: [{ type: 'command', command: foreignSessionEnd }] },
+            ],
+          },
+        },
+        null,
+        2
+      ) + '\n',
+      'utf8'
+    );
+
+    const projectCwd = join(tmp, 'proj-se-foreign');
+    await mkdir(projectCwd, { recursive: true });
+
+    const cap = makeIO(projectCwd);
+    await executeMemoryHookCommand(
+      { install: true, json: false, global: true, sessionEnd: true },
+      cap.io,
+      projectCwd
+    );
+
+    const settings = await readSettings(settingsPath);
+    const allCommands = (settings.hooks?.SessionEnd ?? []).flatMap((e) =>
+      (e.hooks ?? []).map((h) => h.command)
+    );
+    assert.ok(allCommands.includes(foreignSessionEnd), 'foreign SessionEnd hook preserved');
+    assert.ok(allCommands.includes(HOOK_SCRIPT_SESSION_END), 'relay SessionEnd hook installed');
+  });
+});

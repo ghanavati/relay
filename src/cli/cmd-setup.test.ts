@@ -71,18 +71,18 @@ describe('executeSetupCommand', () => {
   test('returns 2 if --everything is not set', async () => {
     const { executors } = makeRecorder();
     const code = await executeSetupCommand(
-      { everything: false, workdir: undefined, lmModel: undefined, yes: false, json: false },
+      { everything: false, workdir: undefined, lmModel: undefined, yes: false, json: false, interactive: false, clean: false },
       cap.io,
       executors
     );
     assert.strictEqual(code, 2);
-    assert.match(cap.stderr.join(''), /requires --everything/);
+    assert.match(cap.stderr.join(''), /requires --everything or --clean/);
   });
 
   test('--everything --yes runs all 4 steps in order, returns 0 on success', async () => {
     const { calls, executors } = makeRecorder();
     const code = await executeSetupCommand(
-      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false },
+      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false, interactive: false, clean: false },
       cap.io,
       executors
     );
@@ -97,7 +97,7 @@ describe('executeSetupCommand', () => {
   test('init args carry auto:true when --yes is passed', async () => {
     const { calls, executors } = makeRecorder();
     await executeSetupCommand(
-      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false },
+      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false, interactive: false, clean: false },
       cap.io,
       executors
     );
@@ -110,7 +110,7 @@ describe('executeSetupCommand', () => {
   test('init args carry auto:true when --json is passed (json implies non-interactive)', async () => {
     const { calls, executors } = makeRecorder();
     await executeSetupCommand(
-      { everything: true, workdir: undefined, lmModel: undefined, yes: false, json: true },
+      { everything: true, workdir: undefined, lmModel: undefined, yes: false, json: true, interactive: false, clean: false },
       cap.io,
       executors
     );
@@ -122,7 +122,7 @@ describe('executeSetupCommand', () => {
   test('hook step #1 sets global=true, sessionEnd=false (SessionStart)', async () => {
     const { calls, executors } = makeRecorder();
     await executeSetupCommand(
-      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false },
+      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false, interactive: false, clean: false },
       cap.io,
       executors
     );
@@ -135,7 +135,7 @@ describe('executeSetupCommand', () => {
   test('hook step #2 sets global=true, sessionEnd=true (SessionEnd)', async () => {
     const { calls, executors } = makeRecorder();
     await executeSetupCommand(
-      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false },
+      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false, interactive: false, clean: false },
       cap.io,
       executors
     );
@@ -148,7 +148,7 @@ describe('executeSetupCommand', () => {
   test('auto-extract uses --workdir flag when provided', async () => {
     const { calls, executors } = makeRecorder();
     await executeSetupCommand(
-      { everything: true, workdir: '/some/explicit/path', lmModel: undefined, yes: true, json: false },
+      { everything: true, workdir: '/some/explicit/path', lmModel: undefined, yes: true, json: false, interactive: false, clean: false },
       cap.io,
       executors
     );
@@ -159,7 +159,7 @@ describe('executeSetupCommand', () => {
   test('auto-extract defaults to io.cwd when --workdir omitted', async () => {
     const { calls, executors } = makeRecorder();
     await executeSetupCommand(
-      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false },
+      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false, interactive: false, clean: false },
       cap.io,
       executors
     );
@@ -170,7 +170,7 @@ describe('executeSetupCommand', () => {
   test('init failure aborts: only init runs, returns 1', async () => {
     const { calls, executors } = makeRecorder({ initExit: 1 });
     const code = await executeSetupCommand(
-      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false },
+      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false, interactive: false, clean: false },
       cap.io,
       executors
     );
@@ -183,7 +183,7 @@ describe('executeSetupCommand', () => {
   test('first hook failure aborts: init+hook1 ran, returns 1', async () => {
     const { calls, executors } = makeRecorder({ hookExit: [1, 0] });
     const code = await executeSetupCommand(
-      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false },
+      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false, interactive: false, clean: false },
       cap.io,
       executors
     );
@@ -196,7 +196,7 @@ describe('executeSetupCommand', () => {
   test('second hook failure aborts: init+hook1+hook2 ran, returns 1', async () => {
     const { calls, executors } = makeRecorder({ hookExit: [0, 1] });
     const code = await executeSetupCommand(
-      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false },
+      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false, interactive: false, clean: false },
       cap.io,
       executors
     );
@@ -208,7 +208,7 @@ describe('executeSetupCommand', () => {
   test('auto-extract failure: all 4 steps ran, returns 1', async () => {
     const { calls, executors } = makeRecorder({ autoExtractExit: 1 });
     const code = await executeSetupCommand(
-      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false },
+      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false, interactive: false, clean: false },
       cap.io,
       executors
     );
@@ -224,7 +224,7 @@ describe('executeSetupCommand', () => {
       runAutoExtractEnable: async () => 0,
     };
     const code = await executeSetupCommand(
-      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false },
+      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false, interactive: false, clean: false },
       cap.io,
       executors
     );
@@ -235,7 +235,7 @@ describe('executeSetupCommand', () => {
   test('--json mode emits a single parseable summary object with steps', async () => {
     const { executors } = makeRecorder();
     const code = await executeSetupCommand(
-      { everything: true, workdir: undefined, lmModel: undefined, yes: false, json: true },
+      { everything: true, workdir: undefined, lmModel: undefined, yes: false, json: true, interactive: false, clean: false },
       cap.io,
       executors
     );
@@ -257,7 +257,7 @@ describe('executeSetupCommand', () => {
   test('--json mode on failure emits ok:false and only the steps that ran', async () => {
     const { executors } = makeRecorder({ hookExit: [1, 0] });
     const code = await executeSetupCommand(
-      { everything: true, workdir: undefined, lmModel: undefined, yes: false, json: true },
+      { everything: true, workdir: undefined, lmModel: undefined, yes: false, json: true, interactive: false, clean: false },
       cap.io,
       executors
     );
@@ -277,7 +277,7 @@ describe('executeSetupCommand', () => {
   test('text mode prints "==> step" progress lines and a final ok line', async () => {
     const { executors } = makeRecorder();
     await executeSetupCommand(
-      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false },
+      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false, interactive: false, clean: false },
       cap.io,
       executors
     );
@@ -286,6 +286,141 @@ describe('executeSetupCommand', () => {
     assert.match(out, /==> relay memory hook --install --global\n/);
     assert.match(out, /==> relay memory hook --install --global --session-end/);
     assert.match(out, /==> relay memory auto-extract --enable --workdir/);
-    assert.match(out, /\[ok\] relay setup --everything: 4 steps completed/);
+    assert.match(out, /\[ok\] relay setup: 4 steps completed/);
+  });
+
+  // T14 — non-interactive default + --interactive opt-in
+  test('T14: --everything (no --yes, no --interactive) defaults to auto:true (non-interactive)', async () => {
+    const { calls, executors } = makeRecorder();
+    const code = await executeSetupCommand(
+      { everything: true, workdir: undefined, lmModel: undefined, yes: false, json: false, interactive: false, clean: false },
+      cap.io,
+      executors
+    );
+    assert.strictEqual(code, 0);
+    const initArgs = calls[0]!.args as { auto: boolean };
+    // T14 contract: default is non-interactive — init MUST be called with auto:true
+    // even when --yes is not passed. Previously this would prompt the user.
+    assert.strictEqual(initArgs.auto, true, 'default is non-interactive');
+  });
+
+  test('T14: --everything --interactive flips auto to false (prompts re-enabled)', async () => {
+    const { calls, executors } = makeRecorder();
+    const code = await executeSetupCommand(
+      { everything: true, workdir: undefined, lmModel: undefined, yes: false, json: false, interactive: true, clean: false },
+      cap.io,
+      executors
+    );
+    assert.strictEqual(code, 0);
+    const initArgs = calls[0]!.args as { auto: boolean };
+    assert.strictEqual(initArgs.auto, false, '--interactive opts back into prompts');
+  });
+
+  test('T14: --everything --interactive --json keeps auto:true (json wins, no deadlock)', async () => {
+    // --json is always machine-facing; honoring --interactive here would
+    // dead-lock waiting for stdin that no caller will provide.
+    const { calls, executors } = makeRecorder();
+    await executeSetupCommand(
+      { everything: true, workdir: undefined, lmModel: undefined, yes: false, json: true, interactive: true, clean: false },
+      cap.io,
+      executors
+    );
+    const initArgs = calls[0]!.args as { auto: boolean };
+    assert.strictEqual(initArgs.auto, true, 'json overrides interactive');
+  });
+
+  test('T14: --everything --interactive --yes keeps auto:true (yes wins)', async () => {
+    const { calls, executors } = makeRecorder();
+    await executeSetupCommand(
+      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false, interactive: true, clean: false },
+      cap.io,
+      executors
+    );
+    const initArgs = calls[0]!.args as { auto: boolean };
+    assert.strictEqual(initArgs.auto, true, '--yes overrides --interactive');
+  });
+
+  // T15 — --clean removes prior marker entries before install
+  test('T15: --clean alone (no --everything) runs 2 uninstall steps then exits 0', async () => {
+    const { calls, executors } = makeRecorder();
+    const code = await executeSetupCommand(
+      { everything: false, workdir: undefined, lmModel: undefined, yes: false, json: false, interactive: false, clean: true },
+      cap.io,
+      executors
+    );
+    assert.strictEqual(code, 0);
+    assert.strictEqual(calls.length, 2, 'only 2 uninstall calls');
+    const u1 = calls[0]!.args as { install: boolean; global?: boolean; sessionEnd?: boolean };
+    const u2 = calls[1]!.args as { install: boolean; global?: boolean; sessionEnd?: boolean };
+    assert.strictEqual(u1.install, false);
+    assert.strictEqual(u1.global, true);
+    assert.strictEqual(u1.sessionEnd, false);
+    assert.strictEqual(u2.install, false);
+    assert.strictEqual(u2.global, true);
+    assert.strictEqual(u2.sessionEnd, true);
+  });
+
+  test('T15: --clean --everything runs uninstall first (4 steps before install begins)', async () => {
+    const { calls, executors } = makeRecorder();
+    const code = await executeSetupCommand(
+      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false, interactive: false, clean: true },
+      cap.io,
+      executors
+    );
+    assert.strictEqual(code, 0);
+    // Sequence: uninstall SessionStart, uninstall SessionEnd, init, install SessionStart, install SessionEnd, auto-extract
+    assert.strictEqual(calls.length, 6);
+    assert.strictEqual((calls[0]!.args as { install: boolean }).install, false, 'step 1 = uninstall');
+    assert.strictEqual((calls[1]!.args as { install: boolean }).install, false, 'step 2 = uninstall');
+    assert.strictEqual(calls[2]!.step, 'init', 'step 3 = init');
+    assert.strictEqual((calls[3]!.args as { install: boolean }).install, true, 'step 4 = install');
+    assert.strictEqual((calls[4]!.args as { install: boolean }).install, true, 'step 5 = install');
+    assert.strictEqual(calls[5]!.step, 'auto-extract', 'step 6 = auto-extract');
+  });
+
+  test('T15: --clean --everything is idempotent (re-running yields same result)', async () => {
+    // The underlying executeMemoryHookCommand is already idempotent (filter by
+    // marker, then add). Calling --clean twice in a row produces the same call
+    // sequence each time — uninstall on an empty hook list is a no-op for
+    // the user's settings.json but still returns 0.
+    const r1 = makeRecorder();
+    await executeSetupCommand(
+      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false, interactive: false, clean: true },
+      cap.io,
+      r1.executors
+    );
+    const cap2 = makeIO('/tmp/setup-cwd');
+    const r2 = makeRecorder();
+    const code2 = await executeSetupCommand(
+      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false, interactive: false, clean: true },
+      cap2.io,
+      r2.executors
+    );
+    assert.strictEqual(code2, 0);
+    assert.strictEqual(r1.calls.length, r2.calls.length, 'same number of calls each run');
+  });
+
+  test('T15: --clean uninstall failure aborts before install runs', async () => {
+    // First hook call (uninstall SessionStart) returns 1 → no further steps.
+    const { calls, executors } = makeRecorder({ hookExit: [1, 0] });
+    const code = await executeSetupCommand(
+      { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false, interactive: false, clean: true },
+      cap.io,
+      executors
+    );
+    assert.strictEqual(code, 1);
+    assert.strictEqual(calls.length, 1, 'aborts after first uninstall failure');
+  });
+
+  test('T15: setup with neither --everything nor --clean returns 2', async () => {
+    const { calls, executors } = makeRecorder();
+    const code = await executeSetupCommand(
+      { everything: false, workdir: undefined, lmModel: undefined, yes: false, json: false, interactive: false, clean: false },
+      cap.io,
+      executors
+    );
+    assert.strictEqual(code, 2);
+    assert.strictEqual(calls.length, 0);
+    assert.match(cap.stderr.join(''), /requires --everything or --clean/);
   });
 });
