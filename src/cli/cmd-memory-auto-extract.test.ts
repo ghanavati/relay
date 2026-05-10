@@ -122,7 +122,7 @@ describe('executeMemoryAutoExtractCommand', () => {
     assert.match(audit, /sess-123/);
   });
 
-  test('consent file with enabled:false → skipped:no-consent', async () => {
+  test('consent file with enabled:false → skipped:disabled', async () => {
     const projectCwd = join(tmp, 'project');
     await mkdir(join(projectCwd, '.relay'), { recursive: true });
     await writeFile(
@@ -148,7 +148,7 @@ describe('executeMemoryAutoExtractCommand', () => {
     );
     assert.strictEqual(code, 0);
     const out = JSON.parse(cap.stdout.join('').trim()) as { status: string };
-    assert.strictEqual(out.status, 'skipped:no-consent');
+    assert.strictEqual(out.status, 'skipped:disabled');
   });
 
   test('consent enabled but transcript missing → skipped:no-transcript', async () => {
@@ -178,7 +178,7 @@ describe('executeMemoryAutoExtractCommand', () => {
     assert.strictEqual(out.status, 'skipped:no-transcript');
   });
 
-  test('consent + valid transcript → skipped:llm-not-wired (T10 stub)', async () => {
+  test('consent + valid transcript + LM Studio unreachable → error:llm-down', async () => {
     const projectCwd = join(tmp, 'project3');
     await mkdir(join(projectCwd, '.relay'), { recursive: true });
     await writeFile(
@@ -203,27 +203,33 @@ describe('executeMemoryAutoExtractCommand', () => {
       hook_event_name: 'SessionEnd',
     });
 
-    const cap = makeIO(tmp);
-    const code = await withStdin(payload, () =>
-      executeMemoryAutoExtractCommand(
-        { fromStdin: true, maxBytes: undefined, json: true },
-        cap.io
-      )
-    );
-    assert.strictEqual(code, 0);
-    const parsed = JSON.parse(cap.stdout.join('').trim()) as {
-      status: string;
-      session_id: string;
-      turns_read: number;
-      bytes: number;
-    };
-    assert.strictEqual(parsed.status, 'skipped:llm-not-wired');
-    assert.strictEqual(parsed.session_id, 's4');
-    assert.strictEqual(parsed.turns_read, 2);
-    assert.ok(parsed.bytes > 0);
+    // Force LM Studio unreachable by pointing at a closed port.
+    const prevEndpoint = process.env['RELAY_AUTO_EXTRACT_ENDPOINT'];
+    process.env['RELAY_AUTO_EXTRACT_ENDPOINT'] = 'http://127.0.0.1:1';
+    try {
+      const cap = makeIO(tmp);
+      const code = await withStdin(payload, () =>
+        executeMemoryAutoExtractCommand(
+          { fromStdin: true, maxBytes: undefined, json: true },
+          cap.io
+        )
+      );
+      assert.strictEqual(code, 0);
+      const parsed = JSON.parse(cap.stdout.join('').trim()) as {
+        status: string;
+        session_id: string;
+        turns_read: number;
+      };
+      assert.strictEqual(parsed.status, 'error:llm-down');
+      assert.strictEqual(parsed.session_id, 's4');
+      assert.strictEqual(parsed.turns_read, 2);
 
-    const audit = await readFile(join(tmp, '.relay', 'auto-extract.log'), 'utf8');
-    assert.match(audit, /skipped:llm-not-wired/);
-    assert.match(audit, /s4/);
+      const audit = await readFile(join(tmp, '.relay', 'auto-extract.log'), 'utf8');
+      assert.match(audit, /error:llm-down/);
+      assert.match(audit, /s4/);
+    } finally {
+      if (prevEndpoint === undefined) delete process.env['RELAY_AUTO_EXTRACT_ENDPOINT'];
+      else process.env['RELAY_AUTO_EXTRACT_ENDPOINT'] = prevEndpoint;
+    }
   });
 });
