@@ -97,6 +97,9 @@ MEMORY COMMANDS
 
   relay memory get <memory_id> [--json]    Inspect one memory entry
 
+  relay memory why <memory_id> [--json]    Explain a memory's score breakdown
+                                           (per-component contributions + last 5 surfacings)
+
   relay memory hook --install              Install a CC SessionStart hook
     [--global]                             Install into ~/.claude/settings.json
                                            (default: project-local .claude/settings.json)
@@ -345,6 +348,7 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     return executeMemoryToRulesCommand({ memoryId, rulesFile, json: isBool(flags, 'json') }, io, io.cwd);
   }
 
+<<<<<<< HEAD
   if (action === 'auto-extract') {
     if (isBool(flags, 'enable')) {
       const { executeMemoryAutoExtractEnableCommand } = await import('./cli/cmd-memory-auto-extract-enable.js');
@@ -392,7 +396,17 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     }, io);
   }
 
-  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract, wipe, tail\n`);
+  if (action === 'why') {
+    const memoryId = flags.positionals[1];
+    if (!memoryId) {
+      io.stderr('relay memory why requires <memory_id>\n');
+      return 2;
+    }
+    const { executeMemoryWhyCommand } = await import('./cli/cmd-memory-why.js');
+    return executeMemoryWhyCommand({ memoryId, json: isBool(flags, 'json') }, io);
+  }
+
+  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, show-context, get, hook, to-rules, auto-extract, wipe, tail, why\n`);
   return 2;
 }
 

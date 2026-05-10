@@ -72,18 +72,47 @@ function computeContentScore(content: string, query: string | undefined): number
 }
 
 /**
- * Score a single memory against a query.
+ * Per-component contributions to a memory's total relevance score.
  *
- * Combined score formula:
- *   score = tag_match × 0.35
- *         + content_match × 0.15
- *         + recency × 0.25
- *         + type_weight × 0.15
- *         + pin_bonus × 0.10
- *
- * Returns 0.0 to ~1.5 (pinned facts with perfect tag+content match).
+ * Each value is the WEIGHTED contribution actually added to the total
+ * (i.e. raw_signal × weight), so summing all 7 fields equals `total`.
+ * This makes the breakdown directly auditable by `relay memory why`.
  */
-export function scoreMemory(memory: Memory, query: RecallQuery, now: number): number {
+export interface ScoreComponents {
+  readonly tag: number;
+  readonly content: number;
+  readonly recency: number;
+  readonly type: number;
+  readonly pin: number;
+  readonly trust: number;
+  readonly success: number;
+}
+
+export interface ScoreBreakdown {
+  readonly total: number;
+  readonly components: ScoreComponents;
+}
+
+/**
+ * Score a single memory against a query AND return per-component contributions.
+ *
+ * Same scoring formula as `scoreMemory` — this is the canonical implementation.
+ * `scoreMemory` is a thin wrapper that returns `.total`. Existing tests that
+ * assert on `scoreMemory`'s numeric output remain unchanged because the formula
+ * is identical and `total = sum(components)`.
+ *
+ * Modes:
+ *   - With query (text or tags):
+ *       tag × 0.35 + content × 0.15 + recency × 0.25 + type × 0.15 + pin × 0.10
+ *       + trustBonus (raw) + successBonus (raw)
+ *   - Without query (pure recency + type):
+ *       recency × 0.45 + type × 0.35 + pin × 0.20
+ *       + trustBonus (raw) + successBonus (raw)
+ *
+ * trust and success bonuses are added at full strength in both modes (their
+ * "weight" is implicit in the raw value cap).
+ */
+export function scoreMemoryDetailed(memory: Memory, query: RecallQuery, now: number): ScoreBreakdown {
   const tagScore = computeTagScore(memory.tags, query.tags ?? []);
   const contentScore = computeContentScore(memory.content, query.query);
   const recencyScore = computeRecency(memory.accessed_at, now, memory.memory_type as MemoryType);
@@ -101,12 +130,54 @@ export function scoreMemory(memory: Memory, query: RecallQuery, now: number): nu
 
   // If no query text AND no tags provided, weight recency and type more heavily
   const hasQuery = (query.query && query.query.trim().length > 0) || (query.tags && query.tags.length > 0);
+
   if (!hasQuery) {
-    // Pure recency + type mode — useful for get_session_context with no specific query
-    return recencyScore * 0.45 + typeWeight * 0.35 + pinBonus * 0.20 + trustBonus + successBonus;
+    const components: ScoreComponents = {
+      tag: 0,
+      content: 0,
+      recency: recencyScore * 0.45,
+      type: typeWeight * 0.35,
+      pin: pinBonus * 0.20,
+      trust: trustBonus,
+      success: successBonus,
+    };
+    const total = components.tag + components.content + components.recency
+                + components.type + components.pin + components.trust + components.success;
+    return { total, components };
   }
 
-  return tagScore * 0.35 + contentScore * 0.15 + recencyScore * 0.25 + typeWeight * 0.15 + pinBonus * 0.10 + trustBonus + successBonus;
+  const components: ScoreComponents = {
+    tag: tagScore * 0.35,
+    content: contentScore * 0.15,
+    recency: recencyScore * 0.25,
+    type: typeWeight * 0.15,
+    pin: pinBonus * 0.10,
+    trust: trustBonus,
+    success: successBonus,
+  };
+  const total = components.tag + components.content + components.recency
+              + components.type + components.pin + components.trust + components.success;
+  return { total, components };
+}
+
+/**
+ * Score a single memory against a query.
+ *
+ * Combined score formula:
+ *   score = tag_match × 0.35
+ *         + content_match × 0.15
+ *         + recency × 0.25
+ *         + type_weight × 0.15
+ *         + pin_bonus × 0.10
+ *
+ * Returns 0.0 to ~1.5 (pinned facts with perfect tag+content match).
+ *
+ * Internally delegates to `scoreMemoryDetailed` and returns `.total`.
+ * Signature is preserved for backward compatibility with existing callers
+ * and tests that assert on the numeric output.
+ */
+export function scoreMemory(memory: Memory, query: RecallQuery, now: number): number {
+  return scoreMemoryDetailed(memory, query, now).total;
 }
 
 /**
