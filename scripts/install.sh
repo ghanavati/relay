@@ -125,11 +125,32 @@ if [[ ! -w "${NPM_PREFIX}" && ! -w "${NPM_PREFIX}/lib" && ! -w "$(dirname "${NPM
   if [[ "${ASSUME_YES}" -ne 1 ]]; then die "aborting; fix npm prefix and re-run, or use sudo at your own risk."; fi
 fi
 
-# Idempotency: detect existing relay binary
+# Idempotency: detect existing relay binary and prompt upgrade/reinstall/cancel.
+# In --yes mode (incl. --dry-run) we silently default to upgrade.
 EXISTING_VERSION=""
 if have relay; then EXISTING_VERSION="$(relay --version 2>/dev/null | head -n1 || true)"; fi
 if [[ -n "${EXISTING_VERSION}" && "${FORCE_REINSTALL}" -ne 1 ]]; then
-  log "[preflight] existing install detected: ${EXISTING_VERSION} — will upgrade in place."
+  if [[ "${ASSUME_YES}" -eq 1 ]]; then
+    log "[preflight] existing install detected: ${EXISTING_VERSION} — upgrading in place (--yes)."
+  elif [[ ! -t 0 ]]; then
+    log "[preflight] existing install detected: ${EXISTING_VERSION} — upgrading in place (non-TTY)."
+  else
+    log ""
+    log "[preflight] existing install detected: ${EXISTING_VERSION}"
+    printf "  Choose: [u]pgrade in place, [r]einstall fresh, [c]ancel? [u/r/c] "
+    read -r choice
+    case "${choice:-u}" in
+      u|U|upgrade|"") log "  -> upgrade in place." ;;
+      r|R|reinstall)  FORCE_REINSTALL=1; log "  -> reinstall (clean checkout)." ;;
+      c|C|cancel)     log "  Aborted by user."; exit 0 ;;
+      *) die "unknown choice '${choice}'." ;;
+    esac
+  fi
+fi
+# --reinstall = wipe existing checkout (only if it's a git checkout we own).
+if [[ "${FORCE_REINSTALL}" -eq 1 && -d "${PREFIX}/.git" ]]; then
+  log "[preflight] --reinstall: removing existing checkout at ${PREFIX}"
+  run rm -rf "${PREFIX}"
 fi
 
 # -----------------------------------------------------------------------------
