@@ -6,6 +6,19 @@
   "license": "AGPL-3.0-or-later",
   "author": "Ghanavati",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ghanavati/relay.git"
+  },
+  "keywords": [
+    "ai",
+    "memory",
+    "cli",
+    "claude-code",
+    "codex",
+    "lm-studio",
+    "openrouter"
+  ],
   "engines": {
     "node": ">=20"
   },
@@ -21,6 +34,7 @@
   ],
   "scripts": {
     "build": "tsc && chmod +x dist/cli.js 2>/dev/null || true",
+    "prepare": "npm run build",
     "test": "node --test --test-concurrency=1 dist/**/*.test.js",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist tsconfig.tsbuildinfo"

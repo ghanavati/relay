@@ -1,0 +1,21 @@
+# Workspace + tooling
+.claude/
+node_modules/
+dist/tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# Tests + dev artifacts shipped under dist/
+*.test.js
+*.test.d.ts
+*.test.js.map
+
+# Local docs that should never publish
+docs/findings/
+docs/sessions/
+
+# Misc
+.DS_Store
+*.log
+.env
+.env.local
+.relay/
