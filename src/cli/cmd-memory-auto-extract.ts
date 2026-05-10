@@ -16,8 +16,12 @@
  *   9. For every surviving lesson, write through the internal `handleRemember`
  *      API with `memory_source='auto-run-recorder'` and the `auto-extract` tag
  *      so the trust-tier fence (T14) prevents auto-pinning.
- *  10. Append a single ndjson line to `~/.relay/auto-extract.log` with the
- *      final outcome.
+ *  10. Append a single ndjson line to the unified `~/.relay/relay.ndjson` log
+ *      (via the centralized `appendLog` helper) with the final outcome wrapped
+ *      as a `{ event: 'extract.*', ok, cwd, meta: AuditEntry }` LogEntry.
+ *      Tests may inject `deps.auditPath` to redirect writes; when set, that
+ *      path receives the same wrapped LogEntry ndjson lines (so doctor /
+ *      tail / observability tools read a single stream).
  *
  * The hook is wired into CC's SessionEnd event. CC discards the exit code and
  * stderr, so this command never throws — every failure path is caught, logged,
@@ -28,8 +32,8 @@ import type { CliIO } from './commands.js';
 import { mkdir, appendFile, readFile, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
 import { z } from 'zod';
+import { appendLog, type LogEvent } from '../runtime/relay-log.js';
 
 import { loadConsent, type ConsentConfig } from '../memory/auto-extract-consent.js';
 import {
@@ -500,11 +504,59 @@ async function readAllStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+/**
+ * Map an auto-extract status to one of the unified `extract.*` LogEvents that
+ * the centralized logger declares. Doctor / tail consumers filter on these.
+ *
+ * The detailed status string (e.g. `skipped:no-consent`, `error:berry-flagged`)
+ * is preserved on the wrapped LogEntry's `meta.status` field so observability
+ * tools see the full taxonomy without us having to grow the LogEvent enum.
+ */
+function statusToLogEvent(status: AutoExtractStatus): LogEvent {
+  if (status === 'ok') return 'extract.write';
+  if (status === 'partial:berry-flag') return 'extract.write';
+  if (status.startsWith('skipped:')) return 'extract.skip';
+  if (status.startsWith('error:')) return 'extract.error';
+  // bad-payload, no-llm, etc. fall through here — treat as skip rather than
+  // error since the pipeline did not actually fail to produce output.
+  return 'extract.skip';
+}
+
+/**
+ * Append a single audit entry to the unified relay log. When `overridePath`
+ * is provided (test injection), writes the same wrapped LogEntry shape to
+ * that file directly — this keeps the on-disk format identical between
+ * `~/.relay/relay.ndjson` and any test sandbox path, so consumers like
+ * `relay memory tail` and `relay doctor` can read either without branching.
+ */
 async function appendAudit(entry: AuditEntry, overridePath?: string): Promise<void> {
-  const path = overridePath ?? join(homedir(), '.relay', 'auto-extract.log');
+  const event = statusToLogEvent(entry.status);
+  const ok = entry.status === 'ok';
+  const wrapped = {
+    ts: Date.now(),
+    event,
+    ok,
+    ...(entry.cwd ? { cwd: entry.cwd } : {}),
+    meta: entry,
+  };
+  if (overridePath !== undefined) {
+    try {
+      await mkdir(dirname(overridePath), { recursive: true });
+      await appendFile(overridePath, JSON.stringify(wrapped) + '\n', 'utf8');
+    } catch (err) {
+      process.stderr.write(`auto-extract: audit-log write failed: ${(err as Error).message}\n`);
+    }
+    return;
+  }
   try {
-    await mkdir(dirname(path), { recursive: true });
-    await appendFile(path, JSON.stringify(entry) + '\n', 'utf8');
+    await appendLog({
+      event,
+      ok,
+      ...(entry.cwd ? { cwd: entry.cwd } : {}),
+      // LogEntry.meta is typed `Record<string, unknown>` — AuditEntry is a
+      // strictly-typed interface, so we widen via spread (no runtime cost).
+      meta: { ...entry } as Record<string, unknown>,
+    });
   } catch (err) {
     process.stderr.write(`auto-extract: audit-log write failed: ${(err as Error).message}\n`);
   }

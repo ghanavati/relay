@@ -149,11 +149,26 @@ export async function checkLastRecall(): Promise<ProviderProbe> {
 }
 
 /**
- * Check auto-extract activity over the last 24h by reading
- * `${RELAY_AUTO_EXTRACT_LOG ?? ~/.relay/auto-extract.log}`.
+ * Check auto-extract activity over the last 24h.
  *
- * Each line is a JSON object with at least `ts` (ISO timestamp) and `status`
- * (e.g. "ok", "skipped:no-consent", "error:bad-payload").
+ * Reads the unified relay log (`~/.relay/relay.ndjson`) and filters to
+ * entries whose `event` starts with `extract.` — written by the auto-extract
+ * pipeline via `appendLog`. Each entry's wrapped shape is
+ * `{ ts: number, event: 'extract.write'|'extract.skip'|'extract.error',
+ *    ok: boolean, cwd?: string, meta: { ts: ISO, status, ... } }`.
+ *
+ * The detailed `meta.status` field (e.g. "ok", "skipped:no-consent",
+ * "error:bad-payload") is what's bucketed for the ok / skipped / error
+ * counts shown in the probe detail string.
+ *
+ * Path resolution (in order):
+ *   1. `RELAY_AUTO_EXTRACT_LOG` — legacy back-compat for users still
+ *      pointing at the pre-T2 `auto-extract.log` path. Treated as the same
+ *      ndjson format (auto-extract has always written ndjson).
+ *   2. `RELAY_LOG_PATH` — explicit unified-log override (mirrors `relay
+ *      memory tail`'s resolution).
+ *   3. `RELAY_HOME` — sandbox redirect for tests.
+ *   4. `~/.relay/relay.ndjson` — production default.
  *
  * Returned probe statuses (mapped to existing ProviderProbe values):
  *   - log missing / unreadable / 0 entries / parse-failed → 'missing' ("never ran" warning)
@@ -161,7 +176,10 @@ export async function checkLastRecall(): Promise<ProviderProbe> {
  *   - only ok / skipped entries (no errors)               → 'ok'
  */
 export function checkAutoExtractStatus(now: Date = new Date()): ProviderProbe {
-  const logPath = process.env['RELAY_AUTO_EXTRACT_LOG'] ?? join(homedir(), '.relay', 'auto-extract.log');
+  const logPath =
+    process.env['RELAY_AUTO_EXTRACT_LOG'] ??
+    process.env['RELAY_LOG_PATH'] ??
+    join(process.env['RELAY_HOME'] ?? join(homedir(), '.relay'), 'relay.ndjson');
   let raw: string;
   try {
     raw = readFileSync(logPath, 'utf-8');
@@ -177,18 +195,38 @@ export function checkAutoExtractStatus(now: Date = new Date()): ProviderProbe {
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
     if (trimmed.length === 0) continue;
-    let entry: { ts?: unknown; status?: unknown };
+    let parsed: { ts?: unknown; event?: unknown; status?: unknown; meta?: { status?: unknown; ts?: unknown } };
     try {
-      entry = JSON.parse(trimmed) as { ts?: unknown; status?: unknown };
+      parsed = JSON.parse(trimmed) as typeof parsed;
     } catch {
       continue;
     }
-    if (typeof entry.ts !== 'string' || typeof entry.status !== 'string') continue;
-    const ts = Date.parse(entry.ts);
-    if (Number.isNaN(ts) || ts < cutoff) continue;
-    if (entry.status === 'ok') okCount++;
-    else if (entry.status.startsWith('skipped:')) skippedCount++;
-    else if (entry.status.startsWith('error:')) errorCount++;
+    // Unified log entries: {ts: number, event: 'extract.*', meta: {status, ...}}
+    // Legacy entries (pre-T2): {ts: ISO string, status, ...}
+    // Distinguish on the wrapper's event tag.
+    const isUnified =
+      typeof parsed.event === 'string' && (parsed.event as string).startsWith('extract.');
+    if (!isUnified && parsed.event !== undefined) continue; // unrelated unified event (hook.fire, recall, …)
+
+    let status: string | undefined;
+    let tsMs: number;
+    if (isUnified) {
+      const metaStatus = parsed.meta?.status;
+      if (typeof metaStatus !== 'string') continue;
+      status = metaStatus;
+      const tsField = parsed.ts;
+      if (typeof tsField !== 'number') continue;
+      tsMs = tsField;
+    } else {
+      // legacy schema fallback
+      if (typeof parsed.ts !== 'string' || typeof parsed.status !== 'string') continue;
+      tsMs = Date.parse(parsed.ts);
+      status = parsed.status;
+    }
+    if (Number.isNaN(tsMs) || tsMs < cutoff) continue;
+    if (status === 'ok' || status === 'partial:berry-flag') okCount++;
+    else if (status.startsWith('skipped:')) skippedCount++;
+    else if (status.startsWith('error:')) errorCount++;
   }
 
   const total = okCount + skippedCount + errorCount;

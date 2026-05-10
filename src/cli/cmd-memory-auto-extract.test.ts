@@ -44,13 +44,20 @@ async function withStdin<T>(payload: string, fn: () => Promise<T>): Promise<T> {
 
 describe('executeMemoryAutoExtractCommand', () => {
   let tmp: string;
-  // Redirect HOME so the audit log writes into the test sandbox.
+  // Redirect HOME and RELAY_HOME so the unified audit log writes into the
+  // test sandbox. T2 routes auto-extract output through `appendLog`, which
+  // resolves the log path via RELAY_HOME first, then `homedir()` (which on
+  // POSIX honors $HOME). Setting both makes this test robust regardless of
+  // which lookup wins.
   let savedHome: string | undefined;
+  let savedRelayHome: string | undefined;
 
   beforeEach(async () => {
     tmp = await mkdtemp(join(tmpdir(), 'relay-auto-extract-'));
     savedHome = process.env['HOME'];
     process.env['HOME'] = tmp;
+    savedRelayHome = process.env['RELAY_HOME'];
+    process.env['RELAY_HOME'] = join(tmp, '.relay');
     // homedir() in Node honours $HOME on POSIX. We don't run on Windows.
     void homedir;
   });
@@ -58,6 +65,8 @@ describe('executeMemoryAutoExtractCommand', () => {
   afterEach(async () => {
     if (savedHome === undefined) delete process.env['HOME'];
     else process.env['HOME'] = savedHome;
+    if (savedRelayHome === undefined) delete process.env['RELAY_HOME'];
+    else process.env['RELAY_HOME'] = savedRelayHome;
     await rm(tmp, { recursive: true, force: true });
   });
 
@@ -85,7 +94,7 @@ describe('executeMemoryAutoExtractCommand', () => {
     assert.strictEqual(parsed.status, 'skipped:bad-payload');
 
     // Audit log line written
-    const auditPath = join(tmp, '.relay', 'auto-extract.log');
+    const auditPath = join(tmp, '.relay', 'relay.ndjson');
     const audit = await readFile(auditPath, 'utf8');
     assert.match(audit, /skipped:bad-payload/);
   });
@@ -116,7 +125,7 @@ describe('executeMemoryAutoExtractCommand', () => {
     assert.strictEqual(parsed.status, 'skipped:no-consent');
     assert.strictEqual(parsed.cwd, projectCwd);
 
-    const auditPath = join(tmp, '.relay', 'auto-extract.log');
+    const auditPath = join(tmp, '.relay', 'relay.ndjson');
     const audit = await readFile(auditPath, 'utf8');
     assert.match(audit, /skipped:no-consent/);
     assert.match(audit, /sess-123/);
@@ -224,7 +233,7 @@ describe('executeMemoryAutoExtractCommand', () => {
       assert.strictEqual(parsed.session_id, 's4');
       assert.strictEqual(parsed.turns_read, 2);
 
-      const audit = await readFile(join(tmp, '.relay', 'auto-extract.log'), 'utf8');
+      const audit = await readFile(join(tmp, '.relay', 'relay.ndjson'), 'utf8');
       assert.match(audit, /error:llm-down/);
       assert.match(audit, /s4/);
     } finally {

@@ -162,12 +162,17 @@ export const HOOK_SCRIPT =
 const HOOK_ID = 'relay-memory-session-start';
 
 // SessionEnd hook: pipes CC's SessionEnd payload (JSON on stdin) to the auto-extract
-// command, which runs the consent-gated transcript distillation pipeline. Errors are
-// appended to the relay log so the hook never blocks CC from terminating cleanly.
+// command, which runs the consent-gated transcript distillation pipeline. The pipeline
+// itself logs structured outcomes through the centralized `appendLog` helper to the
+// unified `~/.relay/relay.ndjson` stream — the shell-level `2>>` redirect is a defense-
+// in-depth fallback that captures any uncaught stderr (e.g. node startup faults that
+// fire before the in-process logger initializes). Both targets converge on the same
+// ndjson path so `relay memory tail` / `relay doctor` see one stream.
+//
 // Codex review BLOCKER fix: shell `2>>` opens log path BEFORE relay runs, so
 // `~/.relay/` must exist first or the hook silently fails on a fresh install.
 export const HOOK_SCRIPT_SESSION_END =
-  'mkdir -p "$HOME/.relay" && relay memory auto-extract --from-stdin 2>>"$HOME/.relay/auto-extract.log" || true';
+  'mkdir -p "$HOME/.relay" && relay memory auto-extract --from-stdin 2>>"$HOME/.relay/relay.ndjson" || true';
 const HOOK_ID_SESSION_END = 'relay-memory-session-end';
 
 // Stable marker we attach to every Relay-managed hook entry so install/uninstall
