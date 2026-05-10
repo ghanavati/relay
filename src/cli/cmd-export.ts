@@ -10,6 +10,8 @@
  * Output formats:
  *   --format json (default): { version, exported_at, workdir, memories: [...] }
  *   --format md            : markdown grouped by memory_type
+ *   --format html          : self-contained HTML5 report (inline CSS, one
+ *                            table per memory, all user content escaped)
  *
  * Output destination:
  *   --out <file>: write to file (utf8). Otherwise write to stdout.
@@ -24,7 +26,7 @@ const EXPORT_VERSION = '1.0';
 export interface ExportArgs {
   readonly safe: boolean;
   readonly workdir: string | undefined;
-  readonly format: 'json' | 'md';
+  readonly format: 'json' | 'md' | 'html';
   readonly out: string | undefined;
   readonly json: boolean;
 }
@@ -94,6 +96,86 @@ function rowToExported(row: MemoryRow): ExportedMemory {
   };
 }
 
+/**
+ * HTML-escape user-controlled text. Covers the five XML metacharacters that
+ * matter inside element content and double-quoted attribute values. Single
+ * quotes are also escaped because the inline style block uses double quotes,
+ * but downstream callers may switch to single-quoted attributes later.
+ */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderHtml(payload: ExportPayload): string {
+  const generated = new Date(payload.exported_at).toISOString();
+  const workdir = payload.workdir ?? '(all)';
+  const count = payload.memories.length;
+  const css = [
+    'body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:2rem;color:#222;background:#fafafa}',
+    'header{border-bottom:1px solid #ddd;padding-bottom:1rem;margin-bottom:2rem}',
+    'h1{margin:0 0 .5rem 0;font-size:1.5rem}',
+    'header dl{margin:0;display:grid;grid-template-columns:max-content 1fr;gap:.25rem 1rem;font-size:.9rem}',
+    'header dt{font-weight:600;color:#555}',
+    'header dd{margin:0}',
+    'table{border-collapse:collapse;width:100%;margin:0 0 1.5rem 0;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.05)}',
+    'th,td{padding:.5rem .75rem;text-align:left;vertical-align:top;border-bottom:1px solid #eee;font-size:.9rem}',
+    'th{width:8rem;background:#f4f4f4;font-weight:600;color:#444}',
+    'td.content{white-space:pre-wrap;word-break:break-word}',
+    '.tag{display:inline-block;background:#eef;border-radius:3px;padding:0 .4rem;margin-right:.25rem;font-size:.8rem}',
+    '.trust-trusted{color:#0a7a2f;font-weight:600}',
+    '.trust-provisional{color:#8a6d00}',
+    '.trust-unverified{color:#a33}',
+    '.empty{color:#888;font-style:italic}',
+  ].join('');
+
+  const parts: string[] = [];
+  parts.push('<!DOCTYPE html>');
+  parts.push('<html lang="en">');
+  parts.push('<head><meta charset="utf-8"><title>Relay memory export</title>');
+  parts.push(`<style>${css}</style></head>`);
+  parts.push('<body>');
+  parts.push('<header>');
+  parts.push('<h1>Relay memory export</h1>');
+  parts.push('<dl>');
+  parts.push(`<dt>workdir</dt><dd>${escapeHtml(workdir)}</dd>`);
+  parts.push(`<dt>count</dt><dd>${count}</dd>`);
+  parts.push(`<dt>generated</dt><dd>${escapeHtml(generated)}</dd>`);
+  parts.push(`<dt>version</dt><dd>${escapeHtml(payload.version)}</dd>`);
+  parts.push('</dl>');
+  parts.push('</header>');
+
+  if (count === 0) {
+    // Always include at least one table so the document remains
+    // structurally consistent and trivially testable.
+    parts.push('<table><tbody><tr><td class="empty">No memories matched the export filter.</td></tr></tbody></table>');
+  } else {
+    for (const m of payload.memories) {
+      const tagsHtml = m.tags.length > 0
+        ? m.tags.map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('')
+        : '<span class="empty">none</span>';
+      const created = new Date(m.created_at).toISOString();
+      parts.push('<table>');
+      parts.push('<tbody>');
+      parts.push(`<tr><th>id</th><td>${escapeHtml(m.memory_id)}</td></tr>`);
+      parts.push(`<tr><th>type</th><td>${escapeHtml(m.memory_type)}</td></tr>`);
+      parts.push(`<tr><th>tags</th><td>${tagsHtml}</td></tr>`);
+      parts.push(`<tr><th>trust</th><td><span class="trust-${escapeHtml(m.trust_level)}">${escapeHtml(m.trust_level)}</span>${m.pinned ? ' (pinned)' : ''}</td></tr>`);
+      parts.push(`<tr><th>created_at</th><td>${escapeHtml(created)}</td></tr>`);
+      parts.push(`<tr><th>content</th><td class="content">${escapeHtml(m.content)}</td></tr>`);
+      parts.push('</tbody>');
+      parts.push('</table>');
+    }
+  }
+
+  parts.push('</body></html>');
+  return parts.join('\n');
+}
+
 function renderMarkdown(payload: ExportPayload): string {
   const lines: string[] = [];
   lines.push(`# Relay memory export`);
@@ -160,11 +242,16 @@ export async function executeExportCommand(args: ExportArgs, io: CliIO): Promise
 
   const output = args.format === 'md'
     ? renderMarkdown(payload)
-    : JSON.stringify(payload, null, 2);
+    : args.format === 'html'
+      ? renderHtml(payload)
+      : JSON.stringify(payload, null, 2);
+
+  // Markdown and HTML are already terminated; JSON gets a trailing newline.
+  const trailingNewline = args.format === 'json' ? '\n' : '';
 
   if (args.out) {
     try {
-      await writeFile(args.out, output + (args.format === 'md' ? '' : '\n'), 'utf8');
+      await writeFile(args.out, output + trailingNewline, 'utf8');
     } catch (err) {
       const msg = (err as Error).message ?? String(err);
       if (args.json) {
@@ -182,6 +269,7 @@ export async function executeExportCommand(args: ExportArgs, io: CliIO): Promise
     return 0;
   }
 
-  io.stdout(output + (args.format === 'md' ? '\n' : '\n'));
+  // Always end stdout with a single newline so terminals don't trail content.
+  io.stdout(output + '\n');
   return 0;
 }

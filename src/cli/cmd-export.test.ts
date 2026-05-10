@@ -221,6 +221,113 @@ describe('executeExportCommand — --safe filtering', () => {
     assert.ok(!out.includes(seeded.unverifiedAuto));
   });
 
+  test('HTML export produces valid HTML5 with header, table, and escaped content', async () => {
+    const seeded = await seedMemories(tmp);
+    const cap = makeIO(tmp);
+    const code = await executeExportCommand(
+      { safe: true, workdir: tmp, format: 'html', out: undefined, json: false },
+      cap.io
+    );
+    assert.strictEqual(code, 0);
+
+    const out = cap.stdout.join('');
+
+    // HTML5 doctype + structural elements
+    assert.match(out, /^<!DOCTYPE html>/, 'missing HTML5 doctype');
+    assert.match(out, /<html lang="en">/, 'missing <html> root');
+    assert.match(out, /<head>[\s\S]*<\/head>/, 'missing <head>');
+    assert.match(out, /<body>[\s\S]*<\/body>/, 'missing <body>');
+    assert.match(out, /<table>/, 'expected at least one <table>');
+    assert.match(out, /<\/html>\s*$/, 'missing closing </html>');
+
+    // Self-contained — inline CSS, no external assets
+    assert.match(out, /<style>[\s\S]+<\/style>/, 'inline <style> block missing');
+    assert.ok(!/<link[^>]+rel=/i.test(out), 'external <link rel> reference found');
+    assert.ok(!/<script/i.test(out), 'unexpected <script> tag in static export');
+
+    // Header has workdir, count, generated date, version
+    assert.match(out, /<h1>Relay memory export<\/h1>/);
+    assert.match(out, /<dt>workdir<\/dt><dd>/);
+    assert.match(out, /<dt>count<\/dt><dd>2<\/dd>/);
+    assert.match(out, /<dt>generated<\/dt><dd>\d{4}-\d{2}-\d{2}T/);
+    assert.match(out, /<dt>version<\/dt><dd>1\.0<\/dd>/);
+
+    // Surviving content present
+    assert.match(out, /Project uses better-sqlite3 for storage/);
+    assert.match(out, /Always run npm test before committing/);
+
+    // Excluded content absent
+    assert.ok(!out.includes('Auto-extracted: user dislikes verbose comments'), 'auto-extract content leaked into html');
+    assert.ok(!out.includes('Decided to use AGPL license'), 'private content leaked into html');
+    assert.ok(!out.includes('Auto-suggested: rename foo to bar'), 'unverified content leaked into html');
+    assert.ok(!out.includes(seeded.autoExtractLesson));
+    assert.ok(!out.includes(seeded.privateDecision));
+    assert.ok(!out.includes(seeded.unverifiedAuto));
+  });
+
+  test('HTML export escapes XSS payloads in user content and tags', async () => {
+    const store = new MemoryStore();
+    store.remember({
+      content: '<script>alert("xss")</script> & "quoted" \'single\'',
+      memory_type: 'fact',
+      tags: ['<img src=x>', 'safe'],
+      workdir: tmp,
+      memory_source: 'human',
+    });
+    const cap = makeIO(tmp);
+    const code = await executeExportCommand(
+      { safe: false, workdir: tmp, format: 'html', out: undefined, json: false },
+      cap.io
+    );
+    assert.strictEqual(code, 0);
+    const out = cap.stdout.join('');
+
+    // Raw payload must not appear in unescaped form
+    assert.ok(!/<script>alert/.test(out), 'raw <script> payload leaked unescaped');
+    assert.ok(!/<img src=x>/.test(out), 'raw <img> tag in tag content leaked unescaped');
+
+    // Escaped form must appear
+    assert.match(out, /&lt;script&gt;alert\(&quot;xss&quot;\)&lt;\/script&gt;/);
+    assert.match(out, /&lt;img src=x&gt;/);
+    assert.match(out, /&amp;/);
+    assert.match(out, /&#39;/);
+  });
+
+  test('HTML export to --out file writes a valid HTML document', async () => {
+    await seedMemories(tmp);
+    const outFile = join(tmp, 'export.html');
+    const cap = makeIO(tmp);
+    const code = await executeExportCommand(
+      { safe: true, workdir: tmp, format: 'html', out: outFile, json: true },
+      cap.io
+    );
+    assert.strictEqual(code, 0);
+
+    const summary = JSON.parse(cap.stdout.join('').trim()) as { ok: boolean; count: number; out: string; format: string };
+    assert.strictEqual(summary.ok, true);
+    assert.strictEqual(summary.count, 2);
+    assert.strictEqual(summary.format, 'html');
+
+    const fileContent = await readFile(outFile, 'utf8');
+    assert.match(fileContent, /^<!DOCTYPE html>/);
+    assert.match(fileContent, /<body>/);
+    assert.match(fileContent, /<table>/);
+  });
+
+  test('HTML export on empty store still produces a valid document with a table', async () => {
+    const cap = makeIO(tmp);
+    const code = await executeExportCommand(
+      { safe: true, workdir: tmp, format: 'html', out: undefined, json: false },
+      cap.io
+    );
+    assert.strictEqual(code, 0);
+    const out = cap.stdout.join('');
+    assert.match(out, /^<!DOCTYPE html>/);
+    assert.match(out, /<body>/);
+    assert.match(out, /<table>/);
+    assert.match(out, /<dt>count<\/dt><dd>0<\/dd>/);
+  });
+
   test('Empty store returns valid JSON with empty memories array', async () => {
     // No seeds — DB is clean per beforeEach
     const cap = makeIO(tmp);

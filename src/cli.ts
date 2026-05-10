@@ -761,8 +761,8 @@ async function main(): Promise<number> {
       return 2;
     }
     const formatRaw = lastOption(flags, 'format') ?? 'json';
-    if (formatRaw !== 'json' && formatRaw !== 'md') {
-      io.stderr(`relay export: --format must be json or md (got: ${formatRaw})\n`);
+    if (formatRaw !== 'json' && formatRaw !== 'md' && formatRaw !== 'html') {
+      io.stderr(`relay export: --format must be json, md, or html (got: ${formatRaw})\n`);
       return 2;
     }
     const { executeExportCommand } = await import('./cli/cmd-export.js');
