@@ -340,8 +340,11 @@ describe('executeSetupCommand', () => {
     assert.strictEqual(initArgs.auto, true, '--yes overrides --interactive');
   });
 
-  // T15 — --clean removes prior marker entries before install
-  test('T15: --clean alone (no --everything) runs 2 uninstall steps then exits 0', async () => {
+  // T15 — --clean removes prior marker entries before install.
+  // Cleanup walks BOTH global (~/.claude/settings.json) AND project
+  // (<cwd>/.claude/settings.json) settings, and within each file both
+  // SessionStart and SessionEnd. That is 4 uninstall calls per --clean.
+  test('T15: --clean alone (no --everything) runs 4 uninstall steps then exits 0', async () => {
     const { calls, executors } = makeRecorder();
     const code = await executeSetupCommand(
       { everything: false, workdir: undefined, lmModel: undefined, yes: false, json: false, interactive: false, clean: true },
@@ -349,18 +352,22 @@ describe('executeSetupCommand', () => {
       executors
     );
     assert.strictEqual(code, 0);
-    assert.strictEqual(calls.length, 2, 'only 2 uninstall calls');
-    const u1 = calls[0]!.args as { install: boolean; global?: boolean; sessionEnd?: boolean };
-    const u2 = calls[1]!.args as { install: boolean; global?: boolean; sessionEnd?: boolean };
-    assert.strictEqual(u1.install, false);
-    assert.strictEqual(u1.global, true);
-    assert.strictEqual(u1.sessionEnd, false);
-    assert.strictEqual(u2.install, false);
-    assert.strictEqual(u2.global, true);
-    assert.strictEqual(u2.sessionEnd, true);
+    assert.strictEqual(calls.length, 4, '4 uninstall calls: {global,project} × {SessionStart,SessionEnd}');
+    const argsList = calls.map(c => c.args as { install: boolean; global?: boolean; sessionEnd?: boolean });
+    for (const a of argsList) assert.strictEqual(a.install, false, 'every clean step is uninstall');
+    // Order: global SessionStart, global SessionEnd, project SessionStart, project SessionEnd
+    assert.deepStrictEqual(
+      argsList.map(a => ({ global: a.global, sessionEnd: a.sessionEnd })),
+      [
+        { global: true, sessionEnd: false },
+        { global: true, sessionEnd: true },
+        { global: false, sessionEnd: false },
+        { global: false, sessionEnd: true },
+      ],
+    );
   });
 
-  test('T15: --clean --everything runs uninstall first (4 steps before install begins)', async () => {
+  test('T15: --clean --everything runs 4-step uninstall first, then install (8 calls total)', async () => {
     const { calls, executors } = makeRecorder();
     const code = await executeSetupCommand(
       { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false, interactive: false, clean: true },
@@ -368,14 +375,16 @@ describe('executeSetupCommand', () => {
       executors
     );
     assert.strictEqual(code, 0);
-    // Sequence: uninstall SessionStart, uninstall SessionEnd, init, install SessionStart, install SessionEnd, auto-extract
-    assert.strictEqual(calls.length, 6);
-    assert.strictEqual((calls[0]!.args as { install: boolean }).install, false, 'step 1 = uninstall');
-    assert.strictEqual((calls[1]!.args as { install: boolean }).install, false, 'step 2 = uninstall');
-    assert.strictEqual(calls[2]!.step, 'init', 'step 3 = init');
-    assert.strictEqual((calls[3]!.args as { install: boolean }).install, true, 'step 4 = install');
-    assert.strictEqual((calls[4]!.args as { install: boolean }).install, true, 'step 5 = install');
-    assert.strictEqual(calls[5]!.step, 'auto-extract', 'step 6 = auto-extract');
+    // Sequence: 4 uninstalls (global SS, global SE, project SS, project SE),
+    // init, install SessionStart (global), install SessionEnd (global), auto-extract.
+    assert.strictEqual(calls.length, 8);
+    for (let i = 0; i < 4; i++) {
+      assert.strictEqual((calls[i]!.args as { install: boolean }).install, false, `step ${i + 1} = uninstall`);
+    }
+    assert.strictEqual(calls[4]!.step, 'init', 'step 5 = init');
+    assert.strictEqual((calls[5]!.args as { install: boolean }).install, true, 'step 6 = install');
+    assert.strictEqual((calls[6]!.args as { install: boolean }).install, true, 'step 7 = install');
+    assert.strictEqual(calls[7]!.step, 'auto-extract', 'step 8 = auto-extract');
   });
 
   test('T15: --clean --everything is idempotent (re-running yields same result)', async () => {
@@ -401,8 +410,9 @@ describe('executeSetupCommand', () => {
   });
 
   test('T15: --clean uninstall failure aborts before install runs', async () => {
-    // First hook call (uninstall SessionStart) returns 1 → no further steps.
-    const { calls, executors } = makeRecorder({ hookExit: [1, 0] });
+    // First hook call (uninstall global SessionStart) returns 1 → no further
+    // steps, including the remaining 3 cleanup steps and install.
+    const { calls, executors } = makeRecorder({ hookExit: [1, 0, 0, 0] });
     const code = await executeSetupCommand(
       { everything: true, workdir: undefined, lmModel: undefined, yes: true, json: false, interactive: false, clean: true },
       cap.io,
@@ -410,6 +420,27 @@ describe('executeSetupCommand', () => {
     );
     assert.strictEqual(code, 1);
     assert.strictEqual(calls.length, 1, 'aborts after first uninstall failure');
+  });
+
+  test('T15: --clean alone targets project settings too (cwd-relative uninstall steps)', async () => {
+    // Regression: brief mandates walking BOTH global AND project settings.
+    // This test pins that the project-level (global:false) cleanup steps
+    // are actually emitted — losing them would break the brief.
+    const { calls, executors } = makeRecorder();
+    await executeSetupCommand(
+      { everything: false, workdir: undefined, lmModel: undefined, yes: false, json: false, interactive: false, clean: true },
+      cap.io,
+      executors
+    );
+    const projectCleanupCalls = calls.filter(c => {
+      const a = c.args as { install: boolean; global?: boolean };
+      return a.install === false && a.global === false;
+    });
+    assert.strictEqual(projectCleanupCalls.length, 2, 'both project SessionStart and SessionEnd cleanup');
+    // Both project cleanup calls receive io.cwd as their working dir
+    for (const c of projectCleanupCalls) {
+      assert.strictEqual(c.cwd, '/tmp/setup-cwd', 'project cleanup uses io.cwd');
+    }
   });
 
   test('T15: setup with neither --everything nor --clean returns 2', async () => {
