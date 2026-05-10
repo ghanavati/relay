@@ -1,447 +1,329 @@
-# Cookbook — per-LLM setup recipes
+# Cookbook — verified per-LLM recipes
 
-Wire Relay's memory recall into any LLM front-end. Every recipe is a 1-paragraph
-explainer + paste-ready bash + verification command + the literal output you
-should see. All commands assume `relay` is on your `$PATH` (run `npm link` from
-the repo or follow [docs/quickstart.md](./quickstart.md)).
+Every recipe is copy-paste ready and validated against the v0.1.0 surface (CLI commands actually wired in `src/cli.ts`). Each block: what + why, install, verify, sample output, common gotcha.
 
-The shared building block is `relay context emit --target <T>`, which prints the
-recalled-memory markdown wrapped for one of four targets (`cc`, `codex`,
-`lmstudio-http`, `lmstudio-cli`). Front-ends differ only in how that string is
-delivered — system role vs. file vs. JSON envelope.
+> Recipes assume `relay` is on `$PATH` (run `npm link` from the source checkout) and `RELAY_DB_PATH=$HOME/.relay/relay.db` (default).
 
 ---
 
-## 1. Claude Code
+## 1. Claude Code — SessionStart memory injection
 
-CC's `SessionStart` hook runs a shell command and forwards its
-`hookSpecificOutput.additionalContext` field into the session as a system
-reminder. Installing the hook globally fires it for every project you open in
-CC, scoped to that project's workdir.
+**What:** install a CC `SessionStart` hook so every new session in a project auto-receives recalled lessons + decisions + facts via Relay's MemoryStore. Stops the "re-explain context every session" tax.
 
+**Install:**
 ```bash
-relay memory hook --install --global
+cd /path/to/your/project
+relay memory hook --install
 ```
 
-Installs into `~/.claude/settings.json`. The hook command is exactly:
-
-```text
-relay context emit --target cc --workdir "${CLAUDE_PROJECT_DIR:-$PWD}" 2>/dev/null || true
-```
-
-Verify:
-
+**Verify:**
 ```bash
-relay context emit --target cc --workdir "$PWD"
+cat .claude/settings.json | grep -A2 SessionStart
 ```
 
-Expected (one line, JSON):
-
+**Sample output:**
 ```json
-{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"## Recalled Lessons\n\n- ..."}}
+"SessionStart": [
+  {
+    "hooks": [
+      { "type": "command", "command": "relay memory recall --token-budget 800 --type lesson --type fact --type decision --json 2>/dev/null || true" }
+    ]
+  }
+]
 ```
 
-If `additionalContext` is empty there are no memories matching the workdir yet —
-add one with `relay memory remember 'test' --workdir "$PWD"` and re-run.
-
-Confirm in a fresh CC session: open a new terminal, run `cc` (or `claude`),
-issue any prompt, and look for a `<system-reminder>` containing your memory
-text near the top of the model's first turn.
-
-Uninstall:
-
-```bash
-relay memory hook --uninstall --global
-```
+**Gotcha:** the hook is per-project (writes to `<workdir>/.claude/settings.json`). Run it once per repo. Re-running is idempotent — old entries get cleaned out before the new one is appended.
 
 ---
 
-## 2. Codex CLI
+## 2. Codex CLI — managed `AGENTS.md` block
 
-Codex doesn't read a session-start hook. Inject Relay's memory either by
-appending to your global `AGENTS.md` (loaded on every Codex run) or by passing
-a one-off file via `-c model_instructions_file=`. The file path goes through
-TOML quoting, so prefer absolute paths and avoid spaces.
+**What:** Codex CLI reads `AGENTS.md` (project root) on every invocation. Promote a Relay memory entry into a "Promoted Memory Rules" section so Codex sees it on every dispatch — not just when the recall layer happens to surface it.
 
-Option A — persistent block in `~/.codex/AGENTS.md`:
-
+**Install:**
 ```bash
-mkdir -p ~/.codex
-cat <<'EOF' >> ~/.codex/AGENTS.md
+# 1. Save the rule via Relay
+relay memory remember 'Always emit a single git commit at end of task' \
+  --type decision --tag codex --pinned
 
-## Relay-managed memory (regenerate before each session)
-$(relay context emit --target codex --workdir "$PWD")
-EOF
+# 2. Find its memory_id
+relay memory recall codex --json | jq -r '.memories[0].memory_id'
+
+# 3. Promote it to AGENTS.md (Codex's default rules file)
+relay memory to-rules <memory_id> --rules-file AGENTS.md
 ```
 
-Re-run the heredoc whenever you want fresh memories baked in.
-
-Option B — one-shot per Codex invocation:
-
+**Verify:**
 ```bash
-RELAY_CTX="$(mktemp -t relay-codex-XXXXXX.md)"
-relay context emit --target codex --workdir "$PWD" --token-budget 1200 > "$RELAY_CTX"
-codex -c model_instructions_file="$RELAY_CTX" "<your task>"
+grep -A3 'Promoted Memory Rules' AGENTS.md
 ```
 
-Verify:
+**Sample output:**
+```
+## Promoted Memory Rules
 
-```bash
-relay context emit --target codex --workdir "$PWD"
+- [decision] Always emit a single git commit at end of task
 ```
 
-Expected — plain markdown, no JSON envelope, no trailing newline:
-
-```text
-## Recalled Lessons
-
-- [lesson] never bypass the schema validator with `as never`
-- [decision] use SQLite over Postgres because solo deployment
-```
-
-If Relay is also dispatching to Codex via `relay run --provider codex ...`, the
-worker writes a tempfile and passes it via `-c model_instructions_file=`
-automatically — no manual setup needed for that path.
+**Gotcha:** `to-rules` appends, never deletes. If you promote the same entry twice, the command silently no-ops (matches the entry text). If you edit and re-save the memory, the old line stays in `AGENTS.md` — clean it manually.
 
 ---
 
-## 3. LM Studio
+## 3. LM Studio (local) — `lms chat -p` wrapper
 
-LM Studio's `lms chat` CLI accepts a system prompt with `-s "<text>"`. The
-shipped wrapper at `scripts/relay-llm.sh` runs `relay context emit --target
-lmstudio-cli` and forwards the encoded payload as the system prompt. Install
-the wrapper to `~/.local/bin/relay-llm` and call it like any other CLI.
+**What:** dispatch to a locally-loaded LM Studio model via Relay. Zero per-token cost; ideal for parallel test generation, mechanical schema work, or anything you'd otherwise pay frontier rates for.
 
+**Install:**
 ```bash
-bash scripts/install-relay-llm.sh
+# 1. Start LM Studio app, load a model, start the local server (default :1234)
+# 2. Confirm it's reachable
+curl -sS http://localhost:1234/v1/models | head -20
+
+# 3. Dispatch via Relay
+relay run 'write a unit test for src/auth/session.ts' \
+  --provider lmstudio --model zai-org/glm-4.7-flash
 ```
 
-The installer copies `relay-llm` into `~/.local/bin/`, makes it executable, and
-runs a smoke test. Make sure `~/.local/bin` is on your `$PATH`.
-
-Use:
-
-```bash
-relay-llm qwen/qwen3-coder-next "summarise the last commit message"
-```
-
-Verify the wrapper resolves and the encoded context is non-empty:
-
-```bash
-which relay-llm
-relay context emit --target lmstudio-cli --workdir "$PWD"
-```
-
-Expected — a single line of text with literal `\n` for newlines:
-
-```text
-## Recalled Lessons\n\n- [lesson] never bypass the schema validator...\n
-```
-
-The wrapper passes that string straight to `lms chat <model> -s "<text>" -p
-"<task>"`. If `relay context emit` returns empty, the wrapper falls through and
-runs `lms chat <model> -p "<task>"` with no system prompt.
-
-For programmatic use against LM Studio's HTTP endpoint, swap the target:
-
-```bash
-relay context emit --target lmstudio-http --workdir "$PWD"
-# {"role":"system","content":"## Recalled Lessons\n\n- ..."}
-```
-
-Drop that JSON object straight into the `messages` array of any
-`/v1/chat/completions` POST.
-
----
-
-## 4. OpenRouter
-
-OpenRouter is a hosted aggregator that proxies any frontier model behind a
-single OpenAI-compatible endpoint. Set `OPENROUTER_API_KEY`, then `relay run
---provider openrouter --model <id>` ships your task — and the recalled memory
-markdown rides along as a `system`-role message at the head of the array, which
-also primes prompt caching.
-
-```bash
-export OPENROUTER_API_KEY="<your-openrouter-key>"
-relay run "review src/cli.ts for unhandled errors" \
-  --provider openrouter \
-  --model anthropic/claude-haiku-4.5
-```
-
-`WorkerTask.contextPrefix` (the recalled-memory layer) is injected as the first
-`system` message regardless of provider — same shape for OpenRouter, Anthropic
-direct, and LM Studio HTTP. Workers do not concatenate it into the user
-message; the system role keeps it cache-friendly and out of the way of the user
-turn.
-
-Verify the key is reachable and Relay can list memory:
-
-```bash
-relay doctor --json | jq '.[] | select(.name == "openrouter")'
-relay memory show-context "openrouter" --token-budget 800
-```
-
-Expected `relay doctor` row:
-
-```json
-{"name":"openrouter","status":"ok","detail":"OPENROUTER_API_KEY is set"}
-```
-
-Browse models at <https://openrouter.ai/models>; pass any of them to `--model`.
-Set a per-request budget cap with `relay budget set openrouter <usd>` (when
-the budget command lands in v0.2.x).
-
----
-
-## 5. Anthropic API direct
-
-Anthropic's Messages API takes a top-level `system` field; Relay's slim
-Anthropic worker maps `WorkerTask.contextPrefix` straight into that field, so
-your recalled memory shows up exactly as it does on OpenRouter — first, system
-role, no concatenation into the user message.
-
-```bash
-export ANTHROPIC_API_KEY="<your-anthropic-key>"
-relay run "describe the architecture of src/memory/" \
-  --provider anthropic \
-  --model claude-opus-4-5
-```
-
-The slim worker is text-only (no tool-use loop). For agentic Claude with shell
-+ tools, route via OpenRouter using `--provider openrouter --model
-anthropic/claude-opus-4-5` — Relay still injects the system prefix the same way.
-
-Verify:
-
-```bash
-relay doctor --json | jq '.[] | select(.name == "anthropic")'
-```
-
-Expected:
-
-```json
-{"name":"anthropic","status":"ok","detail":"ANTHROPIC_API_KEY is set"}
-```
-
----
-
-## 6. Multi-LLM workflow
-
-The point of Relay is that all of the above front-ends share one memory store.
-A typical solo loop:
-
-- **Claude Code** drives the session — orchestrates, reviews, decides.
-  SessionStart hook auto-injects every project's lessons.
-- **Codex CLI** runs single-file edits and tests-from-spec, called as
-  `relay run --provider codex` from CC. The Codex worker writes
-  `model_instructions_file` automatically.
-- **LM Studio** absorbs cheap parallel work — bulk file generation,
-  schema-shaped output. Use `relay-llm <model> "<task>"` for one-shot calls or
-  `relay parallel spec.json --max-concurrency 8` for fan-out.
-
-End-to-end example:
-
-```bash
-# 1. Capture an architectural decision in CC
-relay memory remember "use SQLite over Postgres because solo deployment" \
-  --type decision --pinned
-
-# 2. Hand a refactor to Codex with the same context
-relay run "split src/cli.ts into per-command modules" --provider codex
-
-# 3. Fan out test generation to LM Studio
-echo '[{"task":"write tests for src/cli/cmd-init.ts","provider":"lmstudio","model":"qwen/qwen3-coder-next"}]' > /tmp/spec.json
-relay parallel /tmp/spec.json
-```
-
-Every worker reads the same `~/.relay/relay.db` and gets the same lessons
-injected. Shared memory, three different cost profiles.
-
----
-
-## 7. Auto-extract setup
-
-`auto-extract` is the SessionEnd-driven pipeline that distills lessons from a
-just-finished CC session and stores them as low-trust (`unverified`) memories.
-It's **off by default** and **opt-in per workdir** — there is no global toggle.
-The extractor runs against your local LM Studio (no remote call) unless you
-explicitly enable `--allow-remote`.
-
-```bash
-# 1. Install the SessionEnd hook (once, globally)
-relay memory hook --install --session-end --global
-
-# 2. Opt in for this workdir
-cd ~/Projects/myapp
-relay memory auto-extract --enable
-```
-
-`--enable` writes `<workdir>/.relay/auto-extract.json` with `enabled: true`,
-`allow_remote: false`, `max_bytes: 32768`, `min_confidence: 0.6`. Re-running
-preserves any custom values you've edited.
-
-Verify the consent file and run the pipeline against a fake transcript:
-
-```bash
-cat ~/Projects/myapp/.relay/auto-extract.json
-relay memory tail --filter auto-extract --since 24h
-```
-
-Expected consent file:
-
-```json
-{
-  "enabled": true,
-  "enabled_at": 1714975200000,
-  "allow_remote": false,
-  "max_bytes": 32768,
-  "min_confidence": 0.6,
-  "extra_redaction_patterns": []
-}
-```
-
-Privacy notes:
-
-- LM Studio is **local-only** by default. `auto-extract.json` must explicitly
-  set `allow_remote: true` before any remote provider can be used. The
-  pipeline blocks remote calls when `allow_remote === false` regardless of
-  CLI flags.
-- Pre-LLM redaction strips API keys, JWTs, Stripe tokens, database URLs, and
-  RFC1918 IPs. If redaction empties the window, the pipeline returns
-  `skipped:empty-window` without calling out.
-- Auto-extracted memories are tagged `auto-extract` and trust-tier-fenced —
-  `markRecallSuccess()` will not auto-pin them no matter how many times they
-  recall. Use `relay memory recall ... --min-trust provisional` to exclude
-  them from queries entirely.
-
----
-
-## 8. Privacy operations
-
-Relay surfaces three layers of privacy control: per-project `.relayignore`,
-per-memory wipe, and a global pause sentinel.
-
-Disable Relay for a single workdir (writes `.relayignore`, offers to add it to
-`.gitignore`):
-
-```bash
-cd ~/Projects/secret
-relay project disable
-```
-
-Audit what would leak from the current workdir if you committed everything:
-
-```bash
-relay project audit
-```
-
-Expected — counts of installed hooks (via committed `.claude/settings.json`)
-and workdir-scoped memories that `to-rules` promotion would surface into
-`CLAUDE.md`:
-
-```text
-Relay audit for /Users/me/Projects/secret
-  hooks_in_committed_settings: 1 (relay-memory-session-start)
-  workdir_memories_at_risk: 3
-```
-
-Per-project memory wipe (GDPR-style). Soft-delete is the default; use
-`--hard` to permanently erase. The `--confirm` phrase is required:
-
-```bash
-relay memory wipe --workdir ~/Projects/secret \
-  --confirm "WIPE /Users/me/Projects/secret"
-# or
-relay memory wipe --workdir ~/Projects/secret --hard \
-  --confirm "WIPE HARD /Users/me/Projects/secret"
-```
-
-Global off-switch — pauses every hook-driven path (recall + auto-extract) by
-writing `~/.relay/paused`:
-
-```bash
-relay pause --minutes 60   # auto-resumes after 60 min
-relay resume               # cancel early
-```
-
-Sharable export, filters out `auto-extract`, `private`, and `unverified`
-entries:
-
-```bash
-relay export --safe --workdir ~/Projects/myapp --format md --out export.md
-```
-
-Re-enable a previously-disabled workdir:
-
-```bash
-cd ~/Projects/secret
-relay project enable
-```
-
----
-
-## 9. Observability
-
-Three commands cover almost every diagnostic question.
-
-`relay info` — single-screen summary of binary version, DB stats, hook install
-state, providers reachable, last activity timestamp:
-
-```bash
-relay info
-```
-
-Expected:
-
-```text
-relay v0.2.0
-  db:           ~/.relay/relay.db (412 entries, 1.3 MB)
-  hook (cc):    installed in ~/.claude/settings.json
-  hook (cc-end): installed in ~/.claude/settings.json
-  providers:    codex [ok]  lmstudio [ok]  openrouter [missing key]  anthropic [ok]
-  last activity: 2 minutes ago (recall, /Users/me/Projects/myapp)
-```
-
-`relay doctor` — health probes (recall round-trip, hook subprocess shape, env
-consistency, auto-extract last-24h status, providers):
-
+**Verify:**
 ```bash
 relay doctor
 ```
 
-Output is a colour-coded table of probe rows. Pipe `--json` for scripting.
+**Sample output (relevant lines):**
+```
+codex        [OK]  codex 0.128.1
+lmstudio     [OK]  http://localhost:1234 (3 models loaded)
+openrouter   [--]  OPENROUTER_API_KEY not set
+```
 
-`relay memory tail` — readable view of `~/.relay/relay.ndjson`. Filter by
-event substring or window with `--since`:
+**Gotcha:** model preset matters. For `qwen3-coder` always use the LM Studio in-app preset (temp=1.0, top_k=40, top_p=0.95). Override via `--model` flag ONLY; don't pass arbitrary sampling params via curl — Relay sets sensible defaults.
 
+---
+
+## 4. OpenRouter — env var + system message via curl
+
+**What:** Use OpenRouter's chat-completions surface to reach any model on the catalog (Claude, DeepSeek-R1, Gemini, etc.). Relay's `openrouter` provider wraps this; the curl example below is what Relay sends under the hood, useful for one-off testing without spawning a worker.
+
+**Install:**
 ```bash
-relay memory tail --filter recall --since 1h
-relay memory tail --filter auto-extract --since 24h --json
+export OPENROUTER_API_KEY="<YOUR_OPENROUTER_KEY>"
+
+# Dispatch via Relay (recommended — captures audit trail)
+relay run 'critique src/auth/ for SQL injection risk' \
+  --provider openrouter --model anthropic/claude-opus-4-5
+
+# Raw curl equivalent (no audit trail)
+curl -sS https://openrouter.ai/api/v1/chat/completions \
+  -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"anthropic/claude-opus-4-5","messages":[{"role":"user","content":"ping"}]}'
 ```
 
-Expected (default human format):
-
-```text
-[2026-05-09T22:14:01Z] recall            cwd=/Users/me/Projects/myapp ok=true  meta={"matches":4}
-[2026-05-09T22:14:55Z] hook-roundtrip    cwd=/Users/me           ok=true  meta={"target":"cc"}
-[2026-05-09T22:18:32Z] auto-extract      cwd=/Users/me/Projects/myapp ok=true  meta={"status":"ok","lessons":2}
-```
-
-Score a single recall result — explains why a memory ranked where it did:
-
+**Verify:**
 ```bash
-relay memory why <memory_id>
+relay doctor
 ```
 
-Expected (composite score + per-component contribution):
-
-```text
-memory_id: 4f1a...
-  score: 0.74
-  components:
-    recency:        0.92
-    frequency:      0.61
-    trust:          1.00 (trusted)
-    query_match:    0.55 (FTS hit on "berry")
+**Sample output (relevant line):**
 ```
+openrouter   [OK]  OPENROUTER_API_KEY set (********4d2a)
+```
+
+**Gotcha:** OpenRouter bills per request to your account — set a budget cap before running parallel dispatch. Also: model IDs are case-sensitive (`anthropic/claude-opus-4-5`, not `Anthropic/...`).
+
+---
+
+## 5. Anthropic API — env var + native Messages API
+
+**What:** Direct Anthropic Messages API. Relay's `anthropic` worker is text-only (no agentic tool-loop in v0.2). For tool-use Claude, route via OpenRouter using `--model anthropic/claude-...` instead.
+
+**Install:**
+```bash
+export ANTHROPIC_API_KEY="<YOUR_ANTHROPIC_KEY>"
+
+# Dispatch via Relay
+relay run 'summarize this diff in one sentence' \
+  --provider anthropic --model claude-opus-4-5
+
+# Raw curl equivalent (Relay uses this exact shape internally)
+curl -sS https://api.anthropic.com/v1/messages \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d '{"model":"claude-opus-4-5","max_tokens":4096,"messages":[{"role":"user","content":"ping"}]}'
+```
+
+**Verify:**
+```bash
+relay doctor
+```
+
+**Sample output (relevant line):**
+```
+anthropic    [OK]  ANTHROPIC_API_KEY set (********e3c1)
+```
+
+**Gotcha:** `--model` is required. The Anthropic worker errors with `INVALID_ARGS: model is required when provider is anthropic` if you forget. Frontend-friendly model IDs (e.g. `claude-opus-4-5`) — not the long API IDs.
+
+---
+
+## 6. Multi-LLM — all four providers, one shared DB
+
+**What:** Use Codex for cross-file refactors, LM Studio for parallel mechanical work, OpenRouter for frontier critique, Anthropic for direct text Q&A — all writing to one `~/.relay/relay.db` so `relay history` and memory recall span the lot.
+
+**Install:**
+```bash
+export OPENROUTER_API_KEY="<YOUR_OPENROUTER_KEY>"
+export ANTHROPIC_API_KEY="<YOUR_ANTHROPIC_KEY>"
+export LMSTUDIO_ENDPOINT="http://localhost:1234"
+export RELAY_DB_PATH="$HOME/.relay/relay.db"
+
+# One run per provider — DB and memory are shared
+relay run 'refactor src/auth.ts to use new session model' --provider codex
+relay run 'write test for src/auth.ts'                     --provider lmstudio --model zai-org/glm-4.7-flash
+relay run 'critique architectural choice in src/auth.ts'   --provider openrouter --model deepseek/deepseek-r1
+relay run 'one-line summary of src/auth.ts behaviour'      --provider anthropic --model claude-opus-4-5
+```
+
+**Verify:**
+```bash
+relay history --limit 4
+```
+
+**Sample output:**
+```
+RUN_ID     PROVIDER     MODEL                     STATUS    DURATION
+r-7a4f9c   anthropic    claude-opus-4-5           success    1.2s
+r-7a4f9b   openrouter   deepseek/deepseek-r1      success   18.4s
+r-7a4f9a   lmstudio     zai-org/glm-4.7-flash     success    4.1s
+r-7a4f99   codex        gpt-5.3-codex             success   42.6s
+```
+
+**Gotcha:** SQLite is single-writer. Don't run two `relay` processes against the same DB simultaneously — the second one will block on the write lock or error. For parallel dispatch, use `relay parallel` (v0.2) or sequence single-shot calls.
+
+---
+
+## 7. Verify any setup — `relay doctor` walkthrough
+
+**What:** End-to-end smoke test. Probes every provider (codex CLI version, LM Studio reachability, env keys for OpenRouter/Anthropic) plus the local SQLite DB. Run before a long session or after upgrading a provider.
+
+**Install:** (already shipped — no install)
+
+**Run:**
+```bash
+relay doctor
+```
+
+**Sample output (all providers configured):**
+```
+relay doctor
+
+codex        [OK]  codex 0.128.1
+openrouter   [OK]  OPENROUTER_API_KEY set (********4d2a)
+lmstudio     [OK]  http://localhost:1234 (3 models loaded)
+anthropic    [OK]  ANTHROPIC_API_KEY set (********e3c1)
+db           [OK]  ~/.relay/relay.db (142 runs)
+
+All checks passed.
+```
+
+**Sample output (partial setup, exit 0):**
+```
+codex        [OK]  codex 0.128.1
+openrouter   [--]  OPENROUTER_API_KEY not set
+lmstudio     [--]  http://localhost:1234 unreachable (timeout 3s)
+anthropic    [OK]  ANTHROPIC_API_KEY set (********e3c1)
+db           [OK]  ~/.relay/relay.db (142 runs)
+
+2 ok, 2 missing (informational).
+```
+
+**Gotcha:** `[--]` for missing env keys / unreachable LM Studio is informational only — exit code stays 0. Only hard failures (codex CLI version mismatch, DB unwritable) return exit 1. If `db` shows `failed`, check `RELAY_DB_PATH` permissions before debugging anything else.
+
+---
+
+## 8. Inspect a memory entry before promoting it
+
+**What:** Before pushing a memory to a static rules file (`AGENTS.md`, `.claude/CLAUDE.md`), inspect what's actually stored — content, type, tags, trust level. Memory IDs change between sessions; recall by query first, then `get` by ID.
+
+**Install:** (already shipped)
+
+**Run:**
+```bash
+# 1. Find candidates
+relay memory recall 'codex commit rule' --json | jq '.memories[] | {memory_id, content, trust_level}'
+
+# 2. Inspect one in full
+relay memory get mem_8f2a1b9c --json | jq
+
+# 3. Promote if it looks right
+relay memory to-rules mem_8f2a1b9c --rules-file .claude/CLAUDE.md
+```
+
+**Sample output (`get`):**
+```json
+{
+  "memory_id": "mem_8f2a1b9c",
+  "content": "Always emit a single git commit at end of task",
+  "memory_type": "decision",
+  "tags": ["codex", "workflow"],
+  "pinned": true,
+  "trust_level": "trusted",
+  "created_at": 1715040000000,
+  "last_accessed_at": 1715126400000,
+  "success_recall_count": 4
+}
+```
+
+**Gotcha:** `trust_level` is computed at read time — `trusted` requires `human + pinned` OR `success_recall_count >= 3`. An auto-extracted entry with one recall is `provisional` and probably not worth promoting yet.
+
+---
+
+## 9. Preview what workers see — `show-context`
+
+**What:** Workers (Codex/LM Studio/OpenRouter) receive a `Recalled Lessons` block prepended to every dispatched task when `RELAY_RECALLED_LESSONS=1`. This recipe shows you the exact text the worker will see, so you can debug "why did the model not follow rule X" without dispatching.
+
+**Install:** (already shipped)
+
+**Run:**
+```bash
+RELAY_RECALLED_LESSONS=1 \
+  relay memory show-context 'how do I fix the failing test in src/auth/' \
+  --type lesson --type decision --token-budget 800
+```
+
+**Sample output:**
+```
+## Recalled Lessons (read before starting — learned from past failures)
+
+1. FAILED: Berry verifier needs gpt-4.1-nano direct OpenAI not OpenRouter
+2. Always emit a single git commit at end of task
+3. [UNVERIFIED] LM Studio timeouts > 180s usually mean prefill saturation
+```
+
+**Gotcha:** the layer is OFF by default. Workers won't see anything until `RELAY_RECALLED_LESSONS=1` is exported. Add to your shell rc file once you've validated the lessons are useful — turning it on for unverified entries can mislead a frontier model.
+
+---
+
+## 10. Memory housekeeping (v0.2 — planned)
+
+The following memory ops are implemented in `src/memory/` (consolidation, gc, lint, rollback) but NOT yet wired to CLI subcommands in v0.1.0:
+
+| Operation | v0.1.0 workaround | v0.2 command |
+|---|---|---|
+| Find duplicate / contradicting entries | `sqlite3 ~/.relay/relay.db "SELECT memory_id, content FROM memories WHERE content LIKE '%foo%';"` | `relay memory lint` |
+| Prune stale non-pinned entries | Auto-runs on every `remember` write | `relay memory gc --max-age-days 30` |
+| Merge entries with shared tags | `relay memory get` each one, manually re-`remember` consolidated | `relay memory consolidate --min-shared-tags 2` |
+| Roll back a bad migration / auto-extract | `UPDATE memories SET superseded_by='rollback' WHERE tags_json LIKE '%"migration:2026-05-02"%';` | `relay memory rollback --tag migration:2026-05-02` |
+
+Ship target: v0.2. Until then, the auto-GC on `remember()` writes (`gcByTokenBudget`) and `purgeSuperseded()` keep the store from unbounded growth — manual housekeeping is rare.
+
+---
+
+## See also
+
+- [docs/quickstart.md](quickstart.md) — install + first run in 5 minutes
+- [docs/providers.md](providers.md) — full per-provider setup
+- [docs/memory.md](memory.md) — memory model, trust levels, GC
+- [docs/recipes/morning-startup.md](recipes/morning-startup.md) — the 5-command daily kickoff
+- [docs/recipes/parallel-with-lmstudio.md](recipes/parallel-with-lmstudio.md) — 16-lane parallel dispatch rules
