@@ -176,11 +176,7 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
       ].join('\n') + '\n',
       'utf8'
     );
-    // T2: tests use the unified ndjson filename even when redirected via deps.
-    // The on-disk format is identical (wrapped LogEntry ndjson lines), so this
-    // path could be anything — using `relay.ndjson` keeps it consistent with
-    // production.
-    auditPath = join(tmp, 'relay.ndjson');
+    auditPath = join(tmp, 'auto-extract.log');
     clearMemories();
   });
 
@@ -593,21 +589,6 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
     assert.strictEqual(readMemories(projectCwd).length, 0);
   });
 
-<<<<<<< HEAD
-  // ── T3 + T10 (error-handling improvements) ───────────────────────────────
-
-  test('10. T3 — uncaught exception inside pipeline → status error:uncaught + exit 0 (hook never blocks)', async () => {
-    // loadConsent throws synchronously inside an async fn — this surfaces as a
-    // rejected promise the pipeline never explicitly catches. The top-level
-    // try/catch in executeMemoryAutoExtractCommand must swallow it, write
-    // `error:uncaught` to the audit log, and return 0.
-    const deps: AutoExtractDeps = {
-      loadConsent: async () => {
-        throw new Error('boom — synthetic uncaught failure');
-      },
-      remember: handleRemember,
-      auditPath,
-=======
   // ── T9: model resolution ──────────────────────────────────────────────────
 
   test('T9: discoverModel returns null + no env + no consent.model → error:no-model', async () => {
@@ -625,16 +606,11 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
       // Auto-discovery returns nothing — no IDLE model loaded.
       discoverModel: async (): Promise<string | null> => null,
       env: {} as NodeJS.ProcessEnv,
->>>>>>> 4d0c14a (feat(auto-extract): endpoint validation + dynamic model selection)
     };
 
     const cap = makeIO(projectCwd);
     const code = await withStdin(
-<<<<<<< HEAD
-      makePayload({ sessionId: 'sess-uncaught', cwd: projectCwd, transcriptPath }),
-=======
       makePayload({ sessionId: 'sess-no-model', cwd: projectCwd, transcriptPath }),
->>>>>>> 4d0c14a (feat(auto-extract): endpoint validation + dynamic model selection)
       () =>
         executeMemoryAutoExtractCommand(
           { fromStdin: true, maxBytes: undefined, json: true },
@@ -643,92 +619,6 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
         )
     );
 
-<<<<<<< HEAD
-    assert.strictEqual(code, 0, 'hooks must never block — uncaught exception still exits 0');
-    const out = JSON.parse(cap.stdout.join('').trim()) as { status: string; error?: string };
-    assert.strictEqual(out.status, 'error:uncaught');
-    assert.match(out.error ?? '', /boom/);
-    assert.strictEqual(readMemories(projectCwd).length, 0);
-
-    // Audit log row recorded.
-    const { readFile } = await import('node:fs/promises');
-    const audit = await readFile(auditPath, 'utf8');
-    assert.match(audit, /error:uncaught/);
-  });
-
-  test('11. T10 — partial write (1 of 2 lessons throws in remember) → status partial:write with counts', async () => {
-    const goodLesson = makeLesson('always run npm typecheck before commit', 0.85);
-    const badLesson = makeLesson('this remember call will throw', 0.85);
-
-    // Custom remember that throws for one specific lesson, succeeds for the
-    // other. We forward to handleRemember on the success path so the real DB
-    // row is written and we can assert against it.
-    const remember: typeof handleRemember = (input, source) => {
-      if (input.content === badLesson.content) {
-        throw new Error('synthetic remember failure');
-      }
-      return handleRemember(input, source);
-    };
-
-    const deps: AutoExtractDeps = {
-      loadConsent: async () => ({ ok: true, consent: consentEnabled() }),
-      loadTranscript: () => fakeWindow(),
-      redact: (s) => s,
-      extractLessons: async (_opts: ExtractionOptions) => ({
-        status: 'ok',
-        rawOutput: JSON.stringify({ lessons: [badLesson, goodLesson] }),
-        durationMs: 4,
-      }),
-      cleanupAndValidate: (_raw: string, _min: number): CleanupResult => ({
-        ok: true,
-        lessons: [badLesson, goodLesson],
-      }),
-      checkBerry: async (_opts: CheckLessonOptions): Promise<BerryCheckResult> =>
-        ({ ok: 'pass' }),
-      remember,
-      auditPath,
-    };
-
-    const cap = makeIO(projectCwd);
-    const code = await withStdin(
-      makePayload({ sessionId: 'sess-partial-write', cwd: projectCwd, transcriptPath }),
-      () =>
-        executeMemoryAutoExtractCommand(
-          { fromStdin: true, maxBytes: undefined, json: true },
-          cap.io,
-          deps
-        )
-    );
-
-    assert.strictEqual(code, 0);
-    const out = JSON.parse(cap.stdout.join('').trim()) as {
-      status: string;
-      lessons_written: number;
-      lessons_failed: number;
-      error?: string;
-    };
-    assert.strictEqual(out.status, 'partial:write');
-    assert.strictEqual(out.lessons_written, 1);
-    assert.strictEqual(out.lessons_failed, 1);
-    assert.match(out.error ?? '', /synthetic remember failure/);
-
-    // Only the good lesson was actually persisted.
-    const rows = readMemories(projectCwd);
-    assert.strictEqual(rows.length, 1, 'exactly one row written despite partial failure');
-    const [row] = rows;
-    assert.ok(row);
-    assert.strictEqual(row.content, goodLesson.content);
-  });
-
-  test('12. T10 — all lessons throw in remember → status error:write-all-failed, 0 written', async () => {
-    const remember: typeof handleRemember = () => {
-      throw new Error('every remember fails');
-    };
-
-    const lessonA = makeLesson('lesson A', 0.8);
-    const lessonB = makeLesson('lesson B', 0.8);
-
-=======
     assert.strictEqual(code, 0, 'hooks must never block — exit 0 even when no model');
     const out = JSON.parse(cap.stdout.join('').trim()) as {
       status: string;
@@ -744,26 +634,10 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
 
   test('T9: discoverModel returns idle id → that id is passed to extractLessons', async () => {
     let observedModel: string | undefined;
->>>>>>> 4d0c14a (feat(auto-extract): endpoint validation + dynamic model selection)
     const deps: AutoExtractDeps = {
       loadConsent: async () => ({ ok: true, consent: consentEnabled() }),
       loadTranscript: () => fakeWindow(),
       redact: (s) => s,
-<<<<<<< HEAD
-      extractLessons: async (_opts: ExtractionOptions) => ({
-        status: 'ok',
-        rawOutput: JSON.stringify({ lessons: [lessonA, lessonB] }),
-        durationMs: 3,
-      }),
-      cleanupAndValidate: (_raw: string, _min: number): CleanupResult => ({
-        ok: true,
-        lessons: [lessonA, lessonB],
-      }),
-      checkBerry: async (_opts: CheckLessonOptions): Promise<BerryCheckResult> =>
-        ({ ok: 'pass' }),
-      remember,
-      auditPath,
-=======
       extractLessons: async (opts: ExtractionOptions) => {
         observedModel = opts.model;
         return happyExtraction();
@@ -773,16 +647,11 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
       auditPath,
       discoverModel: async (): Promise<string | null> => 'discovered/local-llm',
       env: {} as NodeJS.ProcessEnv,
->>>>>>> 4d0c14a (feat(auto-extract): endpoint validation + dynamic model selection)
     };
 
     const cap = makeIO(projectCwd);
     const code = await withStdin(
-<<<<<<< HEAD
-      makePayload({ sessionId: 'sess-all-fail', cwd: projectCwd, transcriptPath }),
-=======
       makePayload({ sessionId: 'sess-discover', cwd: projectCwd, transcriptPath }),
->>>>>>> 4d0c14a (feat(auto-extract): endpoint validation + dynamic model selection)
       () =>
         executeMemoryAutoExtractCommand(
           { fromStdin: true, maxBytes: undefined, json: true },
@@ -792,17 +661,6 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
     );
 
     assert.strictEqual(code, 0);
-<<<<<<< HEAD
-    const out = JSON.parse(cap.stdout.join('').trim()) as {
-      status: string;
-      lessons_written: number;
-      lessons_failed: number;
-    };
-    assert.strictEqual(out.status, 'error:write-all-failed');
-    assert.strictEqual(out.lessons_written, 0);
-    assert.strictEqual(out.lessons_failed, 2);
-    assert.strictEqual(readMemories(projectCwd).length, 0);
-=======
     const out = JSON.parse(cap.stdout.join('').trim()) as { status: string; model?: string };
     assert.strictEqual(out.status, 'ok');
     assert.strictEqual(observedModel, 'discovered/local-llm');
@@ -941,6 +799,160 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
     assert.strictEqual(out.status, 'ok', `IPv6 ::1 must be treated as local, got ${out.status}`);
     assert.strictEqual(observedModel, 'qwen/qwen3-coder-next');
   });
+
+  // ── T3 + T10 (error-handling improvements) ───────────────────────────────
+
+  test('10. T3 — uncaught exception inside pipeline → status error:uncaught + exit 0 (hook never blocks)', async () => {
+    // loadConsent throws synchronously inside an async fn — this surfaces as a
+    // rejected promise the pipeline never explicitly catches. The top-level
+    // try/catch in executeMemoryAutoExtractCommand must swallow it, write
+    // `error:uncaught` to the audit log, and return 0.
+    const deps: AutoExtractDeps = {
+      loadConsent: async () => {
+        throw new Error('boom — synthetic uncaught failure');
+      },
+      remember: handleRemember,
+      auditPath,
+    };
+
+    const cap = makeIO(projectCwd);
+    const code = await withStdin(
+      makePayload({ sessionId: 'sess-uncaught', cwd: projectCwd, transcriptPath }),
+      () =>
+        executeMemoryAutoExtractCommand(
+          { fromStdin: true, maxBytes: undefined, json: true },
+          cap.io,
+          deps
+        )
+    );
+
+    assert.strictEqual(code, 0, 'hooks must never block — uncaught exception still exits 0');
+    const out = JSON.parse(cap.stdout.join('').trim()) as { status: string; error?: string };
+    assert.strictEqual(out.status, 'error:uncaught');
+    assert.match(out.error ?? '', /boom/);
+    assert.strictEqual(readMemories(projectCwd).length, 0);
+
+    // Audit log row recorded.
+    const { readFile } = await import('node:fs/promises');
+    const audit = await readFile(auditPath, 'utf8');
+    assert.match(audit, /error:uncaught/);
+  });
+
+  test('11. T10 — partial write (1 of 2 lessons throws in remember) → status partial:write with counts', async () => {
+    const goodLesson = makeLesson('always run npm typecheck before commit', 0.85);
+    const badLesson = makeLesson('this remember call will throw', 0.85);
+
+    // Custom remember that throws for one specific lesson, succeeds for the
+    // other. We forward to handleRemember on the success path so the real DB
+    // row is written and we can assert against it.
+    const remember: typeof handleRemember = (input, source) => {
+      if (input.content === badLesson.content) {
+        throw new Error('synthetic remember failure');
+      }
+      return handleRemember(input, source);
+    };
+
+    const deps: AutoExtractDeps = {
+      loadConsent: async () => ({ ok: true, consent: consentEnabled() }),
+      loadTranscript: () => fakeWindow(),
+      redact: (s) => s,
+      extractLessons: async (_opts: ExtractionOptions) => ({
+        status: 'ok',
+        rawOutput: JSON.stringify({ lessons: [badLesson, goodLesson] }),
+        durationMs: 4,
+      }),
+      cleanupAndValidate: (_raw: string, _min: number): CleanupResult => ({
+        ok: true,
+        lessons: [badLesson, goodLesson],
+      }),
+      checkBerry: async (_opts: CheckLessonOptions): Promise<BerryCheckResult> =>
+        ({ ok: 'pass' }),
+      remember,
+      auditPath,
+      discoverModel: async (): Promise<string | null> => 'qwen/qwen3-coder-next',
+    };
+
+    const cap = makeIO(projectCwd);
+    const code = await withStdin(
+      makePayload({ sessionId: 'sess-partial-write', cwd: projectCwd, transcriptPath }),
+      () =>
+        executeMemoryAutoExtractCommand(
+          { fromStdin: true, maxBytes: undefined, json: true },
+          cap.io,
+          deps
+        )
+    );
+
+    assert.strictEqual(code, 0);
+    const out = JSON.parse(cap.stdout.join('').trim()) as {
+      status: string;
+      lessons_written: number;
+      lessons_failed: number;
+      error?: string;
+    };
+    assert.strictEqual(out.status, 'partial:write');
+    assert.strictEqual(out.lessons_written, 1);
+    assert.strictEqual(out.lessons_failed, 1);
+    assert.match(out.error ?? '', /synthetic remember failure/);
+
+    // Only the good lesson was actually persisted.
+    const rows = readMemories(projectCwd);
+    assert.strictEqual(rows.length, 1, 'exactly one row written despite partial failure');
+    const [row] = rows;
+    assert.ok(row);
+    assert.strictEqual(row.content, goodLesson.content);
+  });
+
+  test('12. T10 — all lessons throw in remember → status error:write-all-failed, 0 written', async () => {
+    const remember: typeof handleRemember = () => {
+      throw new Error('every remember fails');
+    };
+
+    const lessonA = makeLesson('lesson A', 0.8);
+    const lessonB = makeLesson('lesson B', 0.8);
+
+    const deps: AutoExtractDeps = {
+      loadConsent: async () => ({ ok: true, consent: consentEnabled() }),
+      loadTranscript: () => fakeWindow(),
+      redact: (s) => s,
+      extractLessons: async (_opts: ExtractionOptions) => ({
+        status: 'ok',
+        rawOutput: JSON.stringify({ lessons: [lessonA, lessonB] }),
+        durationMs: 3,
+      }),
+      cleanupAndValidate: (_raw: string, _min: number): CleanupResult => ({
+        ok: true,
+        lessons: [lessonA, lessonB],
+      }),
+      checkBerry: async (_opts: CheckLessonOptions): Promise<BerryCheckResult> =>
+        ({ ok: 'pass' }),
+      remember,
+      auditPath,
+      discoverModel: async (): Promise<string | null> => 'qwen/qwen3-coder-next',
+    };
+
+    const cap = makeIO(projectCwd);
+    const code = await withStdin(
+      makePayload({ sessionId: 'sess-all-fail', cwd: projectCwd, transcriptPath }),
+      () =>
+        executeMemoryAutoExtractCommand(
+          { fromStdin: true, maxBytes: undefined, json: true },
+          cap.io,
+          deps
+        )
+    );
+
+    assert.strictEqual(code, 0);
+    const out = JSON.parse(cap.stdout.join('').trim()) as {
+      status: string;
+      lessons_written: number;
+      lessons_failed: number;
+    };
+    assert.strictEqual(out.status, 'error:write-all-failed');
+    assert.strictEqual(out.lessons_written, 0);
+    assert.strictEqual(out.lessons_failed, 2);
+    assert.strictEqual(readMemories(projectCwd).length, 0);
+  });
 });
 
 // ── Pure-function unit tests for T4 / T9 helpers ─────────────────────────────
@@ -1012,6 +1024,5 @@ describe('parseLmsPsOutput (T9)', () => {
   test('case-insensitive state matching', () => {
     const stdout = JSON.stringify([{ identifier: 'idle/one', state: 'IDLE' }]);
     assert.strictEqual(parseLmsPsOutput(stdout), 'idle/one');
->>>>>>> 4d0c14a (feat(auto-extract): endpoint validation + dynamic model selection)
   });
 });
