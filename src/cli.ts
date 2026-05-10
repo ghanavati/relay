@@ -10,6 +10,8 @@
 import { argv, exit, cwd } from 'node:process';
 import type { CliIO } from './cli/commands.js';
 import { setColorMode, type ColorMode } from './cli/colors.js';
+// T50: env-driven cwd default for `relay memory recall` / `show-context`.
+import { resolveMemoryWorkdir } from './cli/resolve-memory-workdir.js';
 
 const VERSION = '0.1.0';
 
@@ -207,7 +209,9 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
       tags: allOptions(flags, 'tag'),
       types: allOptions(flags, 'type').length > 0 ? allOptions(flags, 'type') : undefined,
       tokenBudget: tokenBudgetRaw ? Number.parseInt(tokenBudgetRaw, 10) : 4000,
-      workdir: lastOption(flags, 'workdir'),
+      // T50: when RELAY_MEMORY_ALLOWED_WORKDIRS is set and --workdir is
+      // omitted, default to io.cwd; otherwise behavior is unchanged.
+      workdir: resolveMemoryWorkdir(lastOption(flags, 'workdir'), io.cwd),
       includeExpired: isBool(flags, 'include-expired'),
       createdAfter: createdAfter ? Number.parseInt(createdAfter, 10) : undefined,
       createdBefore: createdBefore ? Number.parseInt(createdBefore, 10) : undefined,
@@ -237,7 +241,9 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
       query,
       types,
       tokenBudget,
-      workdir: lastOption(flags, 'workdir'),
+      // T50: same env-driven cwd default as `recall` so the show-context
+      // preview lands in the same scope as the actual recall.
+      workdir: resolveMemoryWorkdir(lastOption(flags, 'workdir'), io.cwd),
       json: isBool(flags, 'json'),
     }, io);
   }
