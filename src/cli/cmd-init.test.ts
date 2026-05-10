@@ -47,14 +47,18 @@ function findJsonLine(stdout: string[]): string | undefined {
 }
 
 /**
- * Back up the real ~/.relay/config.json before tests run, and restore it after.
- * This protects the developer's actual config from being clobbered by `--auto`
- * or `--quick` mode writes (cmd-init captures HOME at import time and we cannot
- * redirect it).
+ * Back up the real ~/.relay/config.json AND ~/.claude/settings.json before
+ * tests run, and restore them after. The default in T36 is to install the
+ * SessionStart hook to the user-wide ~/.claude/settings.json — tests opt out
+ * by passing globalHook:false, but a defensive backup protects the developer
+ * if a test path drifts.
  */
 const REAL_CONFIG_PATH = join(homedir(), '.relay', 'config.json');
+const REAL_CC_SETTINGS_PATH = join(homedir(), '.claude', 'settings.json');
 let realConfigBackup: string | null = null;
 let realConfigExisted = false;
+let realCcSettingsBackup: string | null = null;
+let realCcSettingsExisted = false;
 
 async function fileExists(p: string): Promise<boolean> {
   try { await stat(p); return true; } catch { return false; }
@@ -72,16 +76,24 @@ describe('executeInitCommand', () => {
     if (realConfigExisted) {
       realConfigBackup = await readFile(REAL_CONFIG_PATH, 'utf-8');
     }
+    realCcSettingsExisted = await fileExists(REAL_CC_SETTINGS_PATH);
+    if (realCcSettingsExisted) {
+      realCcSettingsBackup = await readFile(REAL_CC_SETTINGS_PATH, 'utf-8');
+    }
   });
 
   after(async () => {
-    // Restore the real config to its original state (or remove if it didn't exist)
     if (realConfigExisted && realConfigBackup !== null) {
       await mkdir(join(homedir(), '.relay'), { recursive: true });
       await writeFile(REAL_CONFIG_PATH, realConfigBackup, 'utf-8');
     } else if (await fileExists(REAL_CONFIG_PATH)) {
-      // We created it during tests — remove
       await rm(REAL_CONFIG_PATH, { force: true });
+    }
+    if (realCcSettingsExisted && realCcSettingsBackup !== null) {
+      await mkdir(join(homedir(), '.claude'), { recursive: true });
+      await writeFile(REAL_CC_SETTINGS_PATH, realCcSettingsBackup, 'utf-8');
+    } else if (await fileExists(REAL_CC_SETTINGS_PATH)) {
+      await rm(REAL_CC_SETTINGS_PATH, { force: true });
     }
   });
 
@@ -179,21 +191,35 @@ describe('executeInitCommand', () => {
   test('--auto + --json with OPENROUTER_API_KEY emits config JSON', async () => {
     process.env['OPENROUTER_API_KEY'] = 'sk-test';
     const cap = makeIO(tmp);
-    const code = await executeInitCommand({ auto: true, quick: false, json: true }, cap.io);
+    // Pin globalHook=false so the hook lands in tmp/.claude/settings.json
+    // (not the developer's real ~/.claude). T36 changed the default to true.
+    const code = await executeInitCommand(
+      { auto: true, quick: false, json: true, globalHook: false },
+      cap.io
+    );
     assert.strictEqual(code, 0);
-    // stdout may contain hook-install human text BEFORE the JSON line
     const jsonLine = findJsonLine(cap.stdout);
     assert.ok(jsonLine, 'expected JSON line in stdout');
     const parsed = JSON.parse(jsonLine!) as {
       ok: boolean;
       providers: { default: string; available: string[] };
       hook_installed: boolean;
+      hook_global: boolean;
+      session_end_hook_installed: boolean;
       cc_memory_found: boolean;
+      lm_model: string | null;
+      auto_extract_enabled: boolean;
+      verify: { ok: boolean; detail: string };
     };
     assert.strictEqual(parsed.ok, true);
     assert.ok(parsed.providers.available.includes('openrouter'));
-    // --auto path sets installHook = true (rl is null + args.auto)
     assert.strictEqual(parsed.hook_installed, true);
+    assert.strictEqual(parsed.hook_global, false);
+    assert.strictEqual(parsed.session_end_hook_installed, false);
+    assert.strictEqual(parsed.lm_model, null);
+    assert.strictEqual(parsed.auto_extract_enabled, false);
+    assert.ok(typeof parsed.verify.ok === 'boolean');
+    assert.ok(typeof parsed.verify.detail === 'string');
   });
 
   test('--auto + --json with no providers returns 1 with stderr message', async () => {
@@ -223,13 +249,19 @@ describe('executeInitCommand', () => {
   test('non-JSON --auto mode prints provider table and writes config message', async () => {
     process.env['OPENROUTER_API_KEY'] = 'sk-test';
     const cap = makeIO(tmp);
-    const code = await executeInitCommand({ auto: true, quick: false, json: false }, cap.io);
+    // Pin globalHook=false so we don't touch real ~/.claude/settings.json.
+    const code = await executeInitCommand(
+      { auto: true, quick: false, json: false, globalHook: false },
+      cap.io
+    );
     assert.strictEqual(code, 0);
     const out = cap.stdout.join('');
     assert.match(out, /relay init/);
     assert.match(out, /Detected providers/);
     assert.match(out, /openrouter\s+\[OK\]/);
     assert.match(out, /Wrote/);
+    // T36: verify step output (PASS or FAIL printed at end)
+    assert.match(out, /Verify \(context emit cc\):/);
   });
 
   test('cc-memory line indicates "[--]" when path does not exist', async () => {
@@ -253,6 +285,97 @@ describe('executeInitCommand', () => {
       parsed.config_path.endsWith(join('.relay', 'config.json')),
       `expected config_path to end with .relay/config.json, got: ${parsed.config_path}`
     );
+  });
+
+  // T36: --global-hook default writes to user-wide path, but here we keep
+  // the test safe by inspecting JSON `hook_global` field (after/before backup).
+  test('T36 --auto installs SessionStart hook globally by default (hook_global=true)', async () => {
+    process.env['OPENROUTER_API_KEY'] = 'sk-test';
+    const cap = makeIO(tmp);
+    // Default globalHook=true (omitted) — backup/restore in after() protects real file.
+    const code = await executeInitCommand(
+      { auto: true, quick: false, json: true },
+      cap.io
+    );
+    assert.strictEqual(code, 0);
+    const jsonLine = findJsonLine(cap.stdout);
+    const parsed = JSON.parse(jsonLine!) as { hook_installed: boolean; hook_global: boolean };
+    assert.strictEqual(parsed.hook_installed, true);
+    assert.strictEqual(parsed.hook_global, true);
+  });
+
+  test('T36 --session-end-hook flag installs SessionEnd auto-extract hook in --auto mode', async () => {
+    process.env['OPENROUTER_API_KEY'] = 'sk-test';
+    const cap = makeIO(tmp);
+    const code = await executeInitCommand(
+      { auto: true, quick: false, json: true, globalHook: false, sessionEndHook: true },
+      cap.io
+    );
+    assert.strictEqual(code, 0);
+    const jsonLine = findJsonLine(cap.stdout);
+    const parsed = JSON.parse(jsonLine!) as { session_end_hook_installed: boolean };
+    assert.strictEqual(parsed.session_end_hook_installed, true);
+    // Verify the SessionEnd hook landed in the project-local settings.
+    const settingsPath = join(tmp, '.claude', 'settings.json');
+    const settings = JSON.parse(await readFile(settingsPath, 'utf8')) as {
+      hooks?: { SessionEnd?: Array<{ hooks?: Array<{ command?: string }> }> };
+    };
+    const sessionEnd = settings.hooks?.SessionEnd ?? [];
+    const found = sessionEnd.some((h) =>
+      (h.hooks ?? []).some((i) => typeof i.command === 'string' && i.command.includes('relay memory auto-extract --from-stdin'))
+    );
+    assert.ok(found, 'expected SessionEnd hook entry with auto-extract command');
+  });
+
+  test('T36 --lm-model flag records model id into config.auto_extract.model (JSON output)', async () => {
+    process.env['OPENROUTER_API_KEY'] = 'sk-test';
+    const cap = makeIO(tmp);
+    const code = await executeInitCommand(
+      { auto: true, quick: false, json: true, globalHook: false, lmModel: 'qwen/qwen3-coder-next' },
+      cap.io
+    );
+    assert.strictEqual(code, 0);
+    const jsonLine = findJsonLine(cap.stdout);
+    const parsed = JSON.parse(jsonLine!) as { lm_model: string | null };
+    assert.strictEqual(parsed.lm_model, 'qwen/qwen3-coder-next');
+  });
+
+  test('T36 LM Studio model picker (--auto) uses first model from mocked /v1/models', async () => {
+    process.env['OPENROUTER_API_KEY'] = 'sk-test';
+    // Mock fetch so probeLmStudio AND fetchLmStudioModels both succeed.
+    // probeLmStudio reads /v1/models; fetchLmStudioModels reads /v1/models too.
+    (globalThis as { fetch?: typeof fetch }).fetch = (async () => {
+      return new Response(
+        JSON.stringify({ data: [{ id: 'mock/model-a' }, { id: 'mock/model-b' }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      );
+    }) as typeof fetch;
+    const cap = makeIO(tmp);
+    const code = await executeInitCommand(
+      { auto: true, quick: false, json: true, globalHook: false },
+      cap.io
+    );
+    assert.strictEqual(code, 0);
+    const jsonLine = findJsonLine(cap.stdout);
+    const parsed = JSON.parse(jsonLine!) as { lm_model: string | null };
+    // --auto picks the first model from the list when LM Studio is reachable.
+    assert.strictEqual(parsed.lm_model, 'mock/model-a');
+  });
+
+  test('T36 verify step appears in JSON output with ok flag and detail', async () => {
+    process.env['OPENROUTER_API_KEY'] = 'sk-test';
+    const cap = makeIO(tmp);
+    const code = await executeInitCommand(
+      { auto: true, quick: false, json: true, globalHook: false },
+      cap.io
+    );
+    assert.strictEqual(code, 0);
+    const jsonLine = findJsonLine(cap.stdout);
+    const parsed = JSON.parse(jsonLine!) as { verify: { ok: boolean; detail: string } };
+    assert.ok(parsed.verify, 'expected verify field in JSON');
+    // The shape is what matters; the actual value depends on whether memory exists.
+    assert.strictEqual(typeof parsed.verify.ok, 'boolean');
+    assert.strictEqual(typeof parsed.verify.detail, 'string');
   });
 });
 

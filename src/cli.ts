@@ -154,6 +154,10 @@ PROJECT (per-project privacy controls)
 
 SETUP
   relay init [--auto|--quick] [--json]     Interactive setup wizard
+  [--no-global-hook]                       Install SessionStart hook to project .claude/ (default ~/.claude)
+  [--session-end-hook]                     Also install SessionEnd auto-extract hook
+  [--lm-model <id>]                        Record LM Studio model id into config.auto_extract.model
+  [--enable-auto-extract]                  Write per-workdir auto-extract consent file
   relay completion <bash|zsh|fish>         Emit shell completion script
 
 GENERAL
@@ -501,7 +505,19 @@ async function main(): Promise<number> {
   if (cmd === 'init') {
     const flags = parseFlags(rest);
     const { executeInitCommand } = await import('./cli/cmd-init.js');
-    return executeInitCommand({ auto: isBool(flags, 'auto'), quick: isBool(flags, 'quick'), json: isBool(flags, 'json') }, io);
+    // --no-global-hook overrides --global-hook (both default to global=true).
+    // Absence of either flag in interactive mode keeps the new default (global).
+    const globalHook = isBool(flags, 'no-global-hook') ? false : true;
+    return executeInitCommand({
+      auto: isBool(flags, 'auto'),
+      quick: isBool(flags, 'quick'),
+      json: isBool(flags, 'json'),
+      globalHook,
+      sessionEndHook: isBool(flags, 'session-end-hook'),
+      lmModel: lastOption(flags, 'lm-model'),
+      noShellEdit: isBool(flags, 'no-shell-edit'),
+      enableAutoExtract: isBool(flags, 'enable-auto-extract'),
+    }, io);
   }
   if (cmd === 'compare') {
     const flags = parseFlags(rest);
