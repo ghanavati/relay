@@ -165,3 +165,16 @@ This is the second time we have hit it. Adding a new doctor check must NOT touch
 ### 10. Default `--min-trust provisional` for LLM context emission
 
 Context emission to live LLM sessions should default `--min-trust provisional`, not `--min-trust speculative`. Wave 4 shipped an early default of speculative which would have surfaced unverified, low-trust memories into running LLM sessions as authoritative context. The provisional floor matches what a human reviewer would expect: "include things we have at least one signal for, exclude raw guesses." If the user wants speculative content they can opt in explicitly.
+
+## TUI Roadmap
+
+Trajectory for the `relay tui` surface. CHANGELOG.md owns release-cut details; this section owns the engineering contract.
+
+- **v0.1.x — `relay tui` MVP (delivered this wave):** 3-panel snapshot dashboard — recent activity, memory recall preview, status bar. 5-second refresh, no interactivity.
+- **v0.2.x — interactive layer:** keyboard navigation, in-place memory expansion, hook toggle, live recall query box.
+- **v0.3.x — full Ink visual layer (per CHANGELOG):** history view, live run progress, cost dashboard.
+
+### Architectural rule (non-negotiable)
+
+- **TUI MUST NOT block on long-running ops.** Use streams or promises with cancellation; never await an unbounded operation on the render thread.
+- **All data MUST come from existing CLI helpers.** No new SQL paths in TUI code — if a query is missing, add it to the CLI helper layer first, then call it from the TUI. This keeps the TUI a pure view over the same surface humans use.
