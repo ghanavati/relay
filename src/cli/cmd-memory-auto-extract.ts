@@ -32,6 +32,8 @@ import type { CliIO } from './commands.js';
 import { mkdir, appendFile, readFile, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { homedir } from 'node:os';
+import { execFile } from 'node:child_process';
 import { z } from 'zod';
 import { appendLog, type LogEvent } from '../runtime/relay-log.js';
 
@@ -89,6 +91,8 @@ export type AutoExtractStatus =
   | 'error:write'
   | 'error:write-all-failed'
   | 'error:uncaught'
+  | 'error:remote-llm-blocked'
+  | 'error:no-model'
   | 'partial:berry-flag'
   | 'partial:write';
 
@@ -136,6 +140,12 @@ export interface AutoExtractDeps {
   readonly now?: () => number;
   readonly auditPath?: string;
   readonly env?: NodeJS.ProcessEnv;
+  /**
+   * T9 — model auto-discovery seam. Returns the first IDLE model id reported
+   * by `lms ps --json`, or `null` when no idle model is available. Defaults
+   * to spawning the real `lms` binary; tests inject a deterministic stub.
+   */
+  readonly discoverModel?: () => Promise<string | null>;
 }
 
 type ConsentLoadResultLike =
@@ -143,9 +153,11 @@ type ConsentLoadResultLike =
   | { ok: false; reason: string; detail?: string };
 
 const DEFAULT_ENDPOINT = 'http://localhost:1234';
-const DEFAULT_MODEL = 'qwen/qwen3-coder-next';
 const DEFAULT_TIMEOUT_MS = 25_000;
 const TTL_HOURS_30_DAYS = 30 * 24;
+const LMS_DISCOVERY_TIMEOUT_MS = 4_000;
+/** Hosts treated as local for T4 endpoint validation. IPv6 brackets stripped first. */
+const LOCALHOST_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 
 export async function executeMemoryAutoExtractCommand(
   args: AutoExtractArgs,
@@ -303,8 +315,57 @@ async function runPipeline(
 
   // 7. LM Studio extraction
   const endpoint = String(env['RELAY_AUTO_EXTRACT_ENDPOINT'] ?? DEFAULT_ENDPOINT);
-  const model = String(env['RELAY_AUTO_EXTRACT_MODEL'] ?? DEFAULT_MODEL);
   const timeoutMs = parsePositiveInt(env['RELAY_AUTO_EXTRACT_TIMEOUT_MS']) ?? DEFAULT_TIMEOUT_MS;
+
+  // T4 — endpoint host validation. Refuse non-localhost endpoints unless the
+  // user has explicitly opted in via consent.allow_remote=true. This protects
+  // transcripts from being shipped to a remote LLM by accident (env var typo,
+  // shared shell config, malicious actor).
+  if (!isLocalEndpoint(endpoint) && consent.allow_remote !== true) {
+    await emit(io, args, 'error:remote-llm-blocked', audit, {
+      ts: new Date().toISOString(),
+      session_id: payload.value.session_id,
+      cwd: payload.value.cwd,
+      status: 'error:remote-llm-blocked',
+      provider,
+      turns_read: window.turnsRead,
+      transcript_bytes: window.bytes,
+      redaction_hits: redactionHits,
+      duration_ms: now() - startedAt,
+      error:
+        `endpoint '${endpoint}' is not localhost. To allow remote endpoints, ` +
+        `set "allow_remote": true in <cwd>/.relay/auto-extract.json. ` +
+        `Localhost hosts: 127.0.0.1, ::1, localhost.`,
+    });
+    return 0;
+  }
+
+  // T9 — model resolution. Order: env var → consent.model → auto-discover
+  // first IDLE local model via `lms ps --json`. No hard-coded default — if
+  // every layer is empty we surface error:no-model with actionable guidance.
+  const modelResolution = await resolveModel(env, consent, deps);
+  if (modelResolution.kind === 'none') {
+    await emit(io, args, 'error:no-model', audit, {
+      ts: new Date().toISOString(),
+      session_id: payload.value.session_id,
+      cwd: payload.value.cwd,
+      status: 'error:no-model',
+      provider,
+      turns_read: window.turnsRead,
+      transcript_bytes: window.bytes,
+      redaction_hits: redactionHits,
+      duration_ms: now() - startedAt,
+      error:
+        'No extraction model configured. Resolution order: ' +
+        '(1) RELAY_AUTO_EXTRACT_MODEL env var, ' +
+        '(2) "model" field in <cwd>/.relay/auto-extract.json, ' +
+        '(3) first IDLE model from `lms ps --json`. ' +
+        'Load a model in LM Studio (e.g. `lms load <model-id>`) ' +
+        'or set RELAY_AUTO_EXTRACT_MODEL=<model-id>.',
+    });
+    return 0;
+  }
+  const model = modelResolution.model;
 
   const extract = deps.extractLessons ?? extractLessonsViaLmStudio;
   const extraction = await extract({
@@ -654,6 +715,123 @@ function parsePositiveInt(v: unknown): number | undefined {
   const n = Number.parseInt(v, 10);
   if (!Number.isFinite(n) || n <= 0) return undefined;
   return n;
+}
+
+/**
+ * T4 — return true when `endpoint` resolves to a localhost host.
+ *
+ * Localhost = `127.0.0.1`, `::1`, or `localhost`. Any unparseable URL is
+ * treated as non-local (fail-closed). IPv6 brackets are stripped before
+ * comparison so `http://[::1]:1234` matches.
+ */
+export function isLocalEndpoint(endpoint: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    return false;
+  }
+  // URL.hostname keeps IPv6 brackets stripped by spec, but be defensive.
+  const host = parsed.hostname.replace(/^\[/, '').replace(/\]$/, '').toLowerCase();
+  return LOCALHOST_HOSTS.has(host);
+}
+
+type ModelResolution = { kind: 'ok'; model: string } | { kind: 'none' };
+
+/**
+ * T9 — resolve the extraction model id without a hard-coded default.
+ *
+ * Resolution order:
+ *   1. `RELAY_AUTO_EXTRACT_MODEL` environment variable (op-level override)
+ *   2. `consent.model` from `<cwd>/.relay/auto-extract.json` (project-level pin)
+ *   3. First IDLE model returned by `lms ps --json` (auto-discovery)
+ *
+ * Returns `{ kind: 'none' }` when every layer is empty so the caller can emit
+ * `error:no-model` with actionable guidance.
+ */
+async function resolveModel(
+  env: NodeJS.ProcessEnv,
+  consent: ConsentConfig,
+  deps: AutoExtractDeps
+): Promise<ModelResolution> {
+  const fromEnv = env['RELAY_AUTO_EXTRACT_MODEL'];
+  if (typeof fromEnv === 'string' && fromEnv.trim().length > 0) {
+    return { kind: 'ok', model: fromEnv.trim() };
+  }
+  if (typeof consent.model === 'string' && consent.model.trim().length > 0) {
+    return { kind: 'ok', model: consent.model.trim() };
+  }
+  const discover = deps.discoverModel ?? discoverModelViaLms;
+  let discovered: string | null;
+  try {
+    discovered = await discover();
+  } catch {
+    // Defensive — discovery is best-effort, never crashes the hook.
+    discovered = null;
+  }
+  if (typeof discovered === 'string' && discovered.length > 0) {
+    return { kind: 'ok', model: discovered };
+  }
+  return { kind: 'none' };
+}
+
+interface LmsPsEntry {
+  readonly identifier?: string;
+  readonly modelKey?: string;
+  readonly path?: string;
+  readonly state?: string;
+}
+
+/**
+ * Default model auto-discovery — shells out to `lms ps --json` and returns the
+ * first model identifier whose `state` is `idle` (case-insensitive). Returns
+ * `null` when the binary is missing, returns garbage, or no idle model exists.
+ *
+ * The output shape from `lms` is `[{ identifier, modelKey, state, ... }]`.
+ * Identifiers preferred over `modelKey` since identifiers match what the
+ * `/v1/chat/completions` endpoint accepts. We accept either to stay forgiving
+ * against future `lms` versions.
+ */
+async function discoverModelViaLms(): Promise<string | null> {
+  return new Promise<string | null>((resolve) => {
+    execFile(
+      'lms',
+      ['ps', '--json'],
+      { encoding: 'utf-8', timeout: LMS_DISCOVERY_TIMEOUT_MS },
+      (err, stdoutData) => {
+        if (err) {
+          resolve(null);
+          return;
+        }
+        // encoding: 'utf-8' guarantees stdoutData is a string here.
+        resolve(parseLmsPsOutput(stdoutData as string));
+      }
+    );
+  });
+}
+
+/** Visible for unit testing. Returns the first IDLE model id or null. */
+export function parseLmsPsOutput(stdout: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  for (const raw of parsed as LmsPsEntry[]) {
+    if (raw === null || typeof raw !== 'object') continue;
+    const state = typeof raw.state === 'string' ? raw.state.toLowerCase() : '';
+    if (state !== 'idle') continue;
+    const id =
+      typeof raw.identifier === 'string' && raw.identifier.length > 0
+        ? raw.identifier
+        : typeof raw.modelKey === 'string' && raw.modelKey.length > 0
+          ? raw.modelKey
+          : null;
+    if (id !== null) return id;
+  }
+  return null;
 }
 
 // Keep the imports above marked as used for downstream type references.

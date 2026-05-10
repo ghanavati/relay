@@ -213,8 +213,12 @@ describe('executeMemoryAutoExtractCommand', () => {
     });
 
     // Force LM Studio unreachable by pointing at a closed port.
+    // Pin the model so we don't rely on a running `lms` daemon (T9 removed
+    // the hard-coded default, so the env var is the deterministic source).
     const prevEndpoint = process.env['RELAY_AUTO_EXTRACT_ENDPOINT'];
+    const prevModel = process.env['RELAY_AUTO_EXTRACT_MODEL'];
     process.env['RELAY_AUTO_EXTRACT_ENDPOINT'] = 'http://127.0.0.1:1';
+    process.env['RELAY_AUTO_EXTRACT_MODEL'] = 'qwen/qwen3-coder-next';
     try {
       const cap = makeIO(tmp);
       const code = await withStdin(payload, () =>
@@ -239,6 +243,113 @@ describe('executeMemoryAutoExtractCommand', () => {
     } finally {
       if (prevEndpoint === undefined) delete process.env['RELAY_AUTO_EXTRACT_ENDPOINT'];
       else process.env['RELAY_AUTO_EXTRACT_ENDPOINT'] = prevEndpoint;
+      if (prevModel === undefined) delete process.env['RELAY_AUTO_EXTRACT_MODEL'];
+      else process.env['RELAY_AUTO_EXTRACT_MODEL'] = prevModel;
+    }
+  });
+
+  // ── T4: endpoint host validation ───────────────────────────────────────────
+
+  test('T4: remote endpoint without allow_remote → error:remote-llm-blocked', async () => {
+    const projectCwd = join(tmp, 'project-t4-blocked');
+    await mkdir(join(projectCwd, '.relay'), { recursive: true });
+    // allow_remote omitted → defaults to false via Zod schema
+    await writeFile(
+      join(projectCwd, '.relay', 'auto-extract.json'),
+      JSON.stringify({ enabled: true }),
+      'utf8'
+    );
+    const transcriptPath = join(projectCwd, 'transcript.jsonl');
+    await writeFile(
+      transcriptPath,
+      JSON.stringify({ role: 'user', text: 'hello' }) + '\n',
+      'utf8'
+    );
+
+    const payload = JSON.stringify({
+      session_id: 't4-blocked',
+      transcript_path: transcriptPath,
+      cwd: projectCwd,
+    });
+
+    const prevEndpoint = process.env['RELAY_AUTO_EXTRACT_ENDPOINT'];
+    const prevModel = process.env['RELAY_AUTO_EXTRACT_MODEL'];
+    process.env['RELAY_AUTO_EXTRACT_ENDPOINT'] = 'https://api.openai.com';
+    process.env['RELAY_AUTO_EXTRACT_MODEL'] = 'gpt-4';
+    try {
+      const cap = makeIO(tmp);
+      const code = await withStdin(payload, () =>
+        executeMemoryAutoExtractCommand(
+          { fromStdin: true, maxBytes: undefined, json: true },
+          cap.io
+        )
+      );
+      assert.strictEqual(code, 0, 'hooks must never block — exit 0 even when blocking remote');
+      const out = JSON.parse(cap.stdout.join('').trim()) as {
+        status: string;
+        error?: string;
+      };
+      assert.strictEqual(out.status, 'error:remote-llm-blocked');
+      // Error message must explain how to allow remote endpoints
+      assert.match(out.error ?? '', /allow_remote/);
+      assert.match(out.error ?? '', /api\.openai\.com/);
+    } finally {
+      if (prevEndpoint === undefined) delete process.env['RELAY_AUTO_EXTRACT_ENDPOINT'];
+      else process.env['RELAY_AUTO_EXTRACT_ENDPOINT'] = prevEndpoint;
+      if (prevModel === undefined) delete process.env['RELAY_AUTO_EXTRACT_MODEL'];
+      else process.env['RELAY_AUTO_EXTRACT_MODEL'] = prevModel;
+    }
+  });
+
+  test('T4: remote endpoint allowed when consent.allow_remote=true → reaches LM Studio call (error:llm-down vs blocked)', async () => {
+    const projectCwd = join(tmp, 'project-t4-allowed');
+    await mkdir(join(projectCwd, '.relay'), { recursive: true });
+    await writeFile(
+      join(projectCwd, '.relay', 'auto-extract.json'),
+      JSON.stringify({ enabled: true, allow_remote: true }),
+      'utf8'
+    );
+    const transcriptPath = join(projectCwd, 'transcript.jsonl');
+    await writeFile(
+      transcriptPath,
+      JSON.stringify({ role: 'user', text: 'hello' }) + '\n',
+      'utf8'
+    );
+
+    const payload = JSON.stringify({
+      session_id: 't4-allowed',
+      transcript_path: transcriptPath,
+      cwd: projectCwd,
+    });
+
+    // Closed remote-looking port — proves we walked past the T4 gate
+    const prevEndpoint = process.env['RELAY_AUTO_EXTRACT_ENDPOINT'];
+    const prevModel = process.env['RELAY_AUTO_EXTRACT_MODEL'];
+    process.env['RELAY_AUTO_EXTRACT_ENDPOINT'] = 'http://198.51.100.1:1';
+    process.env['RELAY_AUTO_EXTRACT_MODEL'] = 'qwen/qwen3-coder-next';
+    try {
+      const cap = makeIO(tmp);
+      const code = await withStdin(payload, () =>
+        executeMemoryAutoExtractCommand(
+          { fromStdin: true, maxBytes: undefined, json: true },
+          cap.io
+        )
+      );
+      assert.strictEqual(code, 0);
+      const out = JSON.parse(cap.stdout.join('').trim()) as { status: string };
+      assert.notStrictEqual(out.status, 'error:remote-llm-blocked',
+        'allow_remote=true must let the request through to LM Studio call');
+      // Real failure mode is whatever the runner returns when it can't connect:
+      // error:llm-down or error:llm-timeout. Either proves we passed T4.
+      assert.ok(
+        out.status === 'error:llm-down' || out.status === 'error:llm-timeout',
+        `expected llm-down/timeout after T4 gate, got ${out.status}`
+      );
+    } finally {
+      if (prevEndpoint === undefined) delete process.env['RELAY_AUTO_EXTRACT_ENDPOINT'];
+      else process.env['RELAY_AUTO_EXTRACT_ENDPOINT'] = prevEndpoint;
+      if (prevModel === undefined) delete process.env['RELAY_AUTO_EXTRACT_MODEL'];
+      else process.env['RELAY_AUTO_EXTRACT_MODEL'] = prevModel;
     }
   });
 });
