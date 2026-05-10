@@ -3,6 +3,7 @@ process.env['RELAY_DB_PATH'] = ':memory:';
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -11,6 +12,7 @@ import {
   checkHookRoundtrip,
   checkEnvConsistency,
   checkLastRecall,
+  checkAutoExtractStatus,
 } from './cmd-doctor.js';
 import type { CliIO } from './commands.js';
 
@@ -466,5 +468,122 @@ describe('checkLastRecall', () => {
     const probe = await checkLastRecall();
     assert.strictEqual(probe.status, 'ok');
     assert.match(probe.detail, /[0-9]+m ago/);
+  });
+});
+
+describe('checkAutoExtractStatus', () => {
+  let tmpDir: string;
+  let logPath: string;
+  let savedEnv: string | undefined;
+  let savedFetch: typeof fetch | undefined;
+  let savedOpenRouter: string | undefined;
+  let savedAnthropic: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'relay-doctor-ae-'));
+    logPath = join(tmpDir, 'auto-extract.log');
+    savedEnv = process.env['RELAY_AUTO_EXTRACT_LOG'];
+    process.env['RELAY_AUTO_EXTRACT_LOG'] = logPath;
+    savedFetch = (globalThis as { fetch?: typeof fetch }).fetch;
+    savedOpenRouter = process.env['OPENROUTER_API_KEY'];
+    savedAnthropic = process.env['ANTHROPIC_API_KEY'];
+  });
+
+  afterEach(() => {
+    if (savedEnv === undefined) delete process.env['RELAY_AUTO_EXTRACT_LOG'];
+    else process.env['RELAY_AUTO_EXTRACT_LOG'] = savedEnv;
+    if (savedFetch) (globalThis as { fetch?: typeof fetch }).fetch = savedFetch;
+    if (savedOpenRouter === undefined) delete process.env['OPENROUTER_API_KEY'];
+    else process.env['OPENROUTER_API_KEY'] = savedOpenRouter;
+    if (savedAnthropic === undefined) delete process.env['ANTHROPIC_API_KEY'];
+    else process.env['ANTHROPIC_API_KEY'] = savedAnthropic;
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test('log missing → status missing (warn: never ran)', () => {
+    // logPath was never created
+    const result = checkAutoExtractStatus();
+    assert.strictEqual(result.name, 'auto-extract (24h)');
+    assert.strictEqual(result.status, 'missing');
+    assert.match(result.detail, /never run/);
+  });
+
+  test('empty log → status missing (warn: 0 entries)', () => {
+    writeFileSync(logPath, '');
+    const result = checkAutoExtractStatus();
+    assert.strictEqual(result.status, 'missing');
+    assert.match(result.detail, /0 entries/);
+  });
+
+  test('only-ok recent entries → status ok with counts', () => {
+    const now = new Date('2026-05-10T12:00:00Z');
+    const recent = new Date(now.getTime() - 60 * 60 * 1000).toISOString(); // 1h ago
+    const lines = [
+      JSON.stringify({ ts: recent, status: 'ok' }),
+      JSON.stringify({ ts: recent, status: 'ok' }),
+      JSON.stringify({ ts: recent, status: 'skipped:no-consent' }),
+    ].join('\n') + '\n';
+    writeFileSync(logPath, lines);
+    const result = checkAutoExtractStatus(now);
+    assert.strictEqual(result.status, 'ok');
+    assert.strictEqual(result.detail, '2 ok, 1 skipped, 0 error');
+  });
+
+  test('any error entries → status missing (warn) with counts', () => {
+    const now = new Date('2026-05-10T12:00:00Z');
+    const recent = new Date(now.getTime() - 30 * 60 * 1000).toISOString();
+    const lines = [
+      JSON.stringify({ ts: recent, status: 'ok' }),
+      JSON.stringify({ ts: recent, status: 'error:bad-payload' }),
+    ].join('\n') + '\n';
+    writeFileSync(logPath, lines);
+    const result = checkAutoExtractStatus(now);
+    assert.strictEqual(result.status, 'missing');
+    assert.strictEqual(result.detail, '1 ok, 0 skipped, 1 error');
+  });
+
+  test('older-than-24h entries are excluded', () => {
+    const now = new Date('2026-05-10T12:00:00Z');
+    const old = new Date(now.getTime() - 25 * 60 * 60 * 1000).toISOString(); // 25h ago
+    const recent = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+    const lines = [
+      JSON.stringify({ ts: old, status: 'ok' }),
+      JSON.stringify({ ts: old, status: 'error:expired' }),
+      JSON.stringify({ ts: recent, status: 'ok' }),
+    ].join('\n') + '\n';
+    writeFileSync(logPath, lines);
+    const result = checkAutoExtractStatus(now);
+    assert.strictEqual(result.status, 'ok');
+    assert.strictEqual(result.detail, '1 ok, 0 skipped, 0 error');
+  });
+
+  test('malformed JSON lines are skipped, not fatal', () => {
+    const now = new Date('2026-05-10T12:00:00Z');
+    const recent = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+    const lines = [
+      'not-json-at-all',
+      JSON.stringify({ ts: recent, status: 'ok' }),
+      '{"incomplete":',
+      JSON.stringify({ ts: recent, status: 'skipped:no-consent' }),
+    ].join('\n') + '\n';
+    writeFileSync(logPath, lines);
+    const result = checkAutoExtractStatus(now);
+    assert.strictEqual(result.status, 'ok');
+    assert.strictEqual(result.detail, '1 ok, 1 skipped, 0 error');
+  });
+
+  test('check is wired into doctor JSON output', async () => {
+    const now = new Date();
+    const recent = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+    writeFileSync(logPath, JSON.stringify({ ts: recent, status: 'ok' }) + '\n');
+    applyEnv({ openrouter: 'sk-test', anthropic: 'sk-ant', lmstudioOk: true });
+    const cap = makeIO();
+    await executeDoctorCommand({ json: true }, cap.io);
+    const parsed = JSON.parse(cap.stdout.join('').trim()) as {
+      checks: Array<{ name: string; status: string; detail: string }>;
+    };
+    const ae = parsed.checks.find(c => c.name === 'auto-extract (24h)');
+    assert.ok(ae, 'auto-extract check should be present in doctor output');
+    assert.strictEqual(ae.status, 'ok');
   });
 });
