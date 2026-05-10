@@ -86,6 +86,11 @@ Add or update tests for the code you change. v0.1.0 inherited tests from relay-m
 5. **State intent before directional changes.** No silent pivots.
 6. **`tsc --noEmit` is authoritative for compile claims.** Subagents miss split files. Always verify with the compiler.
 7. **Check worker state before retrying a "failed" dispatch.** `ps aux | grep <provider>`, `tail ~/.relay-mcp/run-*.log`, `ls ~/.relay/sessions/` — the worker may be alive even when the MCP tool returned an error.
+8. **Subagent worktree-cwd discipline:** subagents that land code MUST verify cwd is the worktree path before each Edit. Multiple wave-1 agents misdirected edits to the main repo.
+9. **Add-don't-refactor for shared files:** extending an existing file by adding new exports is safe. Replacing the file (T23 wave 2 doctor.ts) breaks consumers' tests.
+10. **Hook contract:** SessionStart stdout becomes additionalContext OR JSON `{hookSpecificOutput:{hookEventName:'SessionStart',additionalContext:'...'}}`. Raw `{memories:[...]}` is undocumented behavior — use `relay context emit --target cc`.
+11. **Stop hook fires per-turn; SessionEnd fires once at termination.** Use SessionEnd for distillation, not Stop.
+12. **Auto-extracted entries MUST never auto-pin** (memory-store.ts:529-541 has the SQL fence).
 
 ## Dispatching workers
 
@@ -102,6 +107,9 @@ This repo was extracted from `relay-mcp` on 2026-05-02. If you need that context
 - SQLite is the sole canonical store.
 - `delegate.ts` stays focused — extract logic to helpers.
 - Tests are the spec — preserve behavior through refactoring.
+- Auto-extract entries (tag `auto-extract`) excluded from autoPin in markRecallSuccess.
+- Hook scripts ALWAYS check pause sentinel (`~/.relay/paused`) before recall.
+- `memory_source` labels are unforgeable from the CLI: `relay memory remember` always tags `human`; only internal `handleRemember(args, sourceArg)` can set other sources.
 
 ## PR instructions
 
