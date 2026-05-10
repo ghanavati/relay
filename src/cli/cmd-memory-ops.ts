@@ -241,10 +241,30 @@ export async function executeMemoryHookCommand(
   const marker = sessionEnd ? HOOK_MARKER_SESSION_END : HOOK_MARKER_SESSION_START;
 
   let settings: Record<string, unknown> = {};
+  let raw: string | undefined;
   try {
-    settings = JSON.parse(await readFile(settingsPath, 'utf8')) as Record<string, unknown>;
-  } catch {
-    // file doesn't exist yet — start fresh
+    raw = await readFile(settingsPath, 'utf8');
+  } catch (err) {
+    // ENOENT (file doesn't exist yet) → safe to start fresh.
+    // Anything else (EACCES, EISDIR, etc.) → re-throw; caller handles it.
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  if (raw !== undefined) {
+    try {
+      settings = JSON.parse(raw) as Record<string, unknown>;
+    } catch (err) {
+      // EPARSE: file exists but is not valid JSON. Aborting prevents us from
+      // silently overwriting the user's hand-edited (but broken) settings.
+      const msg = (err as Error).message;
+      if (command.json) {
+        io.stdout(JSON.stringify({ error: 'settings-parse', path: settingsPath, message: msg }) + '\n');
+      }
+      io.stderr(
+        `relay memory hook: ${settingsPath} exists but is not valid JSON (${msg}).\n` +
+          `Aborted to avoid overwriting your settings. Fix the JSON manually, then re-run.\n`
+      );
+      return 1;
+    }
   }
 
   const hooks = (settings['hooks'] ?? {}) as Record<string, unknown>;
