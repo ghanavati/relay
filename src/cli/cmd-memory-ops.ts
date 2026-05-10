@@ -86,6 +86,42 @@ export function executeGetMemoryCommand(
   return 0;
 }
 
+/**
+ * Forget (delete) a single memory by id.
+ *
+ * Soft mode (default) marks the row `superseded_by='forget'` so it is
+ * excluded from recall/get/count but preserved for audit. Hard mode
+ * physically removes the row; the FTS5 delete trigger keeps the FTS
+ * index in sync.
+ *
+ * Exit codes: 0 if a row was affected, 1 if id not found (or already
+ * forgotten in soft mode), 2 for missing argument.
+ */
+export async function executeForgetCommand(
+  command: { memoryId: string; hard: boolean; json: boolean },
+  io: CliIO
+): Promise<number> {
+  const { MemoryStore } = await import('../memory/memory-store.js');
+  const store = new MemoryStore();
+  const result = store.forget(command.memoryId, { hard: command.hard });
+
+  if (!result.found) {
+    if (command.json) {
+      io.stdout(JSON.stringify({ found: false, mode: result.mode, memory_id: command.memoryId }) + '\n');
+    } else {
+      io.stderr(`Memory ${command.memoryId} not found${result.mode === 'soft' ? ' (or already forgotten)' : ''}\n`);
+    }
+    return 1;
+  }
+
+  if (command.json) {
+    io.stdout(JSON.stringify({ found: true, mode: result.mode, memory_id: command.memoryId }) + '\n');
+  } else {
+    io.stdout(`Forgot memory ${command.memoryId} (${result.mode === 'hard' ? 'hard delete' : 'soft delete'}).\n`);
+  }
+  return 0;
+}
+
 export async function executeMemoryShowContextCommand(
   command: {
     query: string;
