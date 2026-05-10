@@ -111,6 +111,97 @@ export interface LintEntry {
   readonly suggestion: string;
 }
 
+/** One mutation step planned by consolidate(). */
+export interface ConsolidateAction {
+  readonly kind: 'duplicate' | 'near_duplicate' | 'chronological';
+  readonly memory_id: string;        // entry being superseded
+  readonly superseded_by: string;    // keeper id
+  readonly similarity: number;       // 0..1; 1 for exact dup
+}
+
+/** Aggregate result of consolidate(). */
+export interface ConsolidateResult {
+  readonly groups_found: number;
+  readonly duplicates: number;
+  readonly supersessions: number;
+  readonly kept: number;
+  readonly marked: number;
+  readonly dry_run: boolean;
+  readonly similarity_threshold: number;
+  readonly actions: readonly ConsolidateAction[];
+}
+
+/** Lower-case, collapse whitespace, strip non-token chars for exact-dup matching. */
+function normalizeContent(content: string): string {
+  return content.toLowerCase().replace(/\s+/g, ' ').replace(/[^\w\s]/g, '').trim();
+}
+
+/** Tokenize for Jaccard: alphanumeric words ≥3 chars, lower-cased, deduped. */
+function tokenize(content: string): string[] {
+  return content.toLowerCase().split(/[\W_]+/).filter(w => w.length >= 3);
+}
+
+/** Jaccard similarity over two token sets. Empty/empty → 0 (avoid NaN). */
+function jaccard(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
+  if (a.size === 0 && b.size === 0) return 0;
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter++;
+  const union = a.size + b.size - inter;
+  return union === 0 ? 0 : inter / union;
+}
+
+/**
+ * Cluster memories transitively by Jaccard ≥ threshold (single-linkage).
+ * Returns an opaque object with `members` and a `similarityTo(idA, idB)` lookup
+ * usable for reporting.
+ */
+function clusterByJaccard(
+  memories: readonly Memory[],
+  tokensById: ReadonlyMap<string, Set<string>>,
+  threshold: number
+): Array<{ members: Memory[]; similarityTo: (idA: string, idB: string) => number }> {
+  const parent = new Map<string, string>();
+  const find = (x: string): string => {
+    let cur = x;
+    while (parent.get(cur) && parent.get(cur) !== cur) cur = parent.get(cur)!;
+    return cur;
+  };
+  const union = (x: string, y: string): void => {
+    const rx = find(x); const ry = find(y);
+    if (rx !== ry) parent.set(rx, ry);
+  };
+  for (const m of memories) parent.set(m.memory_id, m.memory_id);
+
+  const simCache = new Map<string, number>();
+  const simKey = (a: string, b: string): string => a < b ? `${a}|${b}` : `${b}|${a}`;
+
+  for (let i = 0; i < memories.length; i++) {
+    const ai = memories[i]!;
+    const ta = tokensById.get(ai.memory_id) ?? new Set<string>();
+    for (let j = i + 1; j < memories.length; j++) {
+      const aj = memories[j]!;
+      const tb = tokensById.get(aj.memory_id) ?? new Set<string>();
+      const s = jaccard(ta, tb);
+      simCache.set(simKey(ai.memory_id, aj.memory_id), s);
+      if (s >= threshold && s < 1) union(ai.memory_id, aj.memory_id);
+    }
+  }
+
+  const groups = new Map<string, Memory[]>();
+  for (const m of memories) {
+    const root = find(m.memory_id);
+    const g = groups.get(root) ?? [];
+    g.push(m);
+    groups.set(root, g);
+  }
+  return [...groups.values()]
+    .filter(g => g.length > 1)
+    .map(members => ({
+      members,
+      similarityTo: (idA: string, idB: string): number => simCache.get(simKey(idA, idB)) ?? 0,
+    }));
+}
+
 export class MemoryStore {
   private readonly db: Database.Database;
   private readonly maxAutoAgeMs: number;
@@ -928,6 +1019,177 @@ export class MemoryStore {
       .prepare('SELECT COALESCE(SUM(token_count), 0) as total FROM memories WHERE superseded_by IS NULL')
       .get() as { total: number };
     return row.total;
+  }
+
+  /**
+   * Consolidate the memory store: detect duplicates, near-duplicates, and
+   * chronological supersessions, then mark superseded entries via the
+   * `superseded_by` column. Pure analysis when `dryRun` is true — no mutation.
+   *
+   * Algorithm (in order):
+   *   1. Exact-content duplicates (after normalization) → keep entry with
+   *      highest recall_count (then newest accessed_at), mark others
+   *      superseded_by = <keeper_id>.
+   *   2. Near-duplicates: Jaccard similarity over normalized tokens
+   *      (default threshold 0.85). Cluster transitively, keep highest
+   *      recall_count, mark rest superseded.
+   *   3. Chronological supersession: groups sharing all tags where a newer
+   *      entry has higher recall_count and content overlap is in
+   *      (0.5, threshold). Mark older as superseded by newer.
+   *
+   * Pinned entries are never marked superseded (only used as keepers).
+   * Returns counts and the action list — callers can serialize for --json.
+   */
+  consolidate(opts: {
+    dryRun?: boolean;
+    similarityThreshold?: number;
+    workdir?: string;
+  } = {}): ConsolidateResult {
+    const dryRun = opts.dryRun ?? false;
+    const threshold = opts.similarityThreshold ?? 0.85;
+    if (threshold < 0 || threshold > 1) {
+      throw toRelayException(makeError(
+        'INVALID_ARGS',
+        `similarity-threshold must be in [0, 1] (got ${threshold})`,
+        false
+      ));
+    }
+
+    const where = opts.workdir
+      ? `WHERE superseded_by IS NULL AND (workdir = ? OR workdir IS NULL)`
+      : `WHERE superseded_by IS NULL`;
+    const params = opts.workdir ? [opts.workdir] : [];
+    const rows = this.db
+      .prepare(`SELECT * FROM memories ${where}`)
+      .all(...(params as Parameters<Database.Statement['all']>)) as MemoryRow[];
+    const memories = rows.map(rowToMemory);
+
+    const actions: ConsolidateAction[] = [];
+    const supersededIds = new Set<string>();
+
+    // Helper: pick keeper among a group (highest recall_count, tiebreak newest accessed_at).
+    const pickKeeper = (group: Memory[]): Memory => {
+      const sorted = [...group].sort((a, b) => {
+        if (b.recall_count !== a.recall_count) return b.recall_count - a.recall_count;
+        return b.accessed_at - a.accessed_at;
+      });
+      // Prefer a pinned keeper if one exists at top recall_count tier.
+      const pinned = sorted.find(m => m.pinned);
+      return pinned ?? sorted[0]!;
+    };
+
+    // 1. Exact-content duplicates — bucket by normalized content.
+    const exactBuckets = new Map<string, Memory[]>();
+    for (const m of memories) {
+      if (supersededIds.has(m.memory_id)) continue;
+      const key = normalizeContent(m.content);
+      if (!key) continue;
+      const bucket = exactBuckets.get(key) ?? [];
+      bucket.push(m);
+      exactBuckets.set(key, bucket);
+    }
+    let duplicates = 0;
+    for (const bucket of exactBuckets.values()) {
+      if (bucket.length < 2) continue;
+      const keeper = pickKeeper(bucket);
+      for (const m of bucket) {
+        if (m.memory_id === keeper.memory_id) continue;
+        if (m.pinned) continue;
+        supersededIds.add(m.memory_id);
+        actions.push({
+          kind: 'duplicate',
+          memory_id: m.memory_id,
+          superseded_by: keeper.memory_id,
+          similarity: 1,
+        });
+        duplicates++;
+      }
+    }
+
+    // 2. Near-duplicates — Jaccard over tokens, clustered transitively.
+    const tokensById = new Map<string, Set<string>>();
+    const remaining = memories.filter(m => !supersededIds.has(m.memory_id));
+    for (const m of remaining) tokensById.set(m.memory_id, new Set(tokenize(m.content)));
+
+    const nearClusters = clusterByJaccard(remaining, tokensById, threshold);
+    let supersessions = 0;
+    for (const cluster of nearClusters) {
+      if (cluster.members.length < 2) continue;
+      const keeper = pickKeeper(cluster.members);
+      for (const m of cluster.members) {
+        if (m.memory_id === keeper.memory_id) continue;
+        if (m.pinned) continue;
+        if (supersededIds.has(m.memory_id)) continue;
+        supersededIds.add(m.memory_id);
+        actions.push({
+          kind: 'near_duplicate',
+          memory_id: m.memory_id,
+          superseded_by: keeper.memory_id,
+          similarity: cluster.similarityTo(m.memory_id, keeper.memory_id),
+        });
+        duplicates++;
+      }
+    }
+
+    // 3. Chronological supersession — same tags, newer has higher recall_count,
+    //    content overlap in (0.5, threshold).
+    const stillActive = memories.filter(m => !supersededIds.has(m.memory_id));
+    const tagBuckets = new Map<string, Memory[]>();
+    for (const m of stillActive) {
+      if (m.tags.length === 0) continue;
+      const tagKey = [...m.tags].sort().join('');
+      const bucket = tagBuckets.get(tagKey) ?? [];
+      bucket.push(m);
+      tagBuckets.set(tagKey, bucket);
+    }
+    for (const bucket of tagBuckets.values()) {
+      if (bucket.length < 2) continue;
+      const sorted = [...bucket].sort((a, b) => a.created_at - b.created_at);
+      for (let i = 0; i < sorted.length; i++) {
+        const older = sorted[i]!;
+        if (older.pinned || supersededIds.has(older.memory_id)) continue;
+        for (let j = i + 1; j < sorted.length; j++) {
+          const newer = sorted[j]!;
+          if (supersededIds.has(newer.memory_id)) continue;
+          if (newer.recall_count <= older.recall_count) continue;
+          const a = tokensById.get(older.memory_id) ?? new Set(tokenize(older.content));
+          const b = tokensById.get(newer.memory_id) ?? new Set(tokenize(newer.content));
+          const sim = jaccard(a, b);
+          if (sim > 0.5 && sim < threshold) {
+            supersededIds.add(older.memory_id);
+            actions.push({
+              kind: 'chronological',
+              memory_id: older.memory_id,
+              superseded_by: newer.memory_id,
+              similarity: sim,
+            });
+            supersessions++;
+            break; // older is now superseded; move to next i
+          }
+        }
+      }
+    }
+
+    if (!dryRun && actions.length > 0) {
+      const stmt = this.db.prepare(
+        'UPDATE memories SET superseded_by = ? WHERE memory_id = ? AND superseded_by IS NULL'
+      );
+      const tx = this.db.transaction((acts: readonly ConsolidateAction[]) => {
+        for (const a of acts) stmt.run(a.superseded_by, a.memory_id);
+      });
+      tx(actions);
+    }
+
+    return {
+      groups_found: exactBuckets.size + nearClusters.length + tagBuckets.size,
+      duplicates,
+      supersessions,
+      kept: memories.length - supersededIds.size,
+      marked: supersededIds.size,
+      dry_run: dryRun,
+      similarity_threshold: threshold,
+      actions,
+    };
   }
 
   /**
