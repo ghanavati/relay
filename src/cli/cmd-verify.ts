@@ -36,7 +36,21 @@ interface VerifySummary {
 
 const SMOKE_TAG = 'relay-verify-smoke';
 
-async function runRememberCheck(token: string): Promise<VerifyCheck> {
+/**
+ * Optional dependency seam for tests. When provided, individual check runners
+ * are replaced with the supplied stubs. Production code passes nothing and
+ * gets the default implementations below. Each stub receives the same args
+ * as the real runner.
+ */
+export interface VerifyDeps {
+  runRememberCheck?: (token: string) => Promise<VerifyCheck>;
+  runRecallCheck?: (token: string) => Promise<VerifyCheck>;
+  runContextEmitCheck?: (workdir: string, token: string) => Promise<VerifyCheck>;
+  runHookCheck?: () => Promise<VerifyCheck>;
+  runDbRoundtripCheck?: () => Promise<VerifyCheck>;
+}
+
+export async function runRememberCheck(token: string): Promise<VerifyCheck> {
   try {
     const { handleRemember } = await import('../tools/remember.js');
     const { RememberArgsSchema } = await import('../contracts/memory.js');
@@ -61,7 +75,7 @@ async function runRememberCheck(token: string): Promise<VerifyCheck> {
   }
 }
 
-async function runRecallCheck(token: string): Promise<VerifyCheck> {
+export async function runRecallCheck(token: string): Promise<VerifyCheck> {
   try {
     const { handleRecall } = await import('../tools/recall.js');
     const { RecallArgsSchema } = await import('../contracts/memory.js');
@@ -86,7 +100,7 @@ async function runRecallCheck(token: string): Promise<VerifyCheck> {
   }
 }
 
-async function runContextEmitCheck(workdir: string, token: string): Promise<VerifyCheck> {
+export async function runContextEmitCheck(workdir: string, token: string): Promise<VerifyCheck> {
   try {
     const { loadRecalledLessonsContent } = await import('../context/layers.js');
     const content = await loadRecalledLessonsContent(workdir, token, undefined, {
@@ -105,7 +119,7 @@ async function runContextEmitCheck(workdir: string, token: string): Promise<Veri
   }
 }
 
-async function runHookCheck(): Promise<VerifyCheck> {
+export async function runHookCheck(): Promise<VerifyCheck> {
   try {
     const { HOOK_SCRIPT } = await import('./cmd-memory-ops.js');
     if (typeof HOOK_SCRIPT !== 'string' || !HOOK_SCRIPT.includes('relay context emit')) {
@@ -120,7 +134,7 @@ async function runHookCheck(): Promise<VerifyCheck> {
   }
 }
 
-async function runDbRoundtripCheck(): Promise<VerifyCheck> {
+export async function runDbRoundtripCheck(): Promise<VerifyCheck> {
   try {
     const { MemoryStore } = await import('../memory/memory-store.js');
     const store = new MemoryStore();
@@ -143,20 +157,27 @@ async function runDbRoundtripCheck(): Promise<VerifyCheck> {
   }
 }
 
-export async function executeVerifyCommand(args: VerifyArgs, io: CliIO): Promise<number> {
+export async function executeVerifyCommand(args: VerifyArgs, io: CliIO, _deps?: VerifyDeps): Promise<number> {
   const token = randomUUID().slice(0, 8);
   const checks: VerifyCheck[] = [];
 
+  // Resolve runners — defaults are real implementations; tests inject stubs.
+  const rememberFn = _deps?.runRememberCheck ?? runRememberCheck;
+  const recallFn = _deps?.runRecallCheck ?? runRecallCheck;
+  const contextEmitFn = _deps?.runContextEmitCheck ?? runContextEmitCheck;
+  const hookFn = _deps?.runHookCheck ?? runHookCheck;
+  const dbRoundtripFn = _deps?.runDbRoundtripCheck ?? runDbRoundtripCheck;
+
   // 1. write a memory
-  checks.push(await runRememberCheck(token));
+  checks.push(await rememberFn(token));
   // 2. recall it back
-  checks.push(await runRecallCheck(token));
+  checks.push(await recallFn(token));
   // 3. context emit (recalled_lessons layer)
-  checks.push(await runContextEmitCheck(io.cwd, token));
+  checks.push(await contextEmitFn(io.cwd, token));
   // 4. hook script roundtrip
-  checks.push(await runHookCheck());
+  checks.push(await hookFn());
   // 5. direct db roundtrip
-  checks.push(await runDbRoundtripCheck());
+  checks.push(await dbRoundtripFn());
 
   const summary: VerifySummary = checks.reduce(
     (acc, ch) => {
