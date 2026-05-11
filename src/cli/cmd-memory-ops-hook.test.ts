@@ -259,3 +259,140 @@ describe('HOOK_SCRIPT — pause sentinel gate (P1 privacy off-switch)', () => {
   });
 });
 
+// ============================================================================
+// P2 fix (Codex finding #7): `relay memory hook --uninstall` on a fresh $HOME
+// with no `~/.claude/settings.json` MUST be a no-op success, not an ENOENT
+// throw. Previously the code reached writeFile() without first ensuring the
+// parent directory existed, and would crash with ENOENT instead of degrading
+// gracefully.
+//
+// Contract: uninstall on a missing settings file → return 0, emit a no-op
+// message, do NOT create the .claude/ directory or settings.json file.
+// ============================================================================
+describe('executeMemoryHookCommand — uninstall idempotency on missing settings file (P2)', () => {
+  let tmp: string;
+
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'relay-hook-uninstall-noop-'));
+  });
+
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  test('uninstall on fresh tmp dir with no .claude/ exits 0 without throwing', async () => {
+    // Pre-fix, this throws ENOENT inside writeFile() because the .claude/
+    // parent directory does not exist. Post-fix, it's a clean no-op.
+    const cap = makeIO(tmp);
+    const code = await executeMemoryHookCommand(
+      { install: false, json: false },
+      cap.io,
+      tmp
+    );
+    assert.strictEqual(code, 0, 'uninstall on missing settings.json must succeed');
+  });
+
+  test('uninstall on missing settings does NOT create .claude/ directory', async () => {
+    // The fix must not create an empty settings.json just to satisfy uninstall.
+    // Verify the .claude/ directory remains absent after the no-op uninstall.
+    const cap = makeIO(tmp);
+    await executeMemoryHookCommand(
+      { install: false, json: false },
+      cap.io,
+      tmp
+    );
+
+    let claudeDirExists = true;
+    try {
+      await stat(join(tmp, '.claude'));
+    } catch {
+      claudeDirExists = false;
+    }
+    assert.strictEqual(claudeDirExists, false, 'no .claude/ should be created by a no-op uninstall');
+
+    // And no settings.json either.
+    let settingsExists = true;
+    try {
+      await stat(join(tmp, '.claude', 'settings.json'));
+    } catch {
+      settingsExists = false;
+    }
+    assert.strictEqual(settingsExists, false, 'no settings.json should be created by a no-op uninstall');
+  });
+
+  test('uninstall on missing settings emits a human-readable no-op message', async () => {
+    const cap = makeIO(tmp);
+    await executeMemoryHookCommand(
+      { install: false, json: false },
+      cap.io,
+      tmp
+    );
+    const out = cap.stdout.join('');
+    assert.match(out, /nothing to remove|no settings file/i, 'must communicate no-op clearly');
+    assert.strictEqual(cap.stderr.join(''), '', 'no-op uninstall must not write to stderr');
+  });
+
+  test('uninstall --json on missing settings emits no-op envelope (installed=false, action=no-op)', async () => {
+    const cap = makeIO(tmp);
+    const code = await executeMemoryHookCommand(
+      { install: false, json: true },
+      cap.io,
+      tmp
+    );
+    assert.strictEqual(code, 0);
+
+    const parsed = JSON.parse(cap.stdout.join('').trim()) as {
+      installed: boolean;
+      path: string;
+      event: string;
+      action?: string;
+      reason?: string;
+    };
+    assert.strictEqual(parsed.installed, false);
+    assert.strictEqual(parsed.event, 'SessionStart');
+    assert.strictEqual(parsed.path, join(tmp, '.claude', 'settings.json'));
+    assert.strictEqual(parsed.action, 'no-op', 'envelope must flag this as a no-op');
+    assert.match(parsed.reason ?? '', /settings-not-found|does not exist|no settings/i);
+  });
+
+  test('uninstall --session-end on missing settings is also a no-op success (not ENOENT)', async () => {
+    // The SessionEnd path goes through the same readFile/writeFile flow — verify
+    // the fix applies symmetrically and doesn't only patch SessionStart.
+    const cap = makeIO(tmp);
+    const code = await executeMemoryHookCommand(
+      { install: false, json: false, sessionEnd: true },
+      cap.io,
+      tmp
+    );
+    assert.strictEqual(code, 0, 'uninstall --session-end on missing settings.json must succeed');
+
+    let claudeDirExists = true;
+    try {
+      await stat(join(tmp, '.claude'));
+    } catch {
+      claudeDirExists = false;
+    }
+    assert.strictEqual(claudeDirExists, false, 'SessionEnd no-op uninstall must not create .claude/');
+  });
+
+  test('install on fresh tmp still works (regression guard — the install path must NOT be short-circuited)', async () => {
+    // The fix must early-return ONLY when (raw === undefined && !install). The
+    // cold-start install path must still create .claude/settings.json with the
+    // hook entry — this test guards against accidentally short-circuiting both.
+    const cap = makeIO(tmp);
+    const code = await executeMemoryHookCommand(
+      { install: true, json: false },
+      cap.io,
+      tmp
+    );
+    assert.strictEqual(code, 0);
+
+    const settingsPath = join(tmp, '.claude', 'settings.json');
+    const raw = await readFile(settingsPath, 'utf8');
+    const parsed = JSON.parse(raw) as {
+      hooks: { SessionStart: Array<{ hooks: Array<{ command: string }> }> };
+    };
+    assert.strictEqual(parsed.hooks.SessionStart.length, 1, 'install must still create the entry');
+  });
+});
+
