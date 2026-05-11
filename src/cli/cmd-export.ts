@@ -20,6 +20,7 @@ import { writeFile } from 'node:fs/promises';
 import type { CliIO } from './commands.js';
 import type { MemoryRow, MemoryType, MemorySource } from '../memory/types.js';
 import { computeTrustLevel } from '../memory/memory-store.js';
+import { makeError, toRelayException } from '../errors.js';
 
 const EXPORT_VERSION = '1.0';
 
@@ -46,6 +47,41 @@ interface ExportPayload {
   readonly exported_at: number;
   readonly workdir: string | null;
   readonly memories: readonly ExportedMemory[];
+}
+
+/**
+ * P1 privacy boundary (SHIP-70 parity): block cross-workdir export when
+ * RELAY_MEMORY_ALLOWED_WORKDIRS is set. The memory-store layer enforces this
+ * at the row-fetch boundary for the standard CRUD path, but `relay export`
+ * runs a custom SQL query that bypasses that gate — so we re-assert here at
+ * the command entry, BEFORE any DB query runs.
+ *
+ * TODO: consolidate with `assertWorkdirAllowed` in src/memory/memory-store.ts
+ * once that helper is exported (intentionally duplicated here to keep this fix
+ * single-file and avoid merge conflicts during the parallel fix sprint).
+ */
+function assertWorkdirAllowedLocal(workdir: string | null | undefined): void {
+  const allowed = process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'];
+  if (!allowed) return;
+  if (!workdir || workdir === '*') {
+    throw toRelayException(
+      makeError(
+        'MEMORY_WORKDIR_FORBIDDEN',
+        'Cross-workdir memory access is not permitted in this context',
+        false
+      )
+    );
+  }
+  const allowedList = allowed.split(':').map(p => p.trim()).filter(Boolean);
+  if (!allowedList.some(p => workdir === p || workdir.startsWith(p + '/'))) {
+    throw toRelayException(
+      makeError(
+        'MEMORY_WORKDIR_FORBIDDEN',
+        `Workdir not in RELAY_MEMORY_ALLOWED_WORKDIRS: ${workdir}`,
+        false
+      )
+    );
+  }
 }
 
 async function selectRows(workdir: string | undefined, safe: boolean): Promise<MemoryRow[]> {
@@ -214,6 +250,25 @@ function renderMarkdown(payload: ExportPayload): string {
 
 export async function executeExportCommand(args: ExportArgs, io: CliIO): Promise<number> {
   const workdir = args.workdir ?? io.cwd;
+
+  // P1 privacy boundary: refuse forbidden workdirs BEFORE any DB query.
+  // Without this gate, `relay export --workdir /outside/allowlist` could dump
+  // memories belonging to a workdir the env allowlist forbids — the custom
+  // SELECT in selectRows() bypasses the memory-store's assertWorkdirAllowed.
+  try {
+    assertWorkdirAllowedLocal(workdir);
+  } catch (err) {
+    const e = err as Error & { code?: string };
+    const code = e.code ?? 'MEMORY_WORKDIR_FORBIDDEN';
+    const msg = e.message ?? String(err);
+    if (args.json) {
+      io.stdout(JSON.stringify({ ok: false, error: code, detail: msg }) + '\n');
+    } else {
+      io.stderr(`relay export: ${code}: ${msg}\n`);
+    }
+    return 1;
+  }
+
   let rows: MemoryRow[];
   try {
     rows = await selectRows(workdir, args.safe);

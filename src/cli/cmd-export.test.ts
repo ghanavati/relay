@@ -341,3 +341,123 @@ describe('executeExportCommand — --safe filtering', () => {
     assert.strictEqual(parsed.version, '1.0');
   });
 });
+
+describe('executeExportCommand — RELAY_MEMORY_ALLOWED_WORKDIRS enforcement (privacy boundary)', () => {
+  // P1 privacy fix: when the env allowlist is set, executeExportCommand MUST refuse
+  // any workdir outside the allowlist BEFORE running any DB query, matching the
+  // assertWorkdirAllowed semantics in memory-store.ts.
+
+  beforeEach(() => {
+    getDb().prepare('DELETE FROM memories').run();
+  });
+
+  afterEach(() => {
+    delete process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'];
+  });
+
+  test('rejects --workdir outside allowlist with MEMORY_WORKDIR_FORBIDDEN (JSON mode)', async () => {
+    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = '/allowed/proj';
+    try {
+      const cap = makeIO('/allowed/proj');
+      const code = await executeExportCommand(
+        { safe: true, workdir: '/forbidden/proj', format: 'json', out: undefined, json: true },
+        cap.io
+      );
+      assert.strictEqual(code, 1, 'forbidden workdir export must fail with code 1');
+      const out = cap.stdout.join('').trim();
+      // JSON mode: structured error envelope on stdout
+      const parsed = JSON.parse(out) as { ok: boolean; error: string; detail?: string };
+      assert.strictEqual(parsed.ok, false);
+      // The error envelope carries the underlying RelayError code in `error` OR `detail`.
+      // Either way, MEMORY_WORKDIR_FORBIDDEN must surface so a caller can pattern-match.
+      const haystack = `${parsed.error} ${parsed.detail ?? ''}`;
+      assert.match(
+        haystack,
+        /MEMORY_WORKDIR_FORBIDDEN|RELAY_MEMORY_ALLOWED_WORKDIRS|Cross-workdir/,
+        `expected MEMORY_WORKDIR_FORBIDDEN to surface, got: ${out}`
+      );
+    } finally {
+      delete process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'];
+    }
+  });
+
+  test('rejects --workdir outside allowlist (human-readable stderr mode)', async () => {
+    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = '/allowed/proj';
+    try {
+      const cap = makeIO('/allowed/proj');
+      const code = await executeExportCommand(
+        { safe: true, workdir: '/forbidden/proj', format: 'json', out: undefined, json: false },
+        cap.io
+      );
+      assert.strictEqual(code, 1);
+      const err = cap.stderr.join('');
+      assert.match(
+        err,
+        /MEMORY_WORKDIR_FORBIDDEN|RELAY_MEMORY_ALLOWED_WORKDIRS|forbidden|not in/i,
+        `expected forbidden-workdir error on stderr, got: ${err}`
+      );
+    } finally {
+      delete process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'];
+    }
+  });
+
+  test('rejects --workdir=* (all-workdirs glob) when allowlist is set', async () => {
+    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = '/allowed/proj';
+    try {
+      const cap = makeIO('/allowed/proj');
+      const code = await executeExportCommand(
+        { safe: true, workdir: '*', format: 'json', out: undefined, json: true },
+        cap.io
+      );
+      assert.strictEqual(code, 1, '* (cross-workdir) must be blocked when allowlist is set');
+      const out = cap.stdout.join('').trim();
+      const parsed = JSON.parse(out) as { ok: boolean; error: string; detail?: string };
+      assert.strictEqual(parsed.ok, false);
+    } finally {
+      delete process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'];
+    }
+  });
+
+  test('allows --workdir inside allowlist (positive path)', async () => {
+    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = '/allowed/proj';
+    try {
+      // No seeds: empty store is fine — we only need the call to NOT throw and
+      // to return a success exit code.
+      const cap = makeIO('/allowed/proj');
+      const code = await executeExportCommand(
+        { safe: true, workdir: '/allowed/proj', format: 'json', out: undefined, json: false },
+        cap.io
+      );
+      assert.strictEqual(code, 0, 'allowed workdir must succeed');
+      const parsed = JSON.parse(cap.stdout.join('')) as { memories: unknown[] };
+      assert.deepStrictEqual(parsed.memories, []);
+    } finally {
+      delete process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'];
+    }
+  });
+
+  test('allows nested path under allowlist entry (prefix match)', async () => {
+    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = '/allowed/proj';
+    try {
+      const cap = makeIO('/allowed/proj/sub');
+      const code = await executeExportCommand(
+        { safe: true, workdir: '/allowed/proj/sub', format: 'json', out: undefined, json: false },
+        cap.io
+      );
+      assert.strictEqual(code, 0, 'nested path under allowlist must succeed');
+    } finally {
+      delete process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'];
+    }
+  });
+
+  test('no-op when RELAY_MEMORY_ALLOWED_WORKDIRS is unset (regression guard)', async () => {
+    // Ensure the new gate doesn't break the default no-allowlist case.
+    assert.strictEqual(process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'], undefined);
+    const cap = makeIO('/some/random/path');
+    const code = await executeExportCommand(
+      { safe: true, workdir: '/some/random/path', format: 'json', out: undefined, json: false },
+      cap.io
+    );
+    assert.strictEqual(code, 0, 'with no allowlist, any workdir is accepted');
+  });
+});
