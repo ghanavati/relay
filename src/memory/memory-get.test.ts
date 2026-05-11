@@ -59,6 +59,7 @@ describe('MemoryStore.getMemory()', () => {
 
   test('returned object has all required fields present and non-undefined', () => {
     const store = new MemoryStore();
+    const expiresAt = Date.now() + 1000000;
     const id = store.remember({
       content: 'Test content',
       memory_type: 'decision',
@@ -67,7 +68,7 @@ describe('MemoryStore.getMemory()', () => {
       pinned: true,
       source_run_id: 'run-123',
       git_ref: 'abc123',
-      expires_at: Date.now() + 1000000,
+      expires_at: expiresAt,
       entity_key: 'test-entity',
       sources: ['https://example.com'],
     });
@@ -89,7 +90,7 @@ describe('MemoryStore.getMemory()', () => {
     assert.strictEqual(memory.git_ref, 'abc123');
     assert.strictEqual(typeof memory.created_at, 'number');
     assert.strictEqual(typeof memory.accessed_at, 'number');
-    assert.strictEqual(memory.expires_at, Date.now() + 1000000);
+    assert.strictEqual(memory.expires_at, expiresAt);
     assert.strictEqual(memory.entity_key, 'test-entity');
     assert.deepStrictEqual(memory.sources, ['https://example.com']);
   });
