@@ -13,7 +13,7 @@ import { c, setColorMode, type ColorMode } from './cli/colors.js';
 // T50: env-driven cwd default for `relay memory recall` / `show-context`.
 import { resolveMemoryWorkdir } from './cli/resolve-memory-workdir.js';
 
-const VERSION = '0.1.1';
+const VERSION = '0.1.2';
 
 const io: CliIO = {
   cwd: cwd(),
