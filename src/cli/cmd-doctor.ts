@@ -335,15 +335,16 @@ export async function checkLmStudioModelLoaded(): Promise<ProviderProbe> {
 /**
  * Check presence of `.relay/auto-extract.json` consent files across known workdirs.
  *
- * Workdirs come from `RELAY_MEMORY_ALLOWED_WORKDIRS` (comma-separated). If unset, the
- * single workdir is `process.cwd()`.
+ * Workdirs come from `RELAY_MEMORY_ALLOWED_WORKDIRS` (colon-separated, matching
+ * the enforcement split in `src/memory/memory-store.ts`). If unset, the single
+ * workdir is `process.cwd()`.
  *
  *   - N/M workdirs have file → 'ok' if N>0, otherwise 'missing'
  */
 export async function checkConsentFiles(): Promise<ProviderProbe> {
   const raw = process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'];
   const workdirs = raw && raw.trim().length > 0
-    ? raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
+    ? raw.split(':').map((s) => s.trim()).filter((s) => s.length > 0)
     : [process.cwd()];
   let present = 0;
   for (const dir of workdirs) {
