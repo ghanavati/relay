@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Codex wave-4 audit (8 findings, 3 P1 + 5 P2)
+
+**Privacy boundary (P1):**
+- **Pause sentinel gate on installed hooks** (`cmd-memory-ops.ts`) — SessionStart and SessionEnd hook commands now short-circuit via `relay pause --check` when the project or global pause sentinel is present. Previously paused sessions still recalled+injected memory and still auto-extracted, breaking the documented privacy off-switch.
+- **`.relayignore` honored before extraction** (`cmd-memory-auto-extract.ts`) — Auto-extract pipeline now skips with status `skipped:project-disabled` when `<workdir>/.relayignore` is present. Previously a project opted-out via `relay project disable` still had transcript content reach the extractor and persisted as memory.
+- **Workdir allowlist enforced in export** (`cmd-export.ts`) — `relay export --workdir <path>` now throws `MEMORY_WORKDIR_FORBIDDEN` when `RELAY_MEMORY_ALLOWED_WORKDIRS` is set and the requested workdir is outside the allowlist. Previously export bypassed the boundary that other memory paths enforce.
+
+**Quality (P2):**
+- **`trust_level` column kept in sync** (`memory-store.ts`) — `markRecallSuccess()` and `upsert()` now recompute and persist `trust_level` via `computeTrustLevel(memory_source, success_recall_count, pinned)`. Previously the column was only stamped at INSERT, so the `--min-trust=provisional|trusted` SQL filter silently excluded memories that had been promoted via successful recalls or pin upserts.
+- **Doctor detects new `context emit` hook** (`cmd-doctor.ts`) — `checkCcGlobalHook` and `checkHookRoundtrip` now recognize both the new `relay context emit --target cc` hook and the legacy `relay memory recall | jq` pattern. Previously `relay doctor` reported `cc-global-hook` missing on healthy post-wave-4 installs.
+- **Verify smoke writes pass workdir** (`cmd-verify.ts`) — `runRememberCheck`, `runRecallCheck`, and `runDbRoundtripCheck` now thread `io.cwd` as the workdir argument to `MemoryStore.remember()`. Previously a healthy install under `RELAY_MEMORY_ALLOWED_WORKDIRS` reported critical `remember`/`db-roundtrip` failures.
+- **Hook uninstall idempotent on missing file** (`cmd-memory-ops.ts`) — `relay memory hook --uninstall` now returns a no-op success when `~/.claude/settings.json` does not exist. Previously it threw ENOENT on fresh `$HOME` or fresh project setup.
+- **Doctor splits allowlist on `:` not `,`** (`cmd-doctor.ts`) — `checkConsentFiles` now uses colon separators to match the rest of the system (`memory-store.ts:55`). Previously the value `/proj/a:/proj/b` was treated as a single path and both projects falsely reported "consent missing".
+
 ### Fixed
 - Hardened the one-command installer and setup flow: non-interactive setup is now the default, `relay setup --clean` removes Relay-managed hooks idempotently, SessionEnd hook logging creates `~/.relay` before redirecting, and installer verification now runs `relay verify --json`.
 
