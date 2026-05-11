@@ -819,7 +819,7 @@ describe('checkConsentFiles', () => {
   });
 
   test('no consent file in any workdir → status missing', async () => {
-    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = `${tempA},${tempB}`;
+    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = `${tempA}:${tempB}`;
     const probe = await checkConsentFiles();
     assert.strictEqual(probe.name, 'consent-files');
     assert.strictEqual(probe.status, 'missing');
@@ -828,7 +828,7 @@ describe('checkConsentFiles', () => {
   });
 
   test('1 of 2 workdirs has consent → status ok "1/2"', async () => {
-    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = `${tempA},${tempB}`;
+    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = `${tempA}:${tempB}`;
     await mkdir(join(tempA, '.relay'), { recursive: true });
     await writeFile(join(tempA, '.relay', 'auto-extract.json'), '{}', 'utf8');
     const probe = await checkConsentFiles();
@@ -837,7 +837,7 @@ describe('checkConsentFiles', () => {
   });
 
   test('all workdirs have consent → status ok "2/2"', async () => {
-    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = `${tempA},${tempB}`;
+    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = `${tempA}:${tempB}`;
     await mkdir(join(tempA, '.relay'), { recursive: true });
     await mkdir(join(tempB, '.relay'), { recursive: true });
     await writeFile(join(tempA, '.relay', 'auto-extract.json'), '{}', 'utf8');
@@ -855,5 +855,20 @@ describe('checkConsentFiles', () => {
     assert.strictEqual(probe.name, 'consent-files');
     assert.ok(probe.status === 'missing' || probe.status === 'ok');
     assert.match(probe.detail, /\/1/);
+  });
+
+  // P2 codex finding #8 — regression test for the comma/colon split bug.
+  // Before fix: `raw.split(',')` produced one bogus workdir `/tmp/a:/tmp/b`, so
+  // even with both consent files present, `present` was 0 and status='missing'.
+  test('colon-separated PATH-style workdirs → both detected (Codex finding #8)', async () => {
+    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = `${tempA}:${tempB}`;
+    await mkdir(join(tempA, '.relay'), { recursive: true });
+    await mkdir(join(tempB, '.relay'), { recursive: true });
+    await writeFile(join(tempA, '.relay', 'auto-extract.json'), '{}', 'utf8');
+    await writeFile(join(tempB, '.relay', 'auto-extract.json'), '{}', 'utf8');
+    const probe = await checkConsentFiles();
+    assert.strictEqual(probe.status, 'ok');
+    // Detail must reflect 2 total workdirs (not 1 single mashed-together path).
+    assert.match(probe.detail, /2\/2 workdirs have consent/);
   });
 });
