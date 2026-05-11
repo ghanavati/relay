@@ -396,14 +396,27 @@ export class MemoryStore {
       // Write fresh entry
       const content = sanitizeContent(params.content);
       const tokenCount = estimateTokens(content);
+      // P2 codex finding #4 — mirror remember()'s behavior: stamp the computed
+      // trust_level at insert time so the SQL filter in buildWhereClause()
+      // sees a consistent column value. Without this, a human-sourced upsert
+      // ('human' → 'provisional' per computeTrustLevel) would fall back to
+      // the schema default 'unverified' and be excluded by
+      // --min-trust=provisional. Pinning state on upsert also needs to flow
+      // through (human + pinned → 'trusted').
+      const initialTrustLevel = computeTrustLevel(
+        (params.memory_source ?? 'unknown') as MemorySource,
+        0,
+        params.pinned === true,
+      );
       this.db
         .prepare(
           `INSERT INTO memories (
             memory_id, memory_type, content, tags_json, workdir,
             token_count, pinned, source_run_id, git_ref,
             superseded_by, created_at, accessed_at, expires_at,
-            entity_key, sources_json, memory_source, files_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`
+            entity_key, sources_json, memory_source, files_json,
+            trust_level
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           newId,
@@ -422,6 +435,7 @@ export class MemoryStore {
           JSON.stringify(params.sources ?? []),
           params.memory_source ?? 'unknown',
           JSON.stringify(params.files ?? []),
+          initialTrustLevel,
         );
 
       return newId;
@@ -695,9 +709,31 @@ export class MemoryStore {
          AND pinned = 0
          AND tags_json NOT LIKE '%"auto-extract"%'`
     );
+    // P2 codex finding #4 — the persisted trust_level column drives the
+    // --min-trust SQL filter in buildWhereClause(). Without writing it back
+    // here, a memory promoted from `unverified` → `provisional` (1st recall)
+    // or → `trusted` (>=AUTOPIN_THRESHOLD recalls) keeps its stale column
+    // value and is silently excluded by `min_trust='provisional'`. N+1 is
+    // acceptable: markRecallSuccess operates on a handful of IDs per call.
+    const readState = this.db.prepare(
+      'SELECT memory_source, success_recall_count, pinned FROM memories WHERE memory_id = ?'
+    );
+    const updateTrust = this.db.prepare(
+      'UPDATE memories SET trust_level = ? WHERE memory_id = ?'
+    );
     for (const id of memoryIds) {
       update.run(id);
       autoPin.run(id);
+      const row = readState.get(id) as
+        | { memory_source: string; success_recall_count: number; pinned: number }
+        | undefined;
+      if (!row) continue;
+      const newLevel = computeTrustLevel(
+        (row.memory_source ?? 'unknown') as MemorySource,
+        row.success_recall_count ?? 0,
+        row.pinned === 1,
+      );
+      updateTrust.run(newLevel, id);
     }
   }
 
