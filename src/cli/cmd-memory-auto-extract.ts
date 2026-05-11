@@ -76,6 +76,7 @@ type HookPayload = z.infer<typeof HookPayloadSchema>;
 export type AutoExtractStatus =
   | 'ok'
   | 'skipped:disabled'
+  | 'skipped:project-disabled'
   | 'skipped:no-consent'
   | 'skipped:bad-payload'
   | 'skipped:no-transcript'
@@ -218,6 +219,26 @@ async function runPipeline(
   // 1. stdin → payload
   const payload = await readPayload(args, io, deps, audit);
   if (!payload.ok) return 0;
+
+  // 1a. project opt-out — `relay project disable` writes `.relayignore` at the
+  // project root signalling that ALL Relay automation (extract/recall/hook/
+  // share) must be suppressed for that workdir. Honour the marker BEFORE
+  // loading the transcript or any LLM call so opted-out projects never have
+  // their tool output reach the extraction model or get persisted as memory.
+  //
+  // This check intentionally runs ahead of consent loading so that even a
+  // `consent.json` with `enabled:true` cannot override a project-level
+  // opt-out — the explicit `disable` action is the stronger signal.
+  if (await isProjectOptedOut(payload.value.cwd)) {
+    await emit(io, args, 'skipped:project-disabled', audit, {
+      ts: new Date().toISOString(),
+      session_id: payload.value.session_id,
+      cwd: payload.value.cwd,
+      status: 'skipped:project-disabled',
+      duration_ms: now() - startedAt,
+    });
+    return 0;
+  }
 
   // 2. consent
   const consentResult = await (deps.loadConsent ?? loadConsent)(payload.value.cwd);
@@ -774,6 +795,28 @@ function parsePositiveInt(v: unknown): number | undefined {
 }
 
 /**
+ * Project opt-out check — returns true when `<workdir>/.relayignore` exists.
+ *
+ * The `.relayignore` file is written by `relay project disable` (see
+ * `cmd-project.ts`) and signals that ALL Relay automation must be suppressed
+ * for that workdir. The marker takes precedence over any per-feature consent
+ * file — an explicit `disable` action is the stronger user signal than a
+ * forgotten `consent.json` left around from earlier opt-in.
+ *
+ * File-local intentionally — the marker is a simple file existence check and
+ * does not warrant export. Keeping it private prevents accidental coupling
+ * to other modules (another agent may be editing memory-store.ts in parallel).
+ */
+async function isProjectOptedOut(workdir: string): Promise<boolean> {
+  try {
+    await stat(join(workdir, '.relayignore'));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * T4 — return true when `endpoint` resolves to a localhost host.
  *
  * Localhost = `127.0.0.1`, `::1`, or `localhost`. Any unparseable URL is
@@ -892,4 +935,3 @@ export function parseLmsPsOutput(stdout: string): string | null {
 
 // Keep the imports above marked as used for downstream type references.
 void readFile;
-void stat;

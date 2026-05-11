@@ -1175,6 +1175,72 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
     assert.strictEqual(out.lessons_failed, 2);
     assert.strictEqual(readMemories(projectCwd).length, 0);
   });
+
+  // ── Project opt-out (.relayignore) — P1 privacy bypass ─────────────────────
+  //
+  // `relay project disable` writes a `.relayignore` file at the project root
+  // signalling that ALL Relay automation (extract, recall, hook, share) must
+  // be suppressed for that workdir. The auto-extract pipeline MUST honour
+  // that marker before loading the transcript or invoking the LLM — even when
+  // a project-local `consent.json` says enabled:true.
+  test('13. .relayignore present → status skipped:project-disabled, LLM never called, 0 written', async () => {
+    // Write the opt-out marker that `relay project disable` would create.
+    await writeFile(
+      join(projectCwd, '.relayignore'),
+      'extract: off\nrecall: off\nhook: off\nshareable: false\n',
+      'utf8'
+    );
+
+    // Spy that fails the test if the LLM extractor is invoked.
+    let extractCallCount = 0;
+    const deps: AutoExtractDeps = {
+      // Consent says enabled — the only thing blocking the pipeline must be
+      // the project-level opt-out marker.
+      loadConsent: async () => ({ ok: true, consent: consentEnabled() }),
+      loadTranscript: () => {
+        throw new Error('loadTranscript must not run when .relayignore is present');
+      },
+      extractLessons: async (_opts: ExtractionOptions) => {
+        extractCallCount += 1;
+        throw new Error('extractLessons must not run when .relayignore is present');
+      },
+      checkBerry: async (_opts: CheckLessonOptions): Promise<BerryCheckResult> => {
+        throw new Error('checkBerry must not run when .relayignore is present');
+      },
+      remember: () => {
+        throw new Error('remember must not run when .relayignore is present');
+      },
+      auditPath,
+      discoverModel: async (): Promise<string | null> => 'qwen/qwen3-coder-next',
+    };
+
+    const cap = makeIO(projectCwd);
+    const code = await withStdin(
+      makePayload({ sessionId: 'sess-relayignore', cwd: projectCwd, transcriptPath }),
+      () =>
+        executeMemoryAutoExtractCommand(
+          { fromStdin: true, maxBytes: undefined, json: true },
+          cap.io,
+          deps
+        )
+    );
+
+    assert.strictEqual(code, 0, 'hooks must never block — exit 0 even when project disabled');
+    const out = JSON.parse(cap.stdout.join('').trim()) as {
+      status: string;
+      cwd: string;
+      session_id: string;
+    };
+    assert.strictEqual(
+      out.status,
+      'skipped:project-disabled',
+      'project opt-out must short-circuit the pipeline'
+    );
+    assert.strictEqual(out.cwd, projectCwd);
+    assert.strictEqual(out.session_id, 'sess-relayignore');
+    assert.strictEqual(extractCallCount, 0, 'LLM extractor must never be invoked');
+    assert.strictEqual(readMemories(projectCwd).length, 0, 'no memory rows must be written');
+  });
 });
 
 // ── Pure-function unit tests for T4 / T9 helpers ─────────────────────────────
