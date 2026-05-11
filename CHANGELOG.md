@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Beyond v0.2 (planned)
+- v0.3.0: TUI visual layer (Ink) for history + live run progress + cost dashboard
+- v0.4.0: skill packs (slim), `relay run --pipe`, `relay queue cron`, `relay watch <dir>`, brew formula
+- v1.0.0: stable surface, public if not already
+
+## [0.1.2] — 2026-05-11
+
+Codex wave-4 audit fixes — 3 privacy P1s and 5 quality P2s. No new features.
+
 ### Fixed — Codex wave-4 audit (8 findings, 3 P1 + 5 P2)
 
 **Privacy boundary (P1):**
@@ -21,13 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Hook uninstall idempotent on missing file** (`cmd-memory-ops.ts`) — `relay memory hook --uninstall` now returns a no-op success when `~/.claude/settings.json` does not exist. Previously it threw ENOENT on fresh `$HOME` or fresh project setup.
 - **Doctor splits allowlist on `:` not `,`** (`cmd-doctor.ts`) — `checkConsentFiles` now uses colon separators to match the rest of the system (`memory-store.ts:55`). Previously the value `/proj/a:/proj/b` was treated as a single path and both projects falsely reported "consent missing".
 
-### Fixed
+### Other fixes (v0.1.2)
 - Hardened the one-command installer and setup flow: non-interactive setup is now the default, `relay setup --clean` removes Relay-managed hooks idempotently, SessionEnd hook logging creates `~/.relay` before redirecting, and installer verification now runs `relay verify --json`.
 
-### Beyond v0.2 (planned)
-- v0.3.0: TUI visual layer (Ink) for history + live run progress + cost dashboard
-- v0.4.0: skill packs (slim), `relay run --pipe`, `relay queue cron`, `relay watch <dir>`, brew formula
-- v1.0.0: stable surface, public if not already
+### Tests
+- 972/972 passing (+26 new tests covering all 8 codex findings).
 
 ## [0.2.0] — 2026-05-09
 
@@ -175,7 +182,8 @@ Initial extract from the relay-mcp monorepo. Solo CLI distro focused on memory +
 ### Known limitations
 - `relay budget`, `relay corpus` commands deferred to v0.2 (BudgetStore needs per-provider scope; corpus is unused without QMD integration).
 
-[Unreleased]: https://github.com/ghanavati/relay/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ghanavati/relay/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/ghanavati/relay/compare/v0.1.1...v0.1.2
 [0.2.0]: https://github.com/ghanavati/relay/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/ghanavati/relay/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ghanavati/relay/releases/tag/v0.1.0
