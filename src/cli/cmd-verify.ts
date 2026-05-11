@@ -43,22 +43,27 @@ const SMOKE_TAG = 'relay-verify-smoke';
  * as the real runner.
  */
 export interface VerifyDeps {
-  runRememberCheck?: (token: string) => Promise<VerifyCheck>;
-  runRecallCheck?: (token: string) => Promise<VerifyCheck>;
+  runRememberCheck?: (token: string, workdir: string) => Promise<VerifyCheck>;
+  runRecallCheck?: (token: string, workdir: string) => Promise<VerifyCheck>;
   runContextEmitCheck?: (workdir: string, token: string) => Promise<VerifyCheck>;
   runHookCheck?: () => Promise<VerifyCheck>;
-  runDbRoundtripCheck?: () => Promise<VerifyCheck>;
+  runDbRoundtripCheck?: (workdir: string) => Promise<VerifyCheck>;
 }
 
-export async function runRememberCheck(token: string): Promise<VerifyCheck> {
+export async function runRememberCheck(token: string, workdir: string): Promise<VerifyCheck> {
   try {
     const { handleRemember } = await import('../tools/remember.js');
     const { RememberArgsSchema } = await import('../contracts/memory.js');
+    // SHIP-70 / P2: pass workdir so writes succeed under
+    // RELAY_MEMORY_ALLOWED_WORKDIRS (the documented production config). Without
+    // this, assertWorkdirAllowed(undefined) throws MEMORY_WORKDIR_FORBIDDEN and
+    // a healthy install reports a false critical failure.
     const args = RememberArgsSchema.parse({
       content: `relay verify smoke test ${token}`,
       memory_type: 'fact',
       tags: [SMOKE_TAG, token],
       pinned: false,
+      workdir,
     });
     const response = handleRemember(args, 'human') as { content: Array<{ type: string; text: string }>; isError?: boolean };
     if (response.isError) {
@@ -75,14 +80,18 @@ export async function runRememberCheck(token: string): Promise<VerifyCheck> {
   }
 }
 
-export async function runRecallCheck(token: string): Promise<VerifyCheck> {
+export async function runRecallCheck(token: string, workdir: string): Promise<VerifyCheck> {
   try {
     const { handleRecall } = await import('../tools/recall.js');
     const { RecallArgsSchema } = await import('../contracts/memory.js');
+    // P2: scope the recall to the same workdir we wrote against so both
+    // assertWorkdirAllowed(workdir) passes AND the SQL filter actually finds
+    // the row written by runRememberCheck above.
     const args = RecallArgsSchema.parse({
       query: token,
       tags: [SMOKE_TAG],
       token_budget: 800,
+      workdir,
     });
     const response = handleRecall(args) as { content: Array<{ type: string; text: string }>; isError?: boolean };
     if (response.isError) {
@@ -134,15 +143,18 @@ export async function runHookCheck(): Promise<VerifyCheck> {
   }
 }
 
-export async function runDbRoundtripCheck(): Promise<VerifyCheck> {
+export async function runDbRoundtripCheck(workdir: string): Promise<VerifyCheck> {
   try {
     const { MemoryStore } = await import('../memory/memory-store.js');
     const store = new MemoryStore();
     const probeContent = `verify db roundtrip ${randomUUID()}`;
+    // P2: pass workdir so the direct MemoryStore.remember() write succeeds when
+    // RELAY_MEMORY_ALLOWED_WORKDIRS is set (assertWorkdirAllowed gate).
     const id = store.remember({
       content: probeContent,
       memory_type: 'fact',
       tags: [SMOKE_TAG, 'db-roundtrip'],
+      workdir,
     });
     const fetched = store.getMemory(id);
     if (!fetched) {
@@ -169,15 +181,15 @@ export async function executeVerifyCommand(args: VerifyArgs, io: CliIO, _deps?: 
   const dbRoundtripFn = _deps?.runDbRoundtripCheck ?? runDbRoundtripCheck;
 
   // 1. write a memory
-  checks.push(await rememberFn(token));
+  checks.push(await rememberFn(token, io.cwd));
   // 2. recall it back
-  checks.push(await recallFn(token));
+  checks.push(await recallFn(token, io.cwd));
   // 3. context emit (recalled_lessons layer)
   checks.push(await contextEmitFn(io.cwd, token));
   // 4. hook script roundtrip
   checks.push(await hookFn());
   // 5. direct db roundtrip
-  checks.push(await dbRoundtripFn());
+  checks.push(await dbRoundtripFn(io.cwd));
 
   const summary: VerifySummary = checks.reduce(
     (acc, ch) => {
