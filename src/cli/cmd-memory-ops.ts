@@ -267,6 +267,18 @@ export async function executeMemoryHookCommand(
     // ENOENT (file doesn't exist yet) → safe to start fresh.
     // Anything else (EACCES, EISDIR, etc.) → re-throw; caller handles it.
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    // P2 fix (Codex finding #7): uninstall on a fresh $HOME with no settings.json
+    // is a no-op success — there is nothing to remove. Returning early avoids the
+    // downstream `writeFile` call that would throw ENOENT (parent .claude/ missing)
+    // and also avoids creating an empty settings file just to satisfy uninstall.
+    if (!command.install) {
+      if (command.json) {
+        io.stdout(JSON.stringify({ installed: false, path: settingsPath, event: hookEventName, action: 'no-op', reason: 'settings-not-found' }) + '\n');
+      } else {
+        io.stdout(`${hookEventName} hook uninstall: no settings file at ${settingsPath} — nothing to remove.\n`);
+      }
+      return 0;
+    }
   }
   if (raw !== undefined) {
     try {
