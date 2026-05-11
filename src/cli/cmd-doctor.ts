@@ -9,8 +9,20 @@ import { probeCodex, probeLmStudio, probeEnvKey, type ProviderProbe } from './pr
 
 export interface DoctorArgs { json: boolean; }
 
-/** Hook command we expect to find installed at the global CC settings level. */
-const HOOK_COMMAND_FRAGMENT = 'relay memory recall';
+/**
+ * Detect whether a SessionStart hook command looks like a relay-installed hook.
+ *
+ * Matches both the current `relay context emit` shape (post-wave-4 refactor) and
+ * the legacy `relay memory recall` shape (pre-wave-4) so doctor reports `ok` on
+ * both fresh installs and not-yet-upgraded users. Match is intentionally loose:
+ * the command must invoke the `relay` binary AND mention one of the recognized
+ * subcommands. Tightening this fragment beyond that risks false negatives the
+ * moment we tweak hook flags again.
+ */
+function isRelayHookCommand(command: string): boolean {
+  if (!/\brelay\b/.test(command)) return false;
+  return /\b(context\s+emit|memory\s+recall)\b/.test(command);
+}
 
 /**
  * Check whether the relay SessionStart hook is installed at `~/.claude/settings.json`.
@@ -39,7 +51,7 @@ export async function checkCcGlobalHook(): Promise<ProviderProbe> {
     const inner = (Array.isArray(entry['hooks']) ? entry['hooks'] : []) as Array<Record<string, unknown>>;
     for (const cmd of inner) {
       const command = typeof cmd['command'] === 'string' ? cmd['command'] : '';
-      if (command.includes(HOOK_COMMAND_FRAGMENT)) {
+      if (isRelayHookCommand(command)) {
         return { name: 'cc-global-hook', status: 'ok', detail: `installed in ${settingsPath}` };
       }
     }
@@ -50,15 +62,17 @@ export async function checkCcGlobalHook(): Promise<ProviderProbe> {
 /**
  * Invoke the relay hook command in a subshell and verify the JSON envelope shape.
  * Confirms the hook produces `{ hookSpecificOutput: { hookEventName, additionalContext } }`.
+ *
+ * Post-wave-4: the installed hook uses `relay context emit --target cc` (which
+ * emits the envelope directly — no jq pipeline). We re-run that command here so
+ * the round-trip mirrors what CC will actually invoke.
  */
 export async function checkHookRoundtrip(): Promise<ProviderProbe> {
-  // Use a minimal recall+jq pipeline mirroring the installed hook. We don't depend on the
-  // exact installed command — we re-run a known-good shape so the round-trip is independent.
-  const cmd = `relay memory recall --token-budget 200 --type lesson --type fact --type decision --type context --json 2>/dev/null | jq -c '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:(if (.memories | length > 0) then "ok" else "" end)}}' 2>/dev/null`;
+  const cmd = `relay context emit --target cc --token-budget 200 2>/dev/null`;
   return new Promise<ProviderProbe>((resolve) => {
     execFile('bash', ['-c', cmd], { encoding: 'utf-8', timeout: 8000 }, (err, stdoutData) => {
       if (err) {
-        resolve({ name: 'hook-roundtrip', status: 'failed', detail: 'hook subprocess failed (relay or jq missing?)' });
+        resolve({ name: 'hook-roundtrip', status: 'failed', detail: 'hook subprocess failed (relay missing?)' });
         return;
       }
       const out = (stdoutData as string).trim();
