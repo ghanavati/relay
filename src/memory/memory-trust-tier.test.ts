@@ -3,6 +3,7 @@ process.env['RELAY_DB_PATH'] = ':memory:';
 import { test, describe } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { MemoryStore, computeTrustLevel } from './memory-store.js';
+import { getDb } from '../runtime/store/db.js';
 
 describe('SHIP-67: computeTrustLevel pure function', () => {
   test('human + pinned = trusted', () => {
@@ -134,5 +135,105 @@ describe('T14: trust-tier fence — auto-extract tag exempt from autoPin', () =>
     const mem = store.getMemory(id);
     assert.ok(mem);
     assert.strictEqual(mem.pinned, false, 'tag fence must match auto-extract anywhere in the tags array');
+  });
+});
+
+/**
+ * P2 codex finding #4 — `trust_level` column must stay in sync with
+ * `computeTrustLevel(memory_source, success_recall_count, pinned)`.
+ *
+ * Without these tests, a memory promoted via markRecallSuccess() or upsert()
+ * keeps a stale `trust_level` column, and the --min-trust=provisional SQL
+ * filter (memory-store.ts:663-665) excludes memories that are provisional
+ * in reality. Inspect the persisted column directly so we catch the bug
+ * even if rowToMemory() happens to recompute trust on read.
+ */
+describe('P2 codex #4: trust_level persists in sync with markRecallSuccess + upsert', () => {
+  /** Bypass rowToMemory() — read the raw column the SQL filter actually uses. */
+  function readPersistedTrustLevel(memoryId: string): string {
+    const db = getDb();
+    const row = db
+      .prepare('SELECT trust_level FROM memories WHERE memory_id = ?')
+      .get(memoryId) as { trust_level: string } | undefined;
+    if (!row) throw new Error(`expected row for ${memoryId}, got undefined`);
+    return row.trust_level;
+  }
+
+  test('A: markRecallSuccess writes computed trust_level back to the persisted column', () => {
+    const store = new MemoryStore();
+    const id = store.remember({
+      memory_type: 'fact',
+      content: 'persisted-trust auto entry',
+      memory_source: 'auto-run-recorder',
+    });
+    // Auto + 0 recalls + unpinned → unverified at insert time.
+    assert.strictEqual(readPersistedTrustLevel(id), 'unverified');
+
+    // 1 recall → provisional (auto-run-recorder with >=1 success).
+    store.markRecallSuccess([id]);
+    assert.strictEqual(readPersistedTrustLevel(id), 'provisional');
+
+    // 4 more recalls → 5 total. >= AUTOPIN_THRESHOLD (3) → trusted.
+    store.markRecallSuccess([id]);
+    store.markRecallSuccess([id]);
+    store.markRecallSuccess([id]);
+    store.markRecallSuccess([id]);
+    assert.strictEqual(readPersistedTrustLevel(id), 'trusted');
+  });
+
+  test('B: upsert recomputes trust_level when pinning state changes', () => {
+    const store = new MemoryStore();
+    // Human-source, unpinned → provisional from computeTrustLevel rules.
+    const id1 = store.upsert({
+      entity_key: 'p2-trust-test-entity',
+      content: 'human entry, unpinned first',
+      memory_type: 'fact',
+      memory_source: 'human',
+      pinned: false,
+    });
+    assert.strictEqual(
+      readPersistedTrustLevel(id1),
+      'provisional',
+      'human + unpinned should persist as provisional, not unverified default'
+    );
+
+    // Re-upsert with pinned=true → computeTrustLevel('human', 0, true) === 'trusted'.
+    const id2 = store.upsert({
+      entity_key: 'p2-trust-test-entity',
+      content: 'human entry, now pinned',
+      memory_type: 'fact',
+      memory_source: 'human',
+      pinned: true,
+    });
+    assert.notStrictEqual(id1, id2, 'upsert must mint a new id when superseding');
+    assert.strictEqual(
+      readPersistedTrustLevel(id2),
+      'trusted',
+      'human + pinned should persist as trusted on upsert'
+    );
+  });
+
+  test('C: --min-trust=provisional filter returns auto memory after a single recall (regression)', () => {
+    const store = new MemoryStore();
+    const id = store.remember({
+      memory_type: 'fact',
+      content: 'auto memory promoted to provisional by recall',
+      memory_source: 'auto-run-recorder',
+      workdir: '/p2-trust-filter',
+    });
+    // One successful recall should promote auto-run-recorder to provisional
+    // AND persist that change so the SQL filter accepts it.
+    store.markRecallSuccess([id]);
+
+    const filtered = store.getCandidates({
+      token_budget: 4000,
+      workdir: '*',
+      min_trust: 'provisional',
+    });
+    const ids = new Set(filtered.map(m => m.memory_id));
+    assert.ok(
+      ids.has(id),
+      'min_trust=provisional must include an auto memory after 1 successful recall — previously excluded because trust_level column stayed unverified'
+    );
   });
 });
