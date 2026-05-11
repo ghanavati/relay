@@ -246,6 +246,66 @@ describe('checkCcGlobalHook', () => {
     assert.strictEqual(probe.status, 'failed');
     assert.match(probe.detail, /not valid JSON/);
   });
+
+  // P2 codex finding #5 — regression test for the wave-4 context-emit refactor.
+  // Before fix: doctor only matched `relay memory recall`, so the post-wave-4
+  // hook (`relay context emit --target cc …`) was reported as MISSING on
+  // healthy installs.
+  test('settings.json with NEW context-emit hook → status ok (Codex finding #5)', async () => {
+    await mkdir(join(tempHome, '.claude'), { recursive: true });
+    await writeFile(
+      join(tempHome, '.claude', 'settings.json'),
+      JSON.stringify({
+        hooks: {
+          SessionStart: [
+            {
+              hooks: [
+                {
+                  type: 'command',
+                  command:
+                    'relay pause --check --workdir "${CLAUDE_PROJECT_DIR:-$PWD}" 2>/dev/null && exit 0; ' +
+                    'relay context emit --target cc --workdir "${CLAUDE_PROJECT_DIR:-$PWD}" 2>/dev/null || true',
+                },
+              ],
+            },
+          ],
+        },
+      }),
+      'utf8',
+    );
+    const probe = await checkCcGlobalHook();
+    assert.strictEqual(probe.status, 'ok');
+    assert.match(probe.detail, /installed in/);
+  });
+
+  // Backward compatibility — older installs running the legacy `relay memory recall`
+  // hook (pre wave-4) should still be detected as healthy. The fragment matcher
+  // recognizes BOTH the old and new hook shapes so we don't false-alarm users
+  // who haven't re-run `relay init` after the refactor.
+  test('settings.json with LEGACY memory-recall hook → status ok (backward compat)', async () => {
+    await mkdir(join(tempHome, '.claude'), { recursive: true });
+    await writeFile(
+      join(tempHome, '.claude', 'settings.json'),
+      JSON.stringify({
+        hooks: {
+          SessionStart: [
+            {
+              hooks: [
+                {
+                  type: 'command',
+                  command:
+                    'relay memory recall --token-budget 200 --type lesson --json | jq -c \'{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:.}}\'',
+                },
+              ],
+            },
+          ],
+        },
+      }),
+      'utf8',
+    );
+    const probe = await checkCcGlobalHook();
+    assert.strictEqual(probe.status, 'ok');
+  });
 });
 
 describe('checkHookRoundtrip', () => {
@@ -268,21 +328,18 @@ describe('checkHookRoundtrip', () => {
     await rm(tempBin, { recursive: true, force: true });
   });
 
-  test('relay returns memories → hook envelope shape valid → status ok', async () => {
-    // Stub `relay` and `jq` so the inner pipeline produces the canonical envelope.
+  // Post-wave-4: the installed hook is `relay context emit --target cc`, which
+  // emits the SessionStart envelope directly (no jq pipeline). We stub `relay`
+  // on PATH so its stdout is the envelope and the round-trip is deterministic.
+
+  test('relay emits valid envelope → status ok', async () => {
     await writeFile(
       join(tempBin, 'relay'),
-      '#!/usr/bin/env bash\necho \'{"memories":[{"content":"x"}]}\'\n',
-      'utf8',
-    );
-    await writeFile(
-      join(tempBin, 'jq'),
-      '#!/usr/bin/env bash\ncat >/dev/null\necho \'{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"ok"}}\'\n',
+      '#!/usr/bin/env bash\necho \'{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"ok"}}\'\n',
       'utf8',
     );
     const { chmod } = await import('node:fs/promises');
     await chmod(join(tempBin, 'relay'), 0o755);
-    await chmod(join(tempBin, 'jq'), 0o755);
     process.env['PATH'] = `${tempBin}:${savedPath ?? ''}`;
     const probe = await checkHookRoundtrip();
     assert.strictEqual(probe.name, 'hook-roundtrip');
@@ -290,40 +347,27 @@ describe('checkHookRoundtrip', () => {
     assert.match(probe.detail, /JSON envelope shape valid/);
   });
 
-  test('relay returns no memories → hook still produces valid envelope (additionalContext="") → ok', async () => {
+  test('relay emits empty-but-valid envelope (additionalContext="") → status ok', async () => {
     await writeFile(
       join(tempBin, 'relay'),
-      '#!/usr/bin/env bash\necho \'{"memories":[]}\'\n',
-      'utf8',
-    );
-    await writeFile(
-      join(tempBin, 'jq'),
-      '#!/usr/bin/env bash\ncat >/dev/null\necho \'{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":""}}\'\n',
+      '#!/usr/bin/env bash\necho \'{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":""}}\'\n',
       'utf8',
     );
     const { chmod } = await import('node:fs/promises');
     await chmod(join(tempBin, 'relay'), 0o755);
-    await chmod(join(tempBin, 'jq'), 0o755);
     process.env['PATH'] = `${tempBin}:${savedPath ?? ''}`;
     const probe = await checkHookRoundtrip();
     assert.strictEqual(probe.status, 'ok');
   });
 
   test('hook produces malformed output → status failed', async () => {
-    // jq stub emits non-JSON
     await writeFile(
       join(tempBin, 'relay'),
-      '#!/usr/bin/env bash\necho \'{}\'\n',
-      'utf8',
-    );
-    await writeFile(
-      join(tempBin, 'jq'),
-      '#!/usr/bin/env bash\ncat >/dev/null\necho "not-json-output"\n',
+      '#!/usr/bin/env bash\necho "not-json-output"\n',
       'utf8',
     );
     const { chmod } = await import('node:fs/promises');
     await chmod(join(tempBin, 'relay'), 0o755);
-    await chmod(join(tempBin, 'jq'), 0o755);
     process.env['PATH'] = `${tempBin}:${savedPath ?? ''}`;
     const probe = await checkHookRoundtrip();
     assert.strictEqual(probe.status, 'failed');
@@ -333,17 +377,11 @@ describe('checkHookRoundtrip', () => {
   test('hook produces JSON but missing hookSpecificOutput → status failed', async () => {
     await writeFile(
       join(tempBin, 'relay'),
-      '#!/usr/bin/env bash\necho \'{}\'\n',
-      'utf8',
-    );
-    await writeFile(
-      join(tempBin, 'jq'),
-      '#!/usr/bin/env bash\ncat >/dev/null\necho \'{"some":"thing"}\'\n',
+      '#!/usr/bin/env bash\necho \'{"some":"thing"}\'\n',
       'utf8',
     );
     const { chmod } = await import('node:fs/promises');
     await chmod(join(tempBin, 'relay'), 0o755);
-    await chmod(join(tempBin, 'jq'), 0o755);
     process.env['PATH'] = `${tempBin}:${savedPath ?? ''}`;
     const probe = await checkHookRoundtrip();
     assert.strictEqual(probe.status, 'failed');
