@@ -2,7 +2,7 @@ process.env['RELAY_DB_PATH'] = ':memory:';
 
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { executeVerifyCommand, type VerifyCheck, type VerifyDeps } from './cmd-verify.js';
@@ -309,5 +309,78 @@ describe('executeVerifyCommand', () => {
     assert.match(out, /check\(s\) failed/);
     assert.strictEqual(code, 1);
     await rm(tmp, { recursive: true, force: true });
+  });
+
+  // ---------------------------------------------------------------------------
+  // P2 codex finding #6 — RELAY_MEMORY_ALLOWED_WORKDIRS regression
+  // ---------------------------------------------------------------------------
+  // When the documented production allowlist is set, the smoke writes used
+  // workdir=undefined → MemoryStore.assertWorkdirAllowed(undefined) threw
+  // MEMORY_WORKDIR_FORBIDDEN → healthy installs reported false critical
+  // failures on `remember` and `db-roundtrip`. The fix passes io.cwd through
+  // to every smoke write/recall so the allowlist gate passes.
+  test('passes smoke writes under RELAY_MEMORY_ALLOWED_WORKDIRS (P2 codex finding #6)', async () => {
+    const ALLOW_LIST_ENV = 'RELAY_MEMORY_ALLOWED_WORKDIRS';
+    const ALLOWED_WORKDIR = '/tmp/relay-verify-test';
+    const savedAllowList = process.env[ALLOW_LIST_ENV];
+
+    try {
+      // Set the allowlist BEFORE the executeVerifyCommand call so
+      // assertWorkdirAllowed() reads it on every internal write.
+      process.env[ALLOW_LIST_ENV] = ALLOWED_WORKDIR;
+      await mkdir(join(ALLOWED_WORKDIR, '.relay'), { recursive: true });
+
+      const cap = makeIO(ALLOWED_WORKDIR);
+      const code = await executeVerifyCommand({ json: true }, cap.io);
+
+      const joined = cap.stdout.join('').trim();
+      const parsed = JSON.parse(joined) as {
+        checks: VerifyCheck[];
+        summary: { pass: number; fail: number; skip: number };
+        ok: boolean;
+      };
+
+      // Critical fails for the two writes used to be guaranteed under this env.
+      // Asserting the negative pins the regression closed: even with the
+      // allowlist set, the smoke writes must succeed because they now scope
+      // to io.cwd (which is on the allow-list).
+      const remember = parsed.checks.find(c => c.name === 'remember');
+      const dbRoundtrip = parsed.checks.find(c => c.name === 'db-roundtrip');
+      assert.ok(remember, 'remember check must be present');
+      assert.ok(dbRoundtrip, 'db-roundtrip check must be present');
+
+      const isCriticalFail = (ch: VerifyCheck): boolean =>
+        ch.critical === true && ch.status === 'fail';
+
+      assert.strictEqual(
+        isCriticalFail(remember),
+        false,
+        `remember must not critical-fail under allowlist; message=${remember.message}`,
+      );
+      assert.strictEqual(
+        isCriticalFail(dbRoundtrip),
+        false,
+        `db-roundtrip must not critical-fail under allowlist; message=${dbRoundtrip.message}`,
+      );
+
+      // And the workdir-forbidden error must not appear in any message — the
+      // signature of the original bug.
+      for (const ch of parsed.checks) {
+        assert.doesNotMatch(
+          ch.message,
+          /MEMORY_WORKDIR_FORBIDDEN/i,
+          `no check should leak MEMORY_WORKDIR_FORBIDDEN; ${ch.name}: ${ch.message}`,
+        );
+      }
+
+      // Exit code reflects critical health only — accept either 0 (full green)
+      // or 1 if some unrelated non-write check failed. The regression we care
+      // about is the two write checks above.
+      assert.ok(code === 0 || code === 1, `exit code ${code} out of range`);
+    } finally {
+      if (savedAllowList === undefined) delete process.env[ALLOW_LIST_ENV];
+      else process.env[ALLOW_LIST_ENV] = savedAllowList;
+      await rm(ALLOWED_WORKDIR, { recursive: true, force: true });
+    }
   });
 });

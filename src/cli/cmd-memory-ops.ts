@@ -157,7 +157,15 @@ export async function executeMemoryShowContextCommand(
 // `--workdir "${CLAUDE_PROJECT_DIR:-$PWD}"` scopes recall to the project CC opened in,
 // not wherever Relay's CWD happens to be — required for --global installs to work
 // correctly across every project the user opens.
+//
+// Privacy gate (P1 fix — Codex finding #1): `relay pause --check` exits 0 when
+// paused, non-zero otherwise. The `&& exit 0` short-circuits the whole hook when
+// the user has run `relay pause`, so no recall happens and no memories are emitted
+// to CC's context. When not paused, the `;` separator lets the emit proceed. The
+// 2>/dev/null on the check is defense-in-depth: even if pause-check faults, the
+// hook still degrades to the normal emit path rather than spam CC's stderr.
 export const HOOK_SCRIPT =
+  'relay pause --check --workdir "${CLAUDE_PROJECT_DIR:-$PWD}" 2>/dev/null && exit 0; ' +
   'relay context emit --target cc --workdir "${CLAUDE_PROJECT_DIR:-$PWD}" 2>/dev/null || true';
 const HOOK_ID = 'relay-memory-session-start';
 
@@ -171,7 +179,13 @@ const HOOK_ID = 'relay-memory-session-start';
 //
 // Codex review BLOCKER fix: shell `2>>` opens log path BEFORE relay runs, so
 // `~/.relay/` must exist first or the hook silently fails on a fresh install.
+//
+// Privacy gate (P1 fix — Codex finding #1): identical to SessionStart — when
+// `relay pause` is active, short-circuit before auto-extract runs. Otherwise the
+// paused user's transcripts still get distilled into memories, defeating the
+// privacy off-switch.
 export const HOOK_SCRIPT_SESSION_END =
+  'relay pause --check --workdir "${CLAUDE_PROJECT_DIR:-$PWD}" 2>/dev/null && exit 0; ' +
   'mkdir -p "$HOME/.relay" && relay memory auto-extract --from-stdin 2>>"$HOME/.relay/relay.ndjson" || true';
 const HOOK_ID_SESSION_END = 'relay-memory-session-end';
 

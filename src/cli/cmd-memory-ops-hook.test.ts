@@ -2,10 +2,14 @@ process.env['RELAY_DB_PATH'] = ':memory:';
 
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, mkdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { executeMemoryHookCommand, HOOK_SCRIPT } from './cmd-memory-ops.js';
+import {
+  executeMemoryHookCommand,
+  HOOK_SCRIPT,
+  HOOK_SCRIPT_SESSION_END,
+} from './cmd-memory-ops.js';
 import type { CliIO } from './commands.js';
 
 interface CapturedIO {
@@ -173,3 +177,85 @@ describe('executeMemoryHookCommand — ENOENT vs EPARSE on settings.json', () =>
     assert.strictEqual(cap.stderr.join(''), '', 'no error noise on cold-start install');
   });
 });
+
+// ============================================================================
+// P1 fix (Codex finding #1): the installed hook command MUST short-circuit
+// before invoking `relay context emit` / `relay memory auto-extract` when the
+// pause sentinel is present. Without this gate, paused sessions still recall
+// memories into context (SessionStart) and still auto-extract transcripts
+// (SessionEnd) — the privacy off-switch is bypassed entirely.
+//
+// The gate is `relay pause --check ... && exit 0; <emit-or-extract>`.
+// When paused, `relay pause --check` exits 0 → the script exits 0 with no
+// downstream invocation. When active, it exits 1 → the chain falls through to
+// the `;` separator and proceeds normally.
+// ============================================================================
+describe('HOOK_SCRIPT — pause sentinel gate (P1 privacy off-switch)', () => {
+  test('SessionStart hook starts with `relay pause --check` short-circuit', () => {
+    // The gate must precede `relay context emit` so the emit never runs when paused.
+    const pauseIdx = HOOK_SCRIPT.indexOf('relay pause --check');
+    const emitIdx = HOOK_SCRIPT.indexOf('relay context emit');
+    assert.ok(pauseIdx >= 0, 'must invoke `relay pause --check`');
+    assert.ok(emitIdx > pauseIdx, 'pause check must come BEFORE relay context emit');
+  });
+
+  test('SessionStart hook passes `--workdir "${CLAUDE_PROJECT_DIR:-$PWD}"` to pause check', () => {
+    // The pause check must be scoped to the same workdir the emit uses — otherwise
+    // a project-local pause sentinel would be ignored on --global installs.
+    const gateSection = HOOK_SCRIPT.split(';')[0] ?? '';
+    assert.match(
+      gateSection,
+      /relay pause --check --workdir "\$\{CLAUDE_PROJECT_DIR:-\$PWD\}"/,
+      'pause check must reuse the CLAUDE_PROJECT_DIR workdir resolution'
+    );
+  });
+
+  test('SessionStart hook short-circuits with `&& exit 0` when paused', () => {
+    // `&& exit 0` is the contract: paused → exit 0, never reach emit.
+    const gateSection = HOOK_SCRIPT.split(';')[0] ?? '';
+    assert.match(gateSection, /&& exit 0/, 'paused path must exit 0 before emit');
+  });
+
+  test('SessionEnd hook also includes the pause gate before auto-extract', () => {
+    // Same privacy contract for SessionEnd — paused projects must not auto-extract.
+    const pauseIdx = HOOK_SCRIPT_SESSION_END.indexOf('relay pause --check');
+    const extractIdx = HOOK_SCRIPT_SESSION_END.indexOf('relay memory auto-extract');
+    const mkdirIdx = HOOK_SCRIPT_SESSION_END.indexOf('mkdir -p');
+    assert.ok(pauseIdx >= 0, 'SessionEnd must invoke `relay pause --check`');
+    assert.ok(extractIdx > pauseIdx, 'pause check must precede auto-extract');
+    assert.ok(mkdirIdx > pauseIdx, 'pause check must precede mkdir (no side effects when paused)');
+  });
+
+  test('SessionEnd pause gate also uses `&& exit 0` semantics', () => {
+    const gateSection = HOOK_SCRIPT_SESSION_END.split(';')[0] ?? '';
+    assert.match(gateSection, /relay pause --check/);
+    assert.match(gateSection, /&& exit 0/);
+  });
+
+  test('installed SessionStart hook string carries the pause gate end-to-end', async () => {
+    // Behavioral check: the command CC actually executes (read from settings.json
+    // after install) must contain the pause gate. This is the regression test
+    // for the original bug — pre-fix this string was just the emit invocation.
+    const tmp = await mkdtemp(join(tmpdir(), 'relay-hook-pausegate-'));
+    try {
+      const cap = makeIO(tmp);
+      await executeMemoryHookCommand({ install: true, json: false }, cap.io, tmp);
+      const settingsPath = join(tmp, '.claude', 'settings.json');
+      const raw = await readFile(settingsPath, 'utf8');
+      const parsed = JSON.parse(raw) as {
+        hooks: { SessionStart: Array<{ hooks: Array<{ command: string }> }> };
+      };
+      const installedCmd = parsed.hooks.SessionStart[0]?.hooks[0]?.command ?? '';
+      assert.match(installedCmd, /relay pause --check/, 'installed hook must contain pause gate');
+      assert.match(installedCmd, /&& exit 0/, 'installed hook must short-circuit on pause');
+      // The pause gate must precede the emit (paused → never emit)
+      assert.ok(
+        installedCmd.indexOf('relay pause --check') < installedCmd.indexOf('relay context emit'),
+        'pause gate must run BEFORE emit'
+      );
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
