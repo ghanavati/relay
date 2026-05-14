@@ -45,9 +45,11 @@ schema.
 
 ## 2. Agentic local LLM runner
 
-**Current state**: `src/workers/lmstudio.ts` has `capabilities = { agentic: false }`. It is
-single-shot: one `POST /v1/chat/completions`, one response, done. The Anthropic runner is the
-same. Only the Codex runner is agentic (it shells out to the Codex CLI which handles the loop).
+**Current state**: `src/workers/lmstudio.ts` is single-shot — one `POST /v1/chat/completions`,
+one response, done. No `capabilities` flag declared (treated as non-agentic by default).
+`src/workers/anthropic.ts:10` is explicitly `capabilities = { agentic: false }`. Only the
+Codex runner declares `capabilities = { agentic: true, execution_model: "subprocess" }`
+(`src/workers/codex.ts:651`) — it shells out to the Codex CLI which handles the loop.
 
 **Gap**: To drive Figma, a terminal, or any tool-using task with a local model, you need an
 agentic loop:
