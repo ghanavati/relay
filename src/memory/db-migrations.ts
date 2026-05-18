@@ -91,6 +91,13 @@ export function migrateMemoryTables(db: Database.Database): void {
   if (!existingCols.has('files_json')) {
     db.prepare("ALTER TABLE memories ADD COLUMN files_json TEXT NOT NULL DEFAULT '[]'").run();
   }
+  // PLAN-4 §5 — semantic embeddings. Nullable BLOB so legacy rows keep working
+  // and the word-overlap fallback path stays valid. 3072 bytes when populated
+  // (768 little-endian float32). No index — cosine is computed in JS over the
+  // FTS-narrowed candidate set (<=500 rows per recall).
+  if (!existingCols.has('embedding_blob')) {
+    db.prepare('ALTER TABLE memories ADD COLUMN embedding_blob BLOB').run();
+  }
 
   // 3. Indexes/triggers that depend on the columns added in step 2.
   for (const stmt of POST_ALTER_DDL) {
