@@ -132,11 +132,58 @@ export class BudgetStore {
   }
 
   /**
-   * STUB — implemented in GREEN step below. Type signature exists so the
-   * RED tests compile.
+   * v0.2 sibling to {@link getCurrentCost}. Sums `cost_events.cost_usd`
+   * scoped by optional `provider`, `workdir`, and time-period filters. Built
+   * to back the v0.2 `relay budget show` CLI surface.
+   *
+   * `getCurrentCost` is intentionally not touched here — it powers
+   * `checkBudgets` and any regression there cascades through every
+   * cost-tracked run. Future consolidation is left as a follow-up.
+   *
+   * Returns a stable shape with `scope_filters` echoing the inputs (null for
+   * unspecified) so the CLI `--json` envelope can be pinned by downstream
+   * consumers without re-parsing the original args.
+   *
+   * SECURITY: every user-provided value is bound as a `?` parameter — no
+   * string concatenation in the WHERE clause (STRIDE T-v0.2.7-01).
    */
-  getUsage(_opts: GetUsageOpts): GetUsageResult {
-    throw new Error('getUsage not yet implemented (RED phase)');
+  getUsage(opts: GetUsageOpts): GetUsageResult {
+    const where: string[] = [];
+    const params: unknown[] = [];
+
+    if (opts.provider) {
+      where.push('provider = ?');
+      params.push(opts.provider);
+    }
+    if (opts.workdir) {
+      where.push('workdir = ?');
+      params.push(opts.workdir);
+    }
+
+    const sinceMs = opts.sincePeriod ? periodSinceMs(opts.sincePeriod) : null;
+    if (sinceMs !== null) {
+      where.push('created_at >= ?');
+      params.push(sinceMs);
+    }
+
+    const whereClause = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '';
+    const sql = `SELECT COALESCE(SUM(cost_usd), 0) AS total_usd,
+                        COUNT(*)                   AS event_count
+                   FROM cost_events${whereClause}`;
+    const row = getDb().prepare(sql).get(...params) as {
+      total_usd: number;
+      event_count: number;
+    };
+
+    return {
+      total_usd: row.total_usd,
+      event_count: row.event_count,
+      scope_filters: {
+        provider: opts.provider ?? null,
+        workdir: opts.workdir ?? null,
+        period: opts.sincePeriod ?? null,
+      },
+    };
   }
 
   checkBudgets(model: string | null | undefined): BudgetCheckResult {
