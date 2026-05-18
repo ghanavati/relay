@@ -33,6 +33,36 @@ export type SetBudgetLimitArgs = z.infer<typeof setBudgetLimitSchema>;
 export type ListBudgetLimitsArgs = z.infer<typeof listBudgetLimitsSchema>;
 export type ListBudgetAlertsArgs = z.infer<typeof listBudgetAlertsSchema>;
 
+/**
+ * Options accepted by {@link BudgetStore.getUsage}. Every field is optional —
+ * the empty object sums every row in `cost_events`.
+ *
+ * `sincePeriod` reuses the same daily/monthly/alltime vocabulary as
+ * `budget_limits.period`. `alltime` (or omitted) means "no time filter".
+ */
+export const GetUsageOptsSchema = z.object({
+  provider: z.string().min(1).optional(),
+  workdir: z.string().min(1).optional(),
+  sincePeriod: BudgetPeriodSchema.optional(),
+});
+export type GetUsageOpts = z.infer<typeof GetUsageOptsSchema>;
+
+/**
+ * Stable shape returned by {@link BudgetStore.getUsage}. `scope_filters`
+ * echoes the inputs (null for unspecified) so the JSON envelope can be pinned
+ * by downstream consumers without re-parsing the request.
+ */
+export const GetUsageResultSchema = z.object({
+  total_usd: z.number(),
+  event_count: z.number().int().nonnegative(),
+  scope_filters: z.object({
+    provider: z.string().nullable(),
+    workdir: z.string().nullable(),
+    period: BudgetPeriodSchema.nullable(),
+  }),
+});
+export type GetUsageResult = z.infer<typeof GetUsageResultSchema>;
+
 export interface BudgetLimitRow {
   limit_id: string;
   scope: BudgetScope;

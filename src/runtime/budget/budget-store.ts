@@ -8,6 +8,8 @@ import type {
   BudgetLimitRow,
   BudgetAlertRow,
   BudgetAlertLevel,
+  GetUsageOpts,
+  GetUsageResult,
 } from '../../contracts/budget.js';
 
 const DAY_MS = 86_400_000;
@@ -127,6 +129,14 @@ export class BudgetStore {
                    ORDER BY created_at DESC
                    LIMIT ?`;
     return getDb().prepare(sql).all(...params) as BudgetAlertRow[];
+  }
+
+  /**
+   * STUB — implemented in GREEN step below. Type signature exists so the
+   * RED tests compile.
+   */
+  getUsage(_opts: GetUsageOpts): GetUsageResult {
+    throw new Error('getUsage not yet implemented (RED phase)');
   }
 
   checkBudgets(model: string | null | undefined): BudgetCheckResult {
