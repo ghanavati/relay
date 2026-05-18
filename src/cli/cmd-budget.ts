@@ -10,6 +10,9 @@ import type { CliIO } from './commands.js';
 
 export interface BudgetShowArgs {
   json: boolean;
+  provider?: string;
+  workdir?: string;
+  period?: string;
 }
 
 export const BUDGET_DEFERRED_TARGET = '0.2.0';
