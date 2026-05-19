@@ -6,6 +6,7 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import {
   executeDoctorCommand,
   checkCcGlobalHook,
@@ -16,7 +17,9 @@ import {
   checkBerryReachability,
   checkLmStudioModelLoaded,
   checkConsentFiles,
+  checkSchemaVersion,
 } from './cmd-doctor.js';
+import { applySchema } from '../runtime/store/db.js';
 import type { CliIO } from './commands.js';
 
 interface CapturedIO {
@@ -870,5 +873,95 @@ describe('checkConsentFiles', () => {
     assert.strictEqual(probe.status, 'ok');
     // Detail must reflect 2 total workdirs (not 1 single mashed-together path).
     assert.match(probe.detail, /2\/2 workdirs have consent/);
+  });
+});
+
+describe('checkSchemaVersion', () => {
+  // We avoid the module-level singleton (RELAY_DB_PATH=:memory: at the top
+  // of this file feeds getDb). Instead the probe is given an explicit
+  // storeDir each time and we drive it through better-sqlite3 directly.
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'doctor-schema-'));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test('T1: storeDir with schema_version=expected → status ok', () => {
+    const db = new Database(join(tmpDir, 'relay.db'));
+    try {
+      applySchema(db);
+    } finally {
+      db.close();
+    }
+    const probe = checkSchemaVersion(tmpDir);
+    assert.strictEqual(probe.name, 'schema_version');
+    assert.strictEqual(probe.status, 'ok');
+    assert.match(probe.detail, /applied=2.*matches expected=2/);
+  });
+
+  test('T2: storeDir with schema_version=1 only (pre-v2) → status missing', () => {
+    const dbPath = join(tmpDir, 'relay.db');
+    const db = new Database(dbPath);
+    try {
+      db.prepare('CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL, description TEXT)').run();
+      db.prepare('INSERT INTO schema_version (version, applied_at, description) VALUES (1, ?, ?)').run(Date.now(), 'baseline');
+    } finally {
+      db.close();
+    }
+    const probe = checkSchemaVersion(tmpDir);
+    assert.strictEqual(probe.status, 'missing');
+    assert.match(probe.detail, /applied=1.*expected=2/);
+  });
+
+  test('T3: storeDir with no relay.db → status missing, no throw', () => {
+    const probe = checkSchemaVersion(tmpDir);
+    assert.strictEqual(probe.status, 'missing');
+    assert.match(probe.detail, /not found/);
+  });
+
+  test('T4: storeDir with schema_version=99 → status failed, mentions downgrade', () => {
+    const dbPath = join(tmpDir, 'relay.db');
+    const db = new Database(dbPath);
+    try {
+      db.prepare('CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL, description TEXT)').run();
+      db.prepare('INSERT INTO schema_version (version, applied_at, description) VALUES (99, ?, ?)').run(Date.now(), 'future');
+    } finally {
+      db.close();
+    }
+    const probe = checkSchemaVersion(tmpDir);
+    assert.strictEqual(probe.status, 'failed');
+    assert.match(probe.detail, /applied=99.*exceeds expected=2/);
+    assert.match(probe.detail, /downgrade/);
+  });
+
+  test('T5 (integration): executeDoctorCommand --json → checks array contains schema_version entry', async () => {
+    // Set RELAY_DB_PATH so the doctor's storeDir resolution lands on our tmp.
+    const savedPath = process.env['RELAY_DB_PATH'];
+    process.env['RELAY_DB_PATH'] = join(tmpDir, 'relay.db');
+    try {
+      const db = new Database(join(tmpDir, 'relay.db'));
+      try {
+        applySchema(db);
+      } finally {
+        db.close();
+      }
+      applyEnv({ openrouter: 'sk-test', anthropic: 'sk-ant-test', lmstudioOk: true, lmstudioModelCount: 1 });
+      const cap = makeIO();
+      await executeDoctorCommand({ json: true }, cap.io);
+      const joined = cap.stdout.join('');
+      const parsed = JSON.parse(joined) as { checks: Array<{ name: string; status: string; detail: string }> };
+      const entry = parsed.checks.find(c => c.name === 'schema_version');
+      assert.ok(entry, 'schema_version probe must appear in checks array');
+    } finally {
+      if (savedPath === undefined) {
+        process.env['RELAY_DB_PATH'] = ':memory:'; // restore file-level default
+      } else {
+        process.env['RELAY_DB_PATH'] = savedPath;
+      }
+    }
   });
 });
