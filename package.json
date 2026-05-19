@@ -33,9 +33,10 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "tsc && chmod +x dist/cli.js 2>/dev/null || true",
+    "build": "tsc && npm run --silent build:fixtures && (chmod +x dist/cli.js 2>/dev/null || true)",
+    "build:fixtures": "mkdir -p dist/memory/__fixtures__ && (cp -p src/memory/__fixtures__/*.db dist/memory/__fixtures__/ 2>/dev/null || true)",
     "prepare": "npm run build",
-    "test": "env -u RELAY_MEMORY_ALLOWED_WORKDIRS -u RELAY_ALLOWED_ROOTS node --test --test-concurrency=1 dist/**/*.test.js",
+    "test": "env -u RELAY_MEMORY_ALLOWED_WORKDIRS -u RELAY_ALLOWED_ROOTS bash -c 'node --test --test-concurrency=1 $(find dist -type f -name \"*.test.js\")'",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },

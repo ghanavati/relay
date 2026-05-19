@@ -7,12 +7,27 @@ import { migrateCapabilityTables } from '../capability/db-migrations.js';
 import { migrateMemoryTables } from '../../memory/db-migrations.js';
 import { migrateBudgetTables } from '../budget/db-migrations.js';
 import { migrateAuthTables } from './migrations/auth.js';
+import {
+  readSchemaVersion,
+  writeSchemaVersion,
+  EXPECTED_SCHEMA_VERSION,
+  BASELINE_SCHEMA_DESCRIPTION,
+} from './schema-version.js';
+import { migrateDropOrphansV02 } from './migrate-v2-drop-orphans.js';
+import { writeV1Backup, shouldSkipBackup } from './backup-v1.js';
 
 let _db: Database.Database | null = null;
 
 // Schema DDL statements applied on first open.
 // Split into individual statements to avoid using db.exec() which triggers security hooks.
 const DDL_STATEMENTS: readonly string[] = [
+  // Schema version tracking — MUST come first so other migrations can read it.
+  // (version, applied_at, description) — see ./schema-version.ts.
+  `CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER PRIMARY KEY,
+    applied_at INTEGER NOT NULL,
+    description TEXT
+  )`,
   `CREATE TABLE IF NOT EXISTS runs (
     run_id TEXT PRIMARY KEY,
     provider TEXT NOT NULL,
@@ -68,34 +83,7 @@ const DDL_STATEMENTS: readonly string[] = [
     expires_at INTEGER NOT NULL DEFAULT 0
   )`,
   `CREATE INDEX IF NOT EXISTS idx_idempotency_keys_run_id ON idempotency_keys(run_id)`,
-  `CREATE TABLE IF NOT EXISTS continuity_objects (
-    object_id TEXT PRIMARY KEY,
-    object_kind TEXT NOT NULL,
-    status TEXT NOT NULL,
-    schema_version TEXT NOT NULL,
-    parent_ref TEXT NOT NULL,
-    source_run_ids TEXT NOT NULL DEFAULT '[]',
-    artifact_refs TEXT NOT NULL DEFAULT '[]',
-    supersedes_ref TEXT,
-    payload TEXT NOT NULL,
-    tombstone INTEGER NOT NULL DEFAULT 0,
-    redacted INTEGER NOT NULL DEFAULT 0,
-    retention_class TEXT NOT NULL DEFAULT 'standard',
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS recipes (
-    recipe_id TEXT PRIMARY KEY,
-    object_id TEXT NOT NULL REFERENCES continuity_objects(object_id),
-    name TEXT NOT NULL,
-    recipe_version TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'draft',
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_continuity_objects_kind ON continuity_objects(object_kind)`,
-  `CREATE INDEX IF NOT EXISTS idx_continuity_objects_status ON continuity_objects(status)`,
-  `CREATE INDEX IF NOT EXISTS idx_recipes_object_id ON recipes(object_id)`,
+  // continuity_objects + recipes (+ their indexes) DROPped in v0.2 migration v2 — see migrate-v2-drop-orphans.ts
   `CREATE TABLE IF NOT EXISTS run_diffs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT NOT NULL,
@@ -103,14 +91,7 @@ const DDL_STATEMENTS: readonly string[] = [
     diff_text TEXT NOT NULL,
     created_at INTEGER NOT NULL
   )`,
-  `CREATE TABLE IF NOT EXISTS verifications (
-    verification_id TEXT PRIMARY KEY,
-    run_id TEXT NOT NULL,
-    reviewer TEXT NOT NULL,
-    status TEXT NOT NULL,
-    reason TEXT NOT NULL,
-    created_at INTEGER NOT NULL
-  )`,
+  // verifications DROPped in v0.2 migration v2 — see migrate-v2-drop-orphans.ts
   `CREATE TABLE IF NOT EXISTS cost_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT NOT NULL,
@@ -123,51 +104,8 @@ const DDL_STATEMENTS: readonly string[] = [
     workdir TEXT NOT NULL,
     created_at INTEGER NOT NULL
   )`,
-  `CREATE TABLE IF NOT EXISTS sign_offs (
-    run_id TEXT PRIMARY KEY,
-    approver TEXT NOT NULL,
-    signed_at INTEGER NOT NULL,
-    notes TEXT,
-    task_hash TEXT
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_sign_offs_run_id ON sign_offs(run_id)`,
-  `CREATE TABLE IF NOT EXISTS sign_off_amendments (
-    amendment_id TEXT PRIMARY KEY,
-    run_id TEXT NOT NULL,
-    amended_by TEXT NOT NULL,
-    amended_at INTEGER NOT NULL,
-    old_notes TEXT,
-    new_notes TEXT NOT NULL,
-    FOREIGN KEY (run_id) REFERENCES sign_offs(run_id)
-  )`,
-  `CREATE TRIGGER IF NOT EXISTS trg_sign_offs_no_update
-    BEFORE UPDATE ON sign_offs
-    WHEN OLD.approver IS NOT NULL AND (NEW.approver != OLD.approver OR NEW.signed_at != OLD.signed_at OR NEW.run_id != OLD.run_id)
-    BEGIN
-      SELECT RAISE(FAIL, 'sign_off records are immutable');
-    END`,
-  `CREATE TRIGGER IF NOT EXISTS trg_sign_offs_no_delete
-    BEFORE DELETE ON sign_offs
-    BEGIN
-      SELECT RAISE(FAIL, 'sign_off records cannot be deleted');
-    END`,
-  `CREATE TABLE IF NOT EXISTS proxy_requests (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    request_id TEXT NOT NULL UNIQUE,
-    model TEXT NOT NULL,
-    tool TEXT,
-    source TEXT,
-    prompt_preview TEXT,
-    prompt_tokens INTEGER NOT NULL DEFAULT 0,
-    completion_tokens INTEGER NOT NULL DEFAULT 0,
-    cost_usd REAL NOT NULL DEFAULT 0,
-    streaming INTEGER NOT NULL DEFAULT 0,
-    duration_ms INTEGER,
-    status TEXT NOT NULL DEFAULT 'completed',
-    error_message TEXT,
-    created_at INTEGER NOT NULL
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_proxy_requests_created_at ON proxy_requests(created_at)`,
+  // sign_offs + sign_off_amendments (+ idx + triggers) DROPped in v0.2 migration v2 — see migrate-v2-drop-orphans.ts
+  // proxy_requests (+ idx) DROPped in v0.2 migration v2 — see migrate-v2-drop-orphans.ts
   `CREATE TABLE IF NOT EXISTS relay_sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL UNIQUE,
@@ -193,53 +131,9 @@ const DDL_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_run_events_run_id ON run_events(run_id)`,
   `CREATE INDEX IF NOT EXISTS idx_command_events_run_id ON command_events(run_id)`,
   `CREATE INDEX IF NOT EXISTS idx_run_diffs_run_id ON run_diffs(run_id)`,
-  `CREATE INDEX IF NOT EXISTS idx_verifications_run_id ON verifications(run_id)`,
-  `CREATE TABLE IF NOT EXISTS jobs (
-    job_id TEXT PRIMARY KEY,
-    repo_root TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    metadata TEXT
-  )`,
-  `CREATE TABLE IF NOT EXISTS tasks (
-    task_id TEXT PRIMARY KEY,
-    job_id TEXT NOT NULL REFERENCES jobs(job_id),
-    status TEXT NOT NULL DEFAULT 'queued',
-    worker_id TEXT,
-    lease_token TEXT,
-    lease_expires_at INTEGER,
-    attempt_count INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    result TEXT
-  )`,
-  `CREATE TABLE IF NOT EXISTS task_deps (
-    job_id TEXT NOT NULL REFERENCES jobs(job_id),
-    task_id TEXT NOT NULL REFERENCES tasks(task_id),
-    depends_on_task_id TEXT NOT NULL REFERENCES tasks(task_id),
-    PRIMARY KEY (task_id, depends_on_task_id)
-  )`,
-  `CREATE TABLE IF NOT EXISTS job_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    job_id TEXT NOT NULL,
-    event_type TEXT NOT NULL,
-    payload TEXT,
-    ts INTEGER NOT NULL
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_tasks_job_id ON tasks(job_id)`,
-  `CREATE INDEX IF NOT EXISTS idx_job_events_job_id ON job_events(job_id)`,
-  `CREATE TABLE IF NOT EXISTS operator_annotations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    actor TEXT NOT NULL,
-    reason TEXT NOT NULL,
-    content TEXT NOT NULL,
-    related_session_id TEXT,
-    is_manual INTEGER NOT NULL DEFAULT 1,
-    created_at INTEGER NOT NULL
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_operator_annotations_created_at ON operator_annotations(created_at)`,
-  `CREATE INDEX IF NOT EXISTS idx_operator_annotations_session ON operator_annotations(related_session_id)`,
+  // idx_verifications_run_id DROPped in v0.2 migration v2 — see migrate-v2-drop-orphans.ts
+  // jobs / tasks / task_deps / job_events (+ their indexes) DROPped in v0.2 migration v2
+  // operator_annotations (+ idxs) DROPped in v0.2 migration v2
   `CREATE TABLE IF NOT EXISTS memory_reads (id INTEGER PRIMARY KEY AUTOINCREMENT, memory_id TEXT NOT NULL, run_id TEXT, read_source TEXT NOT NULL DEFAULT 'mcp', workdir TEXT, created_at INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_memory_reads_memory_id ON memory_reads(memory_id)`,
   `CREATE INDEX IF NOT EXISTS idx_memory_reads_run_id ON memory_reads(run_id)`,
@@ -251,9 +145,9 @@ const DDL_STATEMENTS: readonly string[] = [
   `CREATE TRIGGER IF NOT EXISTS corpora_fts_delete AFTER DELETE ON corpora BEGIN INSERT INTO corpora_fts(corpora_fts, rowid, content, name) VALUES ('delete', old.rowid, old.content, old.name); END`,
 ];
 
-const TAINTED_VERIFICATION_REASON_FRAGMENT = 'defaulting to approved';
-const DELETE_TAINTED_VERIFICATIONS_SQL =
-  'DELETE FROM verifications WHERE reason LIKE ?';
+// Note: `verifications` table and its tainted-record purge migration are gone
+// (v0.2 schema cleanup). The CLI tier never read this table; see
+// migrate-v2-drop-orphans.ts.
 
 export function getDb(): Database.Database {
   if (_db) return _db;
@@ -273,32 +167,6 @@ export function getDb(): Database.Database {
 }
 
 /**
- * PRAGMA-guarded migration for the tasks table lease fields.
- *
- * SQLite ALTER TABLE ADD COLUMN has no IF NOT EXISTS guard — adding these
- * statements to DDL_STATEMENTS would throw "cannot add a column with that name"
- * on every server restart after the first. Instead, read the existing column
- * set via PRAGMA table_info and only issue the ALTER TABLE when the column is
- * absent.
- */
-function migrateTasksLeaseFields(db: Database.Database): void {
-  const info = db.prepare('PRAGMA table_info(tasks)').all() as { name: string }[];
-  const cols = new Set(info.map(r => r.name));
-  if (!cols.has('claimed_at')) {
-    db.prepare('ALTER TABLE tasks ADD COLUMN claimed_at INTEGER').run();
-  }
-  if (!cols.has('heartbeat_at')) {
-    db.prepare('ALTER TABLE tasks ADD COLUMN heartbeat_at INTEGER').run();
-  }
-  if (!cols.has('lease_token')) {
-    db.prepare('ALTER TABLE tasks ADD COLUMN lease_token TEXT').run();
-  }
-  if (!cols.has('attempt_count')) {
-    db.prepare('ALTER TABLE tasks ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0').run();
-  }
-}
-
-/**
  * PRAGMA-guarded migration for the runs table verification_status field.
  */
 function migrateRunsVerificationStatus(db: Database.Database): void {
@@ -309,44 +177,9 @@ function migrateRunsVerificationStatus(db: Database.Database): void {
   }
 }
 
-/**
- * PRAGMA-guarded migration for the verifications table confidence_score field.
- * better-sqlite3 is SYNCHRONOUS — no await anywhere in this function.
- */
-function migrateVerificationsConfidenceScore(db: Database.Database): void {
-  const info = db.prepare('PRAGMA table_info(verifications)').all() as { name: string }[];
-  const cols = new Set(info.map(r => r.name));
-  if (!cols.has('confidence_score')) {
-    db.prepare('ALTER TABLE verifications ADD COLUMN confidence_score REAL').run();
-  }
-}
-
-/**
- * H-02: PRAGMA-guarded migration for verification_source field.
- * Values: 'llm' = real reviewer ran, 'unavailable' = HTTP error fallback,
- * 'default' = structural-only (no semantic reviewer configured).
- */
-function migrateVerificationsSource(db: Database.Database): void {
-  const info = db.prepare('PRAGMA table_info(verifications)').all() as { name: string }[];
-  const cols = new Set(info.map(r => r.name));
-  if (!cols.has('verification_source')) {
-    db.prepare(
-      `ALTER TABLE verifications ADD COLUMN verification_source TEXT
-       CHECK(verification_source IN ('llm', 'default', 'unavailable')) DEFAULT 'llm'`
-    ).run();
-  }
-}
-
-function migrateProxyRequestsFullBody(db: Database.Database): void {
-  const info = db.prepare('PRAGMA table_info(proxy_requests)').all() as { name: string }[];
-  const cols = new Set(info.map(r => r.name));
-  if (!cols.has('messages_json')) {
-    db.prepare('ALTER TABLE proxy_requests ADD COLUMN messages_json TEXT').run();
-  }
-  if (!cols.has('response_json')) {
-    db.prepare('ALTER TABLE proxy_requests ADD COLUMN response_json TEXT').run();
-  }
-}
+// migrateVerificationsConfidenceScore / migrateVerificationsSource /
+// migrateProxyRequestsFullBody removed — their target tables are DROPped
+// in migrate-v2-drop-orphans.ts.
 
 /**
  * R-16 — PRAGMA-guarded migration for EU AI Act obligation fields on the models table.
@@ -399,21 +232,29 @@ function migrateSessionFields(db: Database.Database): void {
   }
 }
 
-function purgeTaintedVerificationRecords(db: Database.Database): void {
-  db.prepare(DELETE_TAINTED_VERIFICATIONS_SQL).run(`%${TAINTED_VERIFICATION_REASON_FRAGMENT}%`);
-}
+// purgeTaintedVerificationRecords removed — `verifications` table is dropped
+// by migrate-v2-drop-orphans.ts (v0.2 schema cleanup).
 
-function applySchema(db: Database.Database): void {
+/**
+ * Apply schema. Idempotent — safe to call on every open of the DB.
+ *
+ * Exported so tests can drive it without going through the singleton in
+ * `getDb`. For production code paths that need `.v1-backup` written before
+ * the v2 cleanup runs, call `prepareDatabase` instead.
+ */
+export function applySchema(db: Database.Database): void {
+  // 1) DDL — adds schema_version + every non-orphan table.
   for (const stmt of DDL_STATEMENTS) {
     db.prepare(stmt).run();
   }
-  purgeTaintedVerificationRecords(db);
+  // 2) Bootstrap: a DB that pre-dates v0.2 has no schema_version row.
+  //    Stamp it as v1 so downstream migrations see a known starting point.
+  if (readSchemaVersion(db) === 0) {
+    writeSchemaVersion(db, 1, BASELINE_SCHEMA_DESCRIPTION);
+  }
+  // 3) Long-standing PRAGMA-guarded migrations that target tables we keep.
   migrateIdempotencyExpiresAt(db);
-  migrateTasksLeaseFields(db);
   migrateRunsVerificationStatus(db);
-  migrateVerificationsConfidenceScore(db);
-  migrateVerificationsSource(db);
-  migrateProxyRequestsFullBody(db);
   migrateCapabilityTables(db);
   migrateMemoryTables(db);
   migrateSessionFields(db);
@@ -424,6 +265,34 @@ function applySchema(db: Database.Database): void {
   migrateRunsThinkingBlocks(db);
   migrateCostEventsTextColumn(db);
   migrateAuthTables(db);
+  // 4) v0.2 cleanup — drop 11 orphan tables (idempotent; no-op once v=2 is set).
+  migrateDropOrphansV02(db);
+}
+
+/**
+ * Open the DB for a production caller. Writes a `.v1-backup` via the SQLite
+ * online backup API BEFORE the destructive v0.2 migration touches the file,
+ * unless `RELAY_SKIP_V2_BACKUP=1` is set (opt-out for tests / sandbox use).
+ *
+ * If the backup is required (no opt-out) and writing it fails, the function
+ * THROWS — the v2 DROP is destructive and we must not run it without a
+ * recovery artifact (R-01-03 / PITFALLS.md CC.1).
+ */
+export async function prepareDatabase(db: Database.Database, storeDir: string): Promise<void> {
+  // Bootstrap-only pass first so readSchemaVersion gives a meaningful number
+  // to writeV1Backup's "already-migrated" short-circuit.
+  db.prepare(
+    'CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL, description TEXT)'
+  ).run();
+
+  if (readSchemaVersion(db) < EXPECTED_SCHEMA_VERSION && !shouldSkipBackup()) {
+    const r = await writeV1Backup(db, storeDir);
+    if (!r.skipped && !r.backupPath) {
+      throw new Error('.v1-backup write failed — refusing to run v0.2 destructive migration');
+    }
+  }
+
+  applySchema(db);
 }
 
 /**
