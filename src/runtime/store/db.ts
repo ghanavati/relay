@@ -14,7 +14,11 @@ import {
   BASELINE_SCHEMA_DESCRIPTION,
 } from './schema-version.js';
 import { migrateDropOrphansV02 } from './migrate-v2-drop-orphans.js';
-import { writeV1Backup, shouldSkipBackup } from './backup-v1.js';
+import {
+  writeV1Backup,
+  shouldSkipBackup,
+  backupBeforeMigrationSync,
+} from './backup-v1.js';
 
 let _db: Database.Database | null = null;
 
@@ -154,6 +158,20 @@ export function getDb(): Database.Database {
   const dbPath = process.env['RELAY_DB_PATH'] ?? join(homedir(), '.relay', 'relay.db');
   if (dbPath !== ':memory:') {
     mkdirSync(path.dirname(dbPath), { recursive: true });
+    // Sync .v1-backup BEFORE we open the DB for writes. The backup helper
+    // peeks at schema_version read-only and skips when v >= 2 or when the
+    // user opted out via RELAY_SKIP_V2_BACKUP=1. If a backup is required
+    // but cannot be written, we THROW — running the destructive v2 DROP
+    // without a recovery artifact would violate R-01-03 (PITFALLS.md CC.1).
+    const storeDir = path.dirname(dbPath);
+    const backupResult = backupBeforeMigrationSync(
+      dbPath,
+      storeDir,
+      (p) => new Database(p, { readonly: true, fileMustExist: true }),
+    );
+    if (!backupResult.skipped && !backupResult.backupPath) {
+      throw new Error('.v1-backup write failed — refusing to open DB for v0.2 migration');
+    }
   }
   _db = new Database(dbPath);
   if (dbPath !== ':memory:') {
