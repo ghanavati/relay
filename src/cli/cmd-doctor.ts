@@ -1,11 +1,13 @@
 import { execFile } from 'node:child_process';
 import { readFile, access } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import Database from 'better-sqlite3';
 import type { CliIO } from './commands.js';
 import { c, statusBadge } from './colors.js';
 import { probeCodex, probeLmStudio, probeEnvKey, type ProviderProbe } from './probes.js';
+import { readSchemaVersion, EXPECTED_SCHEMA_VERSION } from '../runtime/store/schema-version.js';
 
 export interface DoctorArgs { json: boolean; }
 
@@ -93,6 +95,60 @@ export async function checkHookRoundtrip(): Promise<ProviderProbe> {
       }
     });
   });
+}
+
+/**
+ * Probe the persisted `schema_version` against the binary's expected value.
+ *
+ * Opens the relay.db inside `storeDir` read-only (SHARED lock — no
+ * contention with a concurrent writer) and compares the highest applied
+ * version against `EXPECTED_SCHEMA_VERSION`. Statuses:
+ *   - applied === EXPECTED → 'ok'
+ *   - applied <  EXPECTED  → 'missing' (restart relay to apply pending migrations)
+ *   - applied >  EXPECTED  → 'failed'  (downgrade or future-DB detected)
+ *   - DB missing/unreadable → 'missing' (informational, not fatal)
+ */
+export function checkSchemaVersion(storeDir: string): ProviderProbe {
+  const dbPath = join(storeDir, 'relay.db');
+  if (!existsSync(dbPath)) {
+    return {
+      name: 'schema_version',
+      status: 'missing',
+      detail: `relay.db not found at ${dbPath}`,
+    };
+  }
+  let db: Database.Database | undefined;
+  try {
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    const applied = readSchemaVersion(db);
+    if (applied === EXPECTED_SCHEMA_VERSION) {
+      return {
+        name: 'schema_version',
+        status: 'ok',
+        detail: `applied=${applied} matches expected=${EXPECTED_SCHEMA_VERSION}`,
+      };
+    }
+    if (applied < EXPECTED_SCHEMA_VERSION) {
+      return {
+        name: 'schema_version',
+        status: 'missing',
+        detail: `applied=${applied} expected=${EXPECTED_SCHEMA_VERSION} — restart relay to apply pending migrations`,
+      };
+    }
+    return {
+      name: 'schema_version',
+      status: 'failed',
+      detail: `applied=${applied} exceeds expected=${EXPECTED_SCHEMA_VERSION} — downgrade or future-DB detected`,
+    };
+  } catch (err) {
+    return {
+      name: 'schema_version',
+      status: 'missing',
+      detail: `failed to read schema_version: ${(err as Error).message}`,
+    };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
 }
 
 /**
@@ -395,6 +451,15 @@ export async function executeDoctorCommand(args: DoctorArgs, io: CliIO): Promise
   } catch {
     record({ name: 'db', status: 'failed', detail: 'Database check failed' });
   }
+
+  // 5b. schema_version probe — read-only check that the applied schema
+  //     version matches what this binary expects. Uses the same store-dir
+  //     resolution as openDatabase: RELAY_DB_PATH dirname, else ~/.relay.
+  const dbPathForVersion = process.env['RELAY_DB_PATH'] ?? join(homedir(), '.relay', 'relay.db');
+  const storeDirForVersion = dbPathForVersion === ':memory:'
+    ? join(homedir(), '.relay')
+    : dirname(dbPathForVersion);
+  record(checkSchemaVersion(storeDirForVersion));
 
   // 6. CC global SessionStart hook installation
   record(await checkCcGlobalHook());
