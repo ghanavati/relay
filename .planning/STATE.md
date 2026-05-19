@@ -1,3 +1,19 @@
+---
+gsd_state_version: 1.0
+milestone: v0.2
+milestone_name: milestone
+status: planning
+stopped_at: Completed 01-01-PLAN.md (Phase 1 Schema Cleanup)
+last_updated: "2026-05-19T19:37:02.634Z"
+last_activity: 2026-05-19 — ROADMAP.md created via gsd-roadmapper for v0.2 milestone
+progress:
+  total_phases: 7
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 1
+  percent: 0
+---
+
 # Project State
 
 ## Project Reference
@@ -10,15 +26,16 @@ See: .planning/PROJECT.md (updated 2026-05-18)
 ## Current Position
 
 Phase: 1 of 7 (Schema Cleanup)
-Plan: 0 of TBD in current phase
-Status: Ready to plan
-Last activity: 2026-05-19 — ROADMAP.md created via gsd-roadmapper for v0.2 milestone
+Plan: 1 of 1 in current phase (Complete)
+Status: Phase 1 complete — ready to start Phase 2
+Last activity: 2026-05-19 — Phase 1 plan 01 executed (7 commits, 1126 tests passing)
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [█░░░░░░░░░] 14%
 
 ## Performance Metrics
 
 **Velocity:**
+
 - Total plans completed: 0
 - Average duration: —
 - Total execution time: —
@@ -38,6 +55,7 @@ Progress: [░░░░░░░░░░] 0%
 **Recent Trend:** No data yet (milestone just opened)
 
 *Updated after each plan completion*
+| Phase 01-schema-cleanup P01 | 1h35m | 5 tasks | 14 files |
 
 ## Accumulated Context
 
@@ -50,6 +68,8 @@ Recent decisions affecting v0.2 work (full log in PROJECT.md):
 - **Codex-free**: NO codex used to implement v0.2 (CC subagents only per PROJECT.md constraint)
 - **TDD strict**: RED → GREEN → IMPROVE, 80%+ coverage, node:test framework
 - **Local models as runtime targets**: qwen3-coder-next + nomic-embed-text-v1.5 are RUNTIME targets, not code writers
+- [Phase 01-schema-cleanup]: Used sync copyFileSync for production .v1-backup (getDb is sync). Async db.backup() retained for tests + future async callers via prepareDatabase.
+- [Phase 01-schema-cleanup]: Fixed pre-existing npm test glob (sh/macOS bash 3.2 lacks globstar); test baseline went 1003 → 1107 from discovery alone before phase work added 19 more.
 
 ### Partial v0.2 work already shipped (verified via git log)
 
@@ -80,12 +100,13 @@ Open questions from research/SUMMARY.md §6 (no source can resolve — require u
 7. **Schema versioning scope** — only Relay tables, or budget chains in? (Phase 1 → affects Phase 2)
 
 Top blast-radius pitfalls to enforce at gate (research §4):
+
 - F1: v0.1.2→v0.2 DB upgrade breaks recall (CATASTROPHIC — data-loss) → require `src/memory/__fixtures__/v0.1.2-baseline.db` fixture to pass before merge
 - F6: Figma PAT leaked in debug logs / committed `.env` (CATASTROPHIC — credential rotation + git history scrub)
 - F3+: Workdir scoping leak (HIGH — cross-project memory contamination)
 
 ## Session Continuity
 
-Last session: 2026-05-19
-Stopped at: ROADMAP.md created, traceability written, STATE.md initialized to Phase 1
-Resume file: None (next action: `/gsd-plan-phase 1`)
+Last session: 2026-05-19T19:37:02.633Z
+Stopped at: Completed 01-01-PLAN.md (Phase 1 Schema Cleanup)
+Resume file: None
