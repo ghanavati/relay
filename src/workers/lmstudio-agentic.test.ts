@@ -377,7 +377,8 @@ interface RecordedRequest {
 /**
  * Build a scripted fetch that handles probe + chat. The script is a queue of
  * chat-completion responses; each chat POST consumes one element. The capability
- * probe (GET /api/v0/models) always returns `qwen3-coder-next` with `tool_use`.
+ * probe (GET /v1/models — OpenAI-compat, per LMSTUDIO-ERRATA-2026 §4) always
+ * returns `qwen3-coder-next` with `tool_use`.
  */
 interface ChatScript {
   // Either a body to return, or a function for advanced cases (status, throws, etc.).
@@ -396,7 +397,9 @@ function makeScriptedFetch(script: ChatScript): { fetchImpl: FetchFn; requests: 
   const fetchImpl: FetchFn = async (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : String(input);
     requests.push({ url, init: init ?? {} });
-    if (/\/api\/v0\/models$/.test(url)) {
+    // ERRATA E1: probe is /v1/models (OpenAI-compat). Accept both during the
+    // transition so old test fixtures don't break, but production always hits /v1/models.
+    if (/\/v1\/models$/.test(url) || /\/api\/v0\/models$/.test(url)) {
       const data = script.capability ?? [{ id: 'qwen/qwen3-coder-next', capabilities: ['tool_use'] }];
       return new Response(JSON.stringify({ data }), {
         status: 200,
@@ -878,7 +881,9 @@ async function startEphemeralLmStudio(scriptedResponses: unknown[]): Promise<Eph
   const requestBodies: string[] = [];
   let chatIdx = 0;
   const server = createServer((req, res) => {
-    if (req.url === '/api/v0/models' && req.method === 'GET') {
+    // ERRATA E1: probe is /v1/models (OpenAI-compat). Honor both during the
+    // transition; production always hits /v1/models.
+    if ((req.url === '/v1/models' || req.url === '/api/v0/models') && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         data: [{ id: 'qwen/qwen3-coder-next', capabilities: ['tool_use'] }],
@@ -1009,3 +1014,215 @@ describe('T8 — integration against ephemeral http server', () => {
   });
 });
 
+// ─── T9: LMSTUDIO-ERRATA-2026.md fixes ────────────────────────────────────
+//
+// Three corrections per LMSTUDIO-ERRATA-2026.md (researched 2026-05-20):
+//   E1 — capability probe wire shape: /v1/models (OpenAI-compat), NOT /api/v0/models
+//        (REST v0 endpoint does NOT include a `capabilities` field — verified against
+//        lmstudio.ai/docs/developer/rest/endpoints).
+//   E2 — preserve reasoning_content on assistant message echo (Qwen 3.5/3.6 leak
+//        </think> into content otherwise — github.com/QwenLM/Qwen3.6/issues/26).
+//   E3 — defensive handling of empty tool_call_id (LM Studio bug #830 — model
+//        can emit `{id: ""}`; downstream validator rejects the echo).
+
+describe('T9 — ERRATA E1: capability probe uses /v1/models (OpenAI-compat)', () => {
+  test('probe URL is /v1/models, NOT /api/v0/models', async () => {
+    const probedUrls: string[] = [];
+    const fetchImpl: FetchFn = async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : String(input);
+      probedUrls.push(url);
+      if (/\/v1\/models$/.test(url)) {
+        return new Response(
+          JSON.stringify({ data: [{ id: 'qwen/qwen3-coder-next', capabilities: ['tool_use'] }] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (/\/api\/v0\/models$/.test(url)) {
+        // Simulate REST v0: no capabilities key. If production probes here, this test
+        // SHOULD STILL FAIL because the probe URL itself is wrong.
+        return new Response(
+          JSON.stringify({ data: [{ id: 'qwen/qwen3-coder-next', state: 'loaded' }] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      // chat completion
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { role: 'assistant', content: 'done' }, finish_reason: 'stop' }],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+      // (init signal honored implicitly; never path not needed here)
+      void init;
+    };
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: async () => ({ stdout: '', stderr: '', exitCode: 0 }) });
+    const result = await runner.run(baseTask());
+    assert.equal(result.status, 'success', `must succeed; got ${result.error?.code ?? 'unknown'}`);
+    const probeUrls = probedUrls.filter((u) => /\/(v1|api\/v0)\/models$/.test(u));
+    assert.equal(probeUrls.length, 1, 'exactly one capability probe');
+    assert.match(probeUrls[0] ?? '', /\/v1\/models$/, 'probe must hit /v1/models, not /api/v0/models');
+  });
+
+  test('capability probe checks data[i].capabilities array includes literal "tool_use" string', async () => {
+    const fetchImpl: FetchFn = async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : String(input);
+      if (/\/v1\/models$/.test(url)) {
+        // Model present but missing the tool_use capability
+        return new Response(
+          JSON.stringify({
+            data: [{ id: 'qwen/qwen3-coder-next', capabilities: ['vision', 'reasoning'] }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      throw new Error(`unexpected fetch to ${url}`);
+    };
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: async () => ({ stdout: '', stderr: '', exitCode: 0 }) });
+    const result = await runner.run(baseTask());
+    assert.equal(result.status, 'error');
+    assert.equal(result.error?.code, 'INVALID_ARGS');
+    assert.match(result.error?.message ?? '', /tool_use/);
+  });
+
+  test('capability probe fails-closed when capabilities key absent (LM Studio < 0.3.16)', async () => {
+    const fetchImpl: FetchFn = async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : String(input);
+      if (/\/v1\/models$/.test(url)) {
+        // No capabilities key — older LM Studio
+        return new Response(
+          JSON.stringify({ data: [{ id: 'qwen/qwen3-coder-next', object: 'model' }] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      throw new Error(`unexpected fetch to ${url}`);
+    };
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: async () => ({ stdout: '', stderr: '', exitCode: 0 }) });
+    const result = await runner.run(baseTask());
+    assert.equal(result.status, 'error');
+    assert.equal(result.error?.code, 'INVALID_ARGS');
+  });
+});
+
+describe('T9 — ERRATA E2: reasoning_content round-trip on assistant message', () => {
+  test('assistant message with reasoning_content + tool_calls: round-trip preserves reasoning_content in next POST body', async () => {
+    const { fetchImpl, requests } = makeScriptedFetch({
+      responses: [
+        // Iter 1: assistant message with BOTH reasoning_content AND tool_calls
+        {
+          kind: 'ok',
+          body: {
+            choices: [{
+              message: {
+                role: 'assistant',
+                content: null,
+                reasoning_content: 'I should run ls to inspect files.',
+                tool_calls: [{
+                  id: 'call_qwen_1',
+                  type: 'function',
+                  function: { name: 'shell_exec', arguments: JSON.stringify({ command: 'ls' }) },
+                }],
+              },
+              finish_reason: 'tool_calls',
+            }],
+          },
+        },
+        // Iter 2: final
+        { kind: 'ok', body: asstFinal('done') },
+      ],
+    });
+    const stub: ShellExecFn = async () => ({ stdout: 'a\nb\n', stderr: '', exitCode: 0 });
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: stub });
+    const result = await runner.run(baseTask());
+    assert.equal(result.status, 'success');
+    const chatPosts = requests.filter((r) => r.url.endsWith('/v1/chat/completions'));
+    assert.equal(chatPosts.length, 2);
+    const body2 = JSON.parse(chatPosts[1]?.init.body as string);
+    const asst = body2.messages.find(
+      (m: { role: string; reasoning_content?: string }) =>
+        m.role === 'assistant' && m.reasoning_content
+    );
+    assert.ok(asst, 'assistant message with reasoning_content must be echoed back in iteration 2 body');
+    assert.equal(asst.reasoning_content, 'I should run ls to inspect files.');
+  });
+
+  test('assistant message WITHOUT reasoning_content — no extra field added', async () => {
+    const { fetchImpl, requests } = makeScriptedFetch({
+      responses: [
+        { kind: 'ok', body: asstWithToolCalls([{ id: 'c1', command: 'ls' }]) },
+        { kind: 'ok', body: asstFinal('done') },
+      ],
+    });
+    const stub: ShellExecFn = async () => ({ stdout: 'x', stderr: '', exitCode: 0 });
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: stub });
+    await runner.run(baseTask());
+    const chatPosts = requests.filter((r) => r.url.endsWith('/v1/chat/completions'));
+    const body2 = JSON.parse(chatPosts[1]?.init.body as string);
+    const asst = body2.messages.find(
+      (m: { role: string; tool_calls?: unknown }) => m.role === 'assistant' && m.tool_calls
+    );
+    assert.ok(asst, 'assistant message with tool_calls must be present');
+    assert.equal(
+      'reasoning_content' in asst,
+      false,
+      'reasoning_content must NOT be added when source message lacked it'
+    );
+  });
+});
+
+describe('T9 — ERRATA E3: defensive empty tool_call_id handling (LM Studio bug #830)', () => {
+  test('empty tool_call_id → synthetic error tool message; loop continues, never crashes', async () => {
+    const { fetchImpl, requests } = makeScriptedFetch({
+      responses: [
+        // Iter 1: assistant emits an EMPTY tool_call_id (bug #830 path)
+        {
+          kind: 'ok',
+          body: {
+            choices: [{
+              message: {
+                role: 'assistant',
+                content: null,
+                tool_calls: [{
+                  id: '',
+                  type: 'function',
+                  function: { name: 'shell_exec', arguments: JSON.stringify({ command: 'ls' }) },
+                }],
+              },
+              finish_reason: 'tool_calls',
+            }],
+          },
+        },
+        // Iter 2: final — model recovers from synthetic error tool message
+        { kind: 'ok', body: asstFinal('recovered') },
+      ],
+    });
+    const stub: ShellExecFn = async () => ({ stdout: 'should not run', stderr: '', exitCode: 0 });
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: stub });
+    const result = await runner.run(baseTask());
+    // Must NOT throw, must NOT 500. Continue the loop with a synthetic ERROR tool message.
+    assert.equal(result.status, 'success');
+    assert.equal(result.iterations, 2);
+    const chatPosts = requests.filter((r) => r.url.endsWith('/v1/chat/completions'));
+    assert.equal(chatPosts.length, 2);
+    const body2 = JSON.parse(chatPosts[1]?.init.body as string);
+    const toolMsg = body2.messages.find((m: { role: string }) => m.role === 'tool');
+    assert.ok(toolMsg, 'synthetic tool message must be appended even when id is empty');
+    assert.equal(toolMsg.tool_call_id, '__missing__', 'use __missing__ sentinel for empty id');
+    assert.match(toolMsg.content, /ERROR.*tool_call_id was empty/i);
+  });
+
+  test('non-empty tool_call_id unaffected — byte-exact echo preserved', async () => {
+    const { fetchImpl, requests } = makeScriptedFetch({
+      responses: [
+        { kind: 'ok', body: asstWithToolCalls([{ id: 'call_normal', command: 'ls' }]) },
+        { kind: 'ok', body: asstFinal('done') },
+      ],
+    });
+    const stub: ShellExecFn = async () => ({ stdout: 'x', stderr: '', exitCode: 0 });
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: stub });
+    await runner.run(baseTask());
+    const chatPosts = requests.filter((r) => r.url.endsWith('/v1/chat/completions'));
+    const body2 = JSON.parse(chatPosts[1]?.init.body as string);
+    const toolMsg = body2.messages.find((m: { role: string }) => m.role === 'tool');
+    assert.equal(toolMsg.tool_call_id, 'call_normal', 'non-empty id preserved byte-exact');
+  });
+});
