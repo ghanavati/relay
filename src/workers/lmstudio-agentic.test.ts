@@ -364,3 +364,258 @@ describe('T3 — tool execution sandbox', () => {
     );
   });
 });
+
+// ─── T4: TOOL LOOP + ITERATION CAP + TIMEOUT + CAPABILITY PROBE ──────────
+
+import type { FetchFn } from './lmstudio-agentic.js';
+
+interface RecordedRequest {
+  url: string;
+  init: RequestInit;
+}
+
+/**
+ * Build a scripted fetch that handles probe + chat. The script is a queue of
+ * chat-completion responses; each chat POST consumes one element. The capability
+ * probe (GET /api/v0/models) always returns `qwen3-coder-next` with `tool_use`.
+ */
+interface ChatScript {
+  // Either a body to return, or a function for advanced cases (status, throws, etc.).
+  responses: Array<
+    | { kind: 'ok'; body: unknown }
+    | { kind: 'status'; status: number; body?: string }
+    | { kind: 'reject'; error: unknown }
+    | { kind: 'never' } // never resolves until aborted
+  >;
+  capability?: { id: string; capabilities: string[] }[];
+}
+
+function makeScriptedFetch(script: ChatScript): { fetchImpl: FetchFn; requests: RecordedRequest[] } {
+  const requests: RecordedRequest[] = [];
+  const chatQueue = [...script.responses];
+  const fetchImpl: FetchFn = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : String(input);
+    requests.push({ url, init: init ?? {} });
+    if (/\/api\/v0\/models$/.test(url)) {
+      const data = script.capability ?? [{ id: 'qwen/qwen3-coder-next', capabilities: ['tool_use'] }];
+      return new Response(JSON.stringify({ data }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    // chat completion
+    const step = chatQueue.shift();
+    if (!step) throw new Error('scripted fetch exhausted — no more chat-completion responses');
+    if (step.kind === 'ok') {
+      return new Response(JSON.stringify(step.body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (step.kind === 'status') {
+      return new Response(step.body ?? '', {
+        status: step.status,
+        headers: { 'Content-Type': 'text/plain' },
+      });
+    }
+    if (step.kind === 'reject') {
+      throw step.error;
+    }
+    // 'never' — honor abort
+    return new Promise<Response>((_resolve, reject) => {
+      const signal = (init as RequestInit & { signal?: AbortSignal })?.signal;
+      if (signal) {
+        if (signal.aborted) reject(new DOMException('Aborted', 'AbortError'));
+        signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+      }
+    });
+  };
+  return { fetchImpl, requests };
+}
+
+/** Helper: build an assistant message with N tool_calls (round-robin command args). */
+function asstWithToolCalls(calls: Array<{ id: string; command: string }>) {
+  return {
+    choices: [
+      {
+        message: {
+          role: 'assistant',
+          content: null,
+          tool_calls: calls.map((c) => ({
+            id: c.id,
+            type: 'function',
+            function: { name: 'shell_exec', arguments: JSON.stringify({ command: c.command }) },
+          })),
+        },
+        finish_reason: 'tool_calls',
+      },
+    ],
+    usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+  };
+}
+
+/** Helper: final assistant message with content and finish_reason 'stop'. */
+function asstFinal(content: string, usage = { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 }) {
+  return {
+    choices: [
+      {
+        message: { role: 'assistant', content, tool_calls: undefined },
+        finish_reason: 'stop',
+      },
+    ],
+    usage,
+  };
+}
+
+describe('T4 — tool loop, iteration cap, timeout, capability probe', () => {
+  test('zero tool calls → 1 POST, iterations=1, tool_call_count=0, status=success', async () => {
+    const { fetchImpl, requests } = makeScriptedFetch({
+      responses: [{ kind: 'ok', body: asstFinal('done!') }],
+    });
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: async () => ({ stdout: '', stderr: '', exitCode: 0 }) });
+    const result = await runner.run(baseTask());
+    assert.equal(result.status, 'success');
+    assert.equal(result.iterations, 1);
+    assert.equal(result.tool_call_count, 0);
+    assert.equal(result.output, 'done!');
+    const chatPosts = requests.filter((r) => r.url.endsWith('/v1/chat/completions'));
+    assert.equal(chatPosts.length, 1);
+  });
+
+  test('one tool call then final → 2 POSTs, tool message appended with byte-exact id', async () => {
+    const { fetchImpl, requests } = makeScriptedFetch({
+      responses: [
+        { kind: 'ok', body: asstWithToolCalls([{ id: 'call_1', command: 'ls' }]) },
+        { kind: 'ok', body: asstFinal('listed') },
+      ],
+    });
+    const stub: ShellExecFn = async () => ({ stdout: 'file1\nfile2\n', stderr: '', exitCode: 0 });
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: stub });
+    const result = await runner.run(baseTask());
+    assert.equal(result.status, 'success');
+    assert.equal(result.iterations, 2);
+    assert.equal(result.tool_call_count, 1);
+    assert.equal(result.output, 'listed');
+    // Inspect 2nd POST body — tool message must be present with byte-exact id.
+    const chatPosts = requests.filter((r) => r.url.endsWith('/v1/chat/completions'));
+    assert.equal(chatPosts.length, 2);
+    const body2 = JSON.parse(chatPosts[1]?.init.body as string);
+    const toolMsg = body2.messages.find((m: { role: string }) => m.role === 'tool');
+    assert.ok(toolMsg, 'tool message must be in iteration 2 body');
+    assert.equal(toolMsg.tool_call_id, 'call_1', 'byte-exact id echo');
+    assert.match(toolMsg.content, /STDOUT:\nfile1/);
+  });
+
+  test('iteration cap (20) — loop returns UNSUPPORTED "iteration cap" without firing detector', async () => {
+    // Each iteration emits a UNIQUE tool call (vary args) so detector never fires.
+    const responses = Array.from({ length: 20 }, (_, i) => ({
+      kind: 'ok' as const,
+      body: asstWithToolCalls([{ id: `call_${i}`, command: `echo ${i}` }]),
+    }));
+    const { fetchImpl, requests } = makeScriptedFetch({ responses });
+    const stub: ShellExecFn = async () => ({ stdout: 'ok', stderr: '', exitCode: 0 });
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: stub, maxIterations: 20 });
+    const result = await runner.run(baseTask());
+    assert.equal(result.status, 'error');
+    assert.equal(result.error?.code, 'UNSUPPORTED');
+    assert.match(result.error?.message ?? '', /iteration cap/i);
+    assert.equal(result.iterations, 20);
+    const chatPosts = requests.filter((r) => r.url.endsWith('/v1/chat/completions'));
+    assert.equal(chatPosts.length, 20);
+  });
+
+  test('wall-clock timeout via AbortController → status=timeout, TIMEOUT retryable=true', async () => {
+    const { fetchImpl } = makeScriptedFetch({ responses: [{ kind: 'never' }] });
+    const stub: ShellExecFn = async () => ({ stdout: '', stderr: '', exitCode: 0 });
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: stub });
+    const result = await runner.run(baseTask({ timeout_ms: 80 }));
+    assert.equal(result.status, 'timeout');
+    assert.equal(result.error?.code, 'TIMEOUT');
+    assert.equal(result.error?.retryable, true);
+  });
+
+  test('HTTP 500 → status=error, PROVIDER_ERROR retryable=true, no further iterations', async () => {
+    const { fetchImpl, requests } = makeScriptedFetch({
+      responses: [{ kind: 'status', status: 500, body: 'internal error' }],
+    });
+    const stub: ShellExecFn = async () => ({ stdout: '', stderr: '', exitCode: 0 });
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: stub });
+    const result = await runner.run(baseTask());
+    assert.equal(result.status, 'error');
+    assert.equal(result.error?.code, 'PROVIDER_ERROR');
+    assert.equal(result.error?.retryable, true);
+    assert.equal(result.iterations, 1, 'must NOT iterate past the 500');
+    const chatPosts = requests.filter((r) => r.url.endsWith('/v1/chat/completions'));
+    assert.equal(chatPosts.length, 1);
+  });
+
+  test('usage summed across iterations: 3 turns × 100 total_tokens = 300', async () => {
+    const tc = (id: string) => asstWithToolCalls([{ id, command: `echo ${id}` }]);
+    const sub = (n: number) => ({ prompt_tokens: 50, completion_tokens: 50, total_tokens: 100 });
+    const { fetchImpl } = makeScriptedFetch({
+      responses: [
+        { kind: 'ok', body: { ...tc('a'), usage: sub(1) } },
+        { kind: 'ok', body: { ...tc('b'), usage: sub(2) } },
+        { kind: 'ok', body: asstFinal('done', sub(3)) },
+      ],
+    });
+    const stub: ShellExecFn = async () => ({ stdout: 'x', stderr: '', exitCode: 0 });
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: stub });
+    const result = await runner.run(baseTask());
+    assert.equal(result.status, 'success');
+    assert.equal(result.token_usage, 300);
+    assert.equal(result.prompt_tokens, 150);
+    assert.equal(result.completion_tokens, 150);
+  });
+
+  test('capability probe rejects → INVALID_ARGS non-retryable; zero POSTs to /v1/chat/completions', async () => {
+    const { fetchImpl, requests } = makeScriptedFetch({
+      responses: [], // chat completion should NEVER be called
+      capability: [{ id: 'qwen/qwen3-coder-next', capabilities: ['vision'] }], // missing tool_use
+    });
+    const stub: ShellExecFn = async () => ({ stdout: '', stderr: '', exitCode: 0 });
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: stub });
+    const result = await runner.run(baseTask());
+    assert.equal(result.status, 'error');
+    assert.equal(result.error?.code, 'INVALID_ARGS');
+    assert.equal(result.error?.retryable, false);
+    const chatPosts = requests.filter((r) => r.url.endsWith('/v1/chat/completions'));
+    assert.equal(chatPosts.length, 0, 'capability gate must short-circuit before any chat POST');
+  });
+
+  test('capability probe — model not loaded → INVALID_ARGS with "lms load" hint', async () => {
+    const { fetchImpl } = makeScriptedFetch({
+      responses: [],
+      capability: [{ id: 'other/model', capabilities: ['tool_use'] }], // wrong id
+    });
+    const stub: ShellExecFn = async () => ({ stdout: '', stderr: '', exitCode: 0 });
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: stub });
+    const result = await runner.run(baseTask());
+    assert.equal(result.status, 'error');
+    assert.equal(result.error?.code, 'INVALID_ARGS');
+    assert.match(result.error?.message ?? '', /not loaded|lms load/i);
+  });
+
+  test('tools[] re-sent every iteration (LMSTUDIO-TOOL-API.md §Follow-up Turn)', async () => {
+    const { fetchImpl, requests } = makeScriptedFetch({
+      responses: [
+        { kind: 'ok', body: asstWithToolCalls([{ id: 'c1', command: 'ls' }]) },
+        { kind: 'ok', body: asstFinal('ok') },
+      ],
+    });
+    const stub: ShellExecFn = async () => ({ stdout: 'x', stderr: '', exitCode: 0 });
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: stub });
+    const result = await runner.run(baseTask());
+    assert.equal(result.status, 'success');
+    const chatPosts = requests.filter((r) => r.url.endsWith('/v1/chat/completions'));
+    assert.equal(chatPosts.length, 2);
+    for (let i = 0; i < chatPosts.length; i++) {
+      const body = JSON.parse(chatPosts[i]?.init.body as string);
+      assert.ok(Array.isArray(body.tools), `iteration ${i + 1} must include tools[]`);
+      assert.equal(body.tools.length, 1);
+      assert.equal(body.tools[0]?.function?.name, 'shell_exec');
+      assert.equal(body.tool_choice, 'auto');
+      assert.equal(body.stream, false, 'stream must be hard-coded false');
+    }
+  });
+});
