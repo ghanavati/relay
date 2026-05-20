@@ -1,11 +1,12 @@
 import { MemoryStore } from '../memory/memory-store.js';
 import { budgetedRecall } from '../memory/memory-engine.js';
+import { computeSemanticSimilarities } from '../memory/semantic-similarities.js';
 import type { RecallArgs } from '../contracts/memory.js';
 import type { MemoryType, RecallQuery } from '../memory/types.js';
 
 type McpToolResult = { content: Array<{ type: 'text'; text: string }> };
 
-export function handleRecall(args: RecallArgs): McpToolResult {
+export async function handleRecall(args: RecallArgs): Promise<McpToolResult> {
   const store = new MemoryStore();
 
   const query: RecallQuery = {
@@ -24,10 +25,16 @@ export function handleRecall(args: RecallArgs): McpToolResult {
   // 1. Get all candidate memories (SQL-filtered by type, workdir, expiry)
   const candidates = store.getCandidates(query);
 
-  // 2. Score and select within token budget
-  const result = budgetedRecall(candidates, query, Date.now());
+  // 2. PLAN-4 T6 — Compute semantic similarities at impure boundary BEFORE
+  //    scoring. Returns empty Map when RELAY_EMBEDDING_MODEL is unset or
+  //    LM Studio is unreachable, in which case the engine falls through to
+  //    word-overlap (byte-identical to pre-T6 behaviour). Never throws.
+  const similarities = await computeSemanticSimilarities(store, query, candidates);
 
-  // 3. Touch accessed memories to keep them fresh + SHIP-65 audit log
+  // 3. Score and select within token budget
+  const result = budgetedRecall(candidates, query, Date.now(), similarities);
+
+  // 4. Touch accessed memories to keep them fresh + SHIP-65 audit log
   const accessedIds = result.memories.map(m => m.memory_id);
   store.touchMemories(accessedIds);
   store.logReads(accessedIds, { source: 'mcp', workdir: args.workdir });

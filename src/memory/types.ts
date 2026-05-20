@@ -51,6 +51,7 @@ export interface MemoryRow {
   readonly files_json: string; // SHIP-52: JSON array of file paths this memory relates to
   readonly trust_level: string; // SHIP-67: 'unverified' | 'provisional' | 'trusted'
   readonly embedding_blob: Buffer | null; // PLAN-4 §5: 3072-byte float32 vector (768 dims) or NULL when not yet backfilled
+  readonly embedding_model: string | null; // PLAN-4 T1: model id that produced embedding_blob — used for cross-model rejection (PITFALL 2.3). NULL = not yet embedded.
 }
 
 export interface Memory {
