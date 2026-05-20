@@ -855,6 +855,37 @@ describe('T7 — dispatch wiring smoke', () => {
     assert.equal(exitCode, 2, 'must exit 2 on model-less HTTP provider');
     assert.match(stderr, /model required for provider=lmstudio-agentic/);
   });
+
+  test('DEFAULT_AGENTIC_TOOLS exported with shell_exec function definition', async () => {
+    const { DEFAULT_AGENTIC_TOOLS } = await import('./lmstudio-agentic.js');
+    assert.ok(Array.isArray(DEFAULT_AGENTIC_TOOLS), 'DEFAULT_AGENTIC_TOOLS must be an array');
+    assert.equal(DEFAULT_AGENTIC_TOOLS.length, 1, 'default tools = [shell_exec]');
+    const tool = DEFAULT_AGENTIC_TOOLS[0]!;
+    assert.equal(tool.type, 'function');
+    assert.equal(tool.function.name, 'shell_exec');
+    assert.ok(tool.function.description, 'must have description for model context');
+    const props = (tool.function.parameters as { properties: Record<string, unknown> }).properties;
+    assert.ok('command' in props, 'must declare command property');
+  });
+
+  test('cmd-run wires DEFAULT_AGENTIC_TOOLS for lmstudio-agentic provider', async () => {
+    const src = await readSourceFile('src/cli/cmd-run.ts');
+    assert.match(src, /DEFAULT_AGENTIC_TOOLS/);
+    assert.match(src, /provider === 'lmstudio-agentic'/);
+  });
+
+  test('cmd-parallel wires DEFAULT_AGENTIC_TOOLS for lmstudio-agentic provider', async () => {
+    const src = await readSourceFile('src/cli/cmd-parallel.ts');
+    assert.match(src, /DEFAULT_AGENTIC_TOOLS/);
+    assert.match(src, /provider === 'lmstudio-agentic'/);
+  });
+
+  test('cli.ts top-level dispatch validator accepts lmstudio-agentic', async () => {
+    const src = await readSourceFile('src/cli.ts');
+    assert.match(src, /'lmstudio-agentic'/);
+    // The validator array at line ~260 must include the new provider literal
+    assert.match(src, /\['codex',\s*'openrouter',\s*'lmstudio',\s*'anthropic',\s*'lmstudio-agentic'\]/);
+  });
 });
 
 // ─── T8: INTEGRATION TEST — ephemeral in-process http server ─────────────
