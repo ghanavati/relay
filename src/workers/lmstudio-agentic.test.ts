@@ -725,3 +725,75 @@ describe('T4 continuation — tools[] re-sent', () => {
     }
   });
 });
+
+// ─── T6: LFM2 SYSTEM-PROMPT NUDGE INTEGRATION ────────────────────────────
+
+describe('T6 — LFM2 nudge integration', () => {
+  test('LFM2 model with contextPrefix → system message ends with nudge', async () => {
+    const { fetchImpl, requests } = makeScriptedFetch({
+      responses: [{ kind: 'ok', body: asstFinal('ok') }],
+      capability: [{ id: 'liquid/lfm2-24b-a2b', capabilities: ['tool_use'] }],
+    });
+    const stub: ShellExecFn = async () => ({ stdout: '', stderr: '', exitCode: 0 });
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: stub });
+    await runner.run(
+      baseTask({ model: 'liquid/lfm2-24b-a2b', contextPrefix: 'You are a coding agent.' })
+    );
+    const chatPosts = requests.filter((r) => r.url.endsWith('/v1/chat/completions'));
+    const body = JSON.parse(chatPosts[0]?.init.body as string);
+    const sys = body.messages.find((m: { role: string }) => m.role === 'system');
+    assert.ok(sys, 'system message must exist');
+    assert.ok(
+      sys.content.endsWith('Output function calls strictly as JSON in the tool_calls field, never as Python literals.'),
+      'system content must end with the nudge'
+    );
+    assert.ok(sys.content.startsWith('You are a coding agent.'), 'contextPrefix preserved at start');
+  });
+
+  test('non-LFM2 model (qwen) → no nudge appended; system content == contextPrefix', async () => {
+    const { fetchImpl, requests } = makeScriptedFetch({
+      responses: [{ kind: 'ok', body: asstFinal('ok') }],
+    });
+    const stub: ShellExecFn = async () => ({ stdout: '', stderr: '', exitCode: 0 });
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: stub });
+    await runner.run(
+      baseTask({ model: 'qwen/qwen3-coder-next', contextPrefix: 'You are a coding agent.' })
+    );
+    const chatPosts = requests.filter((r) => r.url.endsWith('/v1/chat/completions'));
+    const body = JSON.parse(chatPosts[0]?.init.body as string);
+    const sys = body.messages.find((m: { role: string }) => m.role === 'system');
+    assert.equal(sys.content, 'You are a coding agent.', 'no nudge for qwen');
+  });
+
+  test('mixed-case LFM2 model → nudge appended (case-insensitive)', async () => {
+    const { fetchImpl, requests } = makeScriptedFetch({
+      responses: [{ kind: 'ok', body: asstFinal('ok') }],
+      capability: [{ id: 'LIQUID/LFM2-foo', capabilities: ['tool_use'] }],
+    });
+    const stub: ShellExecFn = async () => ({ stdout: '', stderr: '', exitCode: 0 });
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: stub });
+    await runner.run(baseTask({ model: 'LIQUID/LFM2-foo', contextPrefix: 'ctx' }));
+    const chatPosts = requests.filter((r) => r.url.endsWith('/v1/chat/completions'));
+    const body = JSON.parse(chatPosts[0]?.init.body as string);
+    const sys = body.messages.find((m: { role: string }) => m.role === 'system');
+    assert.match(sys.content, /Output function calls strictly as JSON/);
+  });
+
+  test('LFM2 model WITHOUT contextPrefix → system message exists with nudge as only content', async () => {
+    const { fetchImpl, requests } = makeScriptedFetch({
+      responses: [{ kind: 'ok', body: asstFinal('ok') }],
+      capability: [{ id: 'liquid/lfm2-24b-a2b', capabilities: ['tool_use'] }],
+    });
+    const stub: ShellExecFn = async () => ({ stdout: '', stderr: '', exitCode: 0 });
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: stub });
+    await runner.run(baseTask({ model: 'liquid/lfm2-24b-a2b', contextPrefix: undefined }));
+    const chatPosts = requests.filter((r) => r.url.endsWith('/v1/chat/completions'));
+    const body = JSON.parse(chatPosts[0]?.init.body as string);
+    const sys = body.messages.find((m: { role: string }) => m.role === 'system');
+    assert.ok(sys, 'system message must exist even without contextPrefix when LFM2');
+    assert.equal(
+      sys.content,
+      'Output function calls strictly as JSON in the tool_calls field, never as Python literals.'
+    );
+  });
+});
