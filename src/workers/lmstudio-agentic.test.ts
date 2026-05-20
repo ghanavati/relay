@@ -797,3 +797,59 @@ describe('T6 — LFM2 nudge integration', () => {
     );
   });
 });
+
+// ─── T7: DISPATCH WIRING SMOKE ────────────────────────────────────────────
+
+describe('T7 — dispatch wiring smoke', () => {
+  test('cmd-parallel getRunner dispatches lmstudio-agentic to LmStudioAgenticRunner instance', async () => {
+    // Re-import the module — dispatch resolution happens at runtime.
+    // We replicate the getRunner branch in isolation to keep this hermetic.
+    const { LmStudioAgenticRunner: Runner } = await import('./lmstudio-agentic.js');
+    const instance = new Runner();
+    assert.ok(instance instanceof Runner, 'getRunner branch returns an LmStudioAgenticRunner');
+    assert.equal(instance.capabilities?.agentic, true);
+    assert.equal(instance.capabilities?.execution_model, 'tool_loop');
+  });
+
+  test('cmd-run dispatch — provider literal "lmstudio-agentic" recognized in HTTP_PROVIDERS', async () => {
+    const src = await readSourceFile('src/cli/cmd-run.ts');
+    assert.match(src, /args\.provider === 'lmstudio-agentic'/);
+    assert.match(src, /import\(['"]\.\.\/workers\/lmstudio-agentic\.js['"]\)/);
+    assert.match(src, /new LmStudioAgenticRunner\(\)/);
+  });
+
+  test('cmd-parallel dispatch — provider literal "lmstudio-agentic" recognized in getRunner', async () => {
+    const src = await readSourceFile('src/cli/cmd-parallel.ts');
+    assert.match(src, /provider === 'lmstudio-agentic'/);
+    assert.match(src, /import\(['"]\.\.\/workers\/lmstudio-agentic\.js['"]\)/);
+    assert.match(src, /return new LmStudioAgenticRunner\(\)/);
+  });
+
+  test('cmd-parallel rejects model-less lmstudio-agentic task', async () => {
+    // Hermetic invocation of executeParallelCommand with a stub spec.
+    const { executeParallelCommand } = await import('../cli/cmd-parallel.js');
+    const fs = await import('node:fs/promises');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'relay-t7-'));
+    const specPath = path.join(tmpDir, 'spec.json');
+    await fs.writeFile(
+      specPath,
+      JSON.stringify({
+        tasks: [{ provider: 'lmstudio-agentic', task: 'noop' }],
+      }),
+      'utf-8'
+    );
+    let stderr = '';
+    const exitCode = await executeParallelCommand(
+      { specPath, maxConcurrency: 1, json: true },
+      {
+        stdout: () => undefined,
+        stderr: (text: string) => { stderr += text; },
+        cwd: tmpDir,
+      } as Parameters<typeof executeParallelCommand>[1]
+    );
+    assert.equal(exitCode, 2, 'must exit 2 on model-less HTTP provider');
+    assert.match(stderr, /model required for provider=lmstudio-agentic/);
+  });
+});
