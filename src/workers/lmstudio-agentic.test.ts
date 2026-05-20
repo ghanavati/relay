@@ -224,3 +224,143 @@ describe('T2 — skeleton + pure helpers', () => {
     assert.equal(result.error?.code, 'INVALID_ARGS');
   });
 });
+
+// ─── T3: TOOL EXECUTION SANDBOX ───────────────────────────────────────────
+
+import { executeToolCall, executeShellExec, type ShellExecFn, type ShellExecArgs } from './lmstudio-agentic.js';
+
+function makeShellExecRecorder(stubResult?: Partial<{ stdout: string; stderr: string; exitCode: number }>): {
+  shellExec: ShellExecFn;
+  calls: ShellExecArgs[];
+} {
+  const calls: ShellExecArgs[] = [];
+  const shellExec: ShellExecFn = async (args) => {
+    calls.push(args);
+    return {
+      stdout: stubResult?.stdout ?? '',
+      stderr: stubResult?.stderr ?? '',
+      exitCode: stubResult?.exitCode ?? 0,
+    };
+  };
+  return { shellExec, calls };
+}
+
+describe('T3 — tool execution sandbox', () => {
+  test('unknown tool → returns ERROR message, never throws', async () => {
+    const { shellExec } = makeShellExecRecorder();
+    const call: ToolCall = {
+      id: 'call_xyz',
+      type: 'function',
+      function: { name: 'figma_unknown', arguments: '{}' },
+    };
+    const result = await executeToolCall(call, '/tmp/work', shellExec);
+    assert.equal(result.role, 'tool');
+    assert.equal(result.tool_call_id, 'call_xyz');
+    assert.match(result.content, /ERROR: unknown tool figma_unknown/);
+  });
+
+  test('arguments not valid JSON → returns ERROR message', async () => {
+    const { shellExec } = makeShellExecRecorder();
+    const call: ToolCall = {
+      id: 'call_1',
+      type: 'function',
+      function: { name: 'shell_exec', arguments: '{ not valid }' },
+    };
+    const result = await executeToolCall(call, '/tmp/work', shellExec);
+    assert.equal(result.tool_call_id, 'call_1');
+    assert.match(result.content, /ERROR: arguments not valid JSON/);
+  });
+
+  test('shell_exec → invokes shellExec with workdir cwd + maxBytes=32768 and returns stringified result', async () => {
+    const { shellExec, calls } = makeShellExecRecorder({ stdout: 'hi\n', exitCode: 0 });
+    const call: ToolCall = {
+      id: 'call_2',
+      type: 'function',
+      function: { name: 'shell_exec', arguments: JSON.stringify({ command: 'echo hi' }) },
+    };
+    const result = await executeToolCall(call, '/tmp/work', shellExec);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.command, 'echo hi');
+    assert.equal(calls[0]?.cwd, '/tmp/work');
+    assert.equal(calls[0]?.maxBytes, 32768);
+    assert.equal(result.tool_call_id, 'call_2');
+    // Note: stdout 'hi\n' → STDOUT:\nhi\n followed by \n\nSTDERR: separator → triple-newline
+    assert.match(result.content, /STDOUT:\nhi\n\n\nSTDERR:\n\n\nEXIT: 0/);
+  });
+
+  test('alias "bash" resolves to the same handler as shell_exec', async () => {
+    const { shellExec, calls } = makeShellExecRecorder({ stdout: 'ok\n', exitCode: 0 });
+    const call: ToolCall = {
+      id: 'call_bash',
+      type: 'function',
+      function: { name: 'bash', arguments: JSON.stringify({ command: 'echo ok' }) },
+    };
+    const result = await executeToolCall(call, '/tmp/work', shellExec);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.command, 'echo ok');
+    assert.equal(calls[0]?.cwd, '/tmp/work');
+    assert.match(result.content, /STDOUT:\nok\n/);
+  });
+
+  test('cwd-clamp: model-emitted {cwd:"/etc"} is silently dropped — task.workdir wins', async () => {
+    const { shellExec, calls } = makeShellExecRecorder({ stdout: 'denied\n' });
+    const call: ToolCall = {
+      id: 'call_3',
+      type: 'function',
+      function: { name: 'shell_exec', arguments: JSON.stringify({ command: 'ls', cwd: '/etc' }) },
+    };
+    await executeToolCall(call, '/tmp/work', shellExec);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.cwd, '/tmp/work', 'task.workdir must override model-emitted cwd');
+  });
+
+  test('stdout >32KB → truncated with marker; content length bounded', async () => {
+    const big = 'A'.repeat(50_000); // 50KB
+    const { shellExec } = makeShellExecRecorder({ stdout: big, exitCode: 0 });
+    const call: ToolCall = {
+      id: 'call_trunc',
+      type: 'function',
+      function: { name: 'shell_exec', arguments: JSON.stringify({ command: 'cat big' }) },
+    };
+    const result = await executeToolCall(call, '/tmp/work', shellExec);
+    // Truncated stdout block should NOT contain the full 50K, but should contain the marker.
+    assert.match(result.content, /…\[TRUNCATED: original 50000 bytes\]/);
+    // The reported stdout segment (before STDERR) must be ≤ 32768 + marker length.
+    const stdoutMatch = result.content.match(/STDOUT:\n([\s\S]*?)\n\nSTDERR:/);
+    assert.ok(stdoutMatch, 'STDOUT segment must be present');
+    const stdoutSegment = stdoutMatch[1] ?? '';
+    const stdoutBytes = Buffer.byteLength(stdoutSegment, 'utf-8');
+    // 32768 bytes of payload + marker (~36 bytes) — bound is "≤ 32768 + 100" generous
+    assert.ok(stdoutBytes <= 32768 + 200, `stdout segment ${stdoutBytes} bytes must be near-bounded`);
+  });
+
+  test('tool_call_id byte-exact echo: numeric "365174485"', async () => {
+    const { shellExec } = makeShellExecRecorder();
+    const call: ToolCall = {
+      id: '365174485',
+      type: 'function',
+      function: { name: 'shell_exec', arguments: JSON.stringify({ command: 'echo' }) },
+    };
+    const result = await executeToolCall(call, '/tmp/work', shellExec);
+    assert.equal(result.tool_call_id, '365174485', 'numeric id preserved byte-exact');
+  });
+
+  test('tool_call_id byte-exact echo: UUID-style "call_abc-123-XYZ"', async () => {
+    const { shellExec } = makeShellExecRecorder();
+    const call: ToolCall = {
+      id: 'call_abc-123-XYZ',
+      type: 'function',
+      function: { name: 'shell_exec', arguments: JSON.stringify({ command: 'pwd' }) },
+    };
+    const result = await executeToolCall(call, '/tmp/work', shellExec);
+    assert.equal(result.tool_call_id, 'call_abc-123-XYZ', 'UUID-style id preserved byte-exact');
+  });
+
+  test('executeShellExec — empty command rejected by zod schema', async () => {
+    const { shellExec } = makeShellExecRecorder();
+    await assert.rejects(
+      executeShellExec({ command: '' }, '/tmp/work', shellExec),
+      /String must contain at least 1 character|Required|too_small/
+    );
+  });
+});
