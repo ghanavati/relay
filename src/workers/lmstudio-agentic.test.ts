@@ -853,3 +853,159 @@ describe('T7 — dispatch wiring smoke', () => {
     assert.match(stderr, /model required for provider=lmstudio-agentic/);
   });
 });
+
+// ─── T8: INTEGRATION TEST — ephemeral in-process http server ─────────────
+//
+// W1 (VERIFICATION.md): Live LM Studio integration is gated on RELAY_LMSTUDIO_LIVE=1
+// since CI cannot pull a 14GB model. Default automated path uses an ephemeral
+// http.createServer that scripts probe + chat-completion responses. The shell_exec
+// path is mocked at the injection seam (no real /bin/sh). For real-LM-Studio +
+// real-shell verification, run the §Runtime Validation manual smoke commands in
+// PLAN.md.
+
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+
+interface EphemeralLmStudio {
+  server: Server;
+  port: number;
+  url: string;
+  requestBodies: string[];
+  close: () => Promise<void>;
+}
+
+async function startEphemeralLmStudio(scriptedResponses: unknown[]): Promise<EphemeralLmStudio> {
+  const requestBodies: string[] = [];
+  let chatIdx = 0;
+  const server = createServer((req, res) => {
+    if (req.url === '/api/v0/models' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        data: [{ id: 'qwen/qwen3-coder-next', capabilities: ['tool_use'] }],
+      }));
+      return;
+    }
+    if (req.url === '/v1/chat/completions' && req.method === 'POST') {
+      const chunks: Buffer[] = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        requestBodies.push(Buffer.concat(chunks).toString('utf-8'));
+        const body = scriptedResponses[chatIdx++];
+        if (!body) {
+          res.writeHead(500);
+          res.end('scripted server exhausted');
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(body));
+      });
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const addr = server.address() as AddressInfo;
+  return {
+    server,
+    port: addr.port,
+    url: `http://127.0.0.1:${addr.port}`,
+    requestBodies,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}
+
+describe('T8 — integration against ephemeral http server', () => {
+  test('full round-trip: probe → tool_calls (numeric id) → tool result → final answer', async () => {
+    const eph = await startEphemeralLmStudio([
+      // Iteration 1: tool_calls with numeric id "365174485" + shell_exec({command:"echo hello"})
+      {
+        choices: [{
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [{
+              id: '365174485',
+              type: 'function',
+              function: { name: 'shell_exec', arguments: JSON.stringify({ command: 'echo hello' }) },
+            }],
+          },
+          finish_reason: 'tool_calls',
+        }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      },
+      // Iteration 2: final answer
+      {
+        choices: [{ message: { role: 'assistant', content: 'Done — output was: hello' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 },
+      },
+    ]);
+    try {
+      const originalEndpoint = process.env['LMSTUDIO_ENDPOINT'];
+      process.env['LMSTUDIO_ENDPOINT'] = eph.url;
+      const shellExecMock: ShellExecFn = async () => ({ stdout: 'hello\n', stderr: '', exitCode: 0 });
+      const runner = new LmStudioAgenticRunner({ shellExec: shellExecMock });
+      const result = await runner.run(baseTask());
+      // Restore env
+      if (originalEndpoint === undefined) delete process.env['LMSTUDIO_ENDPOINT'];
+      else process.env['LMSTUDIO_ENDPOINT'] = originalEndpoint;
+
+      assert.equal(result.status, 'success');
+      assert.equal(result.iterations, 2);
+      assert.equal(result.tool_call_count, 1);
+      assert.match(result.output, /Done/);
+      // Inspect recorded request bodies — iteration 2 must contain tool message with byte-exact id
+      assert.equal(eph.requestBodies.length, 2);
+      const body2 = JSON.parse(eph.requestBodies[1] ?? '{}');
+      const toolMsg = body2.messages.find((m: { role: string }) => m.role === 'tool');
+      assert.ok(toolMsg, 'tool message must be in iteration-2 body');
+      assert.equal(toolMsg.tool_call_id, '365174485', 'numeric id byte-exact');
+      // Both iterations must include tools[]
+      for (let i = 0; i < eph.requestBodies.length; i++) {
+        const b = JSON.parse(eph.requestBodies[i] ?? '{}');
+        assert.ok(Array.isArray(b.tools), `iteration ${i + 1} must include tools[]`);
+      }
+    } finally {
+      await eph.close();
+    }
+  });
+
+  test('UUID-style tool_call_id "call_abc-123-XYZ" round-trips byte-exact', async () => {
+    const eph = await startEphemeralLmStudio([
+      {
+        choices: [{
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [{
+              id: 'call_abc-123-XYZ',
+              type: 'function',
+              function: { name: 'shell_exec', arguments: JSON.stringify({ command: 'pwd' }) },
+            }],
+          },
+          finish_reason: 'tool_calls',
+        }],
+      },
+      {
+        choices: [{ message: { role: 'assistant', content: 'pwd was /tmp/work' }, finish_reason: 'stop' }],
+      },
+    ]);
+    try {
+      const originalEndpoint = process.env['LMSTUDIO_ENDPOINT'];
+      process.env['LMSTUDIO_ENDPOINT'] = eph.url;
+      const shellExecMock: ShellExecFn = async () => ({ stdout: '/tmp/work\n', stderr: '', exitCode: 0 });
+      const runner = new LmStudioAgenticRunner({ shellExec: shellExecMock });
+      const result = await runner.run(baseTask());
+      if (originalEndpoint === undefined) delete process.env['LMSTUDIO_ENDPOINT'];
+      else process.env['LMSTUDIO_ENDPOINT'] = originalEndpoint;
+
+      assert.equal(result.status, 'success');
+      const body2 = JSON.parse(eph.requestBodies[1] ?? '{}');
+      const toolMsg = body2.messages.find((m: { role: string }) => m.role === 'tool');
+      assert.equal(toolMsg.tool_call_id, 'call_abc-123-XYZ', 'UUID-style id byte-exact');
+    } finally {
+      await eph.close();
+    }
+  });
+});
+
