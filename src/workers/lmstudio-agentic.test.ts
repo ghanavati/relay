@@ -596,6 +596,112 @@ describe('T4 — tool loop, iteration cap, timeout, capability probe', () => {
     assert.match(result.error?.message ?? '', /not loaded|lms load/i);
   });
 
+  void 0; // marker for T4/T5 boundary
+});
+
+// ─── T5: HASH-BASED LOOP DETECTOR ─────────────────────────────────────────
+
+import { hashToolCall, canonicalJsonStringify, computeTurnFingerprint } from './lmstudio-agentic.js';
+
+describe('T5 — hash-based loop detector', () => {
+  test('hashToolCall — key-order independence (canonical JSON)', () => {
+    const h1 = hashToolCall('shell_exec', { a: 1, b: 2 });
+    const h2 = hashToolCall('shell_exec', { b: 2, a: 1 });
+    assert.equal(h1, h2, 'sha256 with canonical key sort must produce identical hashes');
+  });
+
+  test('canonicalJsonStringify — sorts top-level and nested keys', () => {
+    const a = canonicalJsonStringify({ b: 2, a: 1, c: { z: 1, y: 2 } });
+    const b = canonicalJsonStringify({ a: 1, b: 2, c: { y: 2, z: 1 } });
+    assert.equal(a, b);
+  });
+
+  test('hashToolCall — different names produce different hashes', () => {
+    assert.notEqual(hashToolCall('shell_exec', {}), hashToolCall('bash', {}));
+  });
+
+  test('hashToolCall — falls back to raw string when arguments unparseable', () => {
+    // Pass a raw string when JSON parse failed in upstream code
+    const h = hashToolCall('shell_exec', '{not json}');
+    assert.ok(h.length === 64, 'sha256 hex digest length is 64');
+  });
+
+  test('computeTurnFingerprint — same calls in different order yield same fingerprint', () => {
+    const callsA: ToolCall[] = [
+      { id: 'a', type: 'function', function: { name: 'shell_exec', arguments: '{"command":"ls"}' } },
+      { id: 'b', type: 'function', function: { name: 'shell_exec', arguments: '{"command":"pwd"}' } },
+    ];
+    const callsB: ToolCall[] = [
+      { id: 'c', type: 'function', function: { name: 'shell_exec', arguments: '{"command":"pwd"}' } },
+      { id: 'd', type: 'function', function: { name: 'shell_exec', arguments: '{"command":"ls"}' } },
+    ];
+    assert.equal(computeTurnFingerprint(callsA), computeTurnFingerprint(callsB));
+  });
+
+  test('3 identical calls → LOOP_DETECTED before 4th POST; status=error UNSUPPORTED', async () => {
+    // Each iteration returns the SAME shell_exec({command:'ls'}) call.
+    const sameCall = asstWithToolCalls([{ id: 'call_x', command: 'ls' }]);
+    const { fetchImpl, requests } = makeScriptedFetch({
+      responses: [
+        { kind: 'ok', body: sameCall },
+        { kind: 'ok', body: sameCall },
+        { kind: 'ok', body: sameCall },
+        { kind: 'ok', body: sameCall }, // safety — never consumed if detector aborts
+      ],
+    });
+    const stub: ShellExecFn = async () => ({ stdout: 'x', stderr: '', exitCode: 0 });
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: stub });
+    const result = await runner.run(baseTask());
+    assert.equal(result.status, 'error');
+    assert.equal(result.error?.code, 'UNSUPPORTED');
+    assert.match(result.error?.message ?? '', /LOOP_DETECTED/);
+    assert.equal(result.iterations, 3, 'must abort at iteration 3, before 4th POST');
+    const chatPosts = requests.filter((r) => r.url.endsWith('/v1/chat/completions'));
+    assert.equal(chatPosts.length, 3, 'no 4th chat completion request');
+  });
+
+  test('2 identical then 1 different → sliding window resets; loop continues', async () => {
+    const callA = asstWithToolCalls([{ id: 'a', command: 'ls' }]);
+    const callB = asstWithToolCalls([{ id: 'b', command: 'pwd' }]); // different args
+    const { fetchImpl } = makeScriptedFetch({
+      responses: [
+        { kind: 'ok', body: callA },
+        { kind: 'ok', body: callA },
+        { kind: 'ok', body: callB },
+        { kind: 'ok', body: asstFinal('done') },
+      ],
+    });
+    const stub: ShellExecFn = async () => ({ stdout: 'x', stderr: '', exitCode: 0 });
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: stub });
+    const result = await runner.run(baseTask());
+    assert.equal(result.status, 'success');
+    assert.equal(result.iterations, 4);
+    assert.equal(result.tool_call_count, 3);
+  });
+
+  test('parallel tool_calls — same multi-call signature 3 turns in row → LOOP_DETECTED', async () => {
+    const parallelTurn = asstWithToolCalls([
+      { id: 'p1', command: 'ls' },
+      { id: 'p2', command: 'pwd' },
+    ]);
+    const { fetchImpl } = makeScriptedFetch({
+      responses: [
+        { kind: 'ok', body: parallelTurn },
+        { kind: 'ok', body: parallelTurn },
+        { kind: 'ok', body: parallelTurn },
+      ],
+    });
+    const stub: ShellExecFn = async () => ({ stdout: 'x', stderr: '', exitCode: 0 });
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: stub });
+    const result = await runner.run(baseTask());
+    assert.equal(result.status, 'error');
+    assert.equal(result.error?.code, 'UNSUPPORTED');
+    assert.match(result.error?.message ?? '', /LOOP_DETECTED/);
+    assert.equal(result.iterations, 3);
+  });
+});
+
+describe('T4 continuation — tools[] re-sent', () => {
   test('tools[] re-sent every iteration (LMSTUDIO-TOOL-API.md §Follow-up Turn)', async () => {
     const { fetchImpl, requests } = makeScriptedFetch({
       responses: [
