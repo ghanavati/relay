@@ -152,6 +152,13 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
           task: run.task,
           run_id: run.run_id,
         });
+        // Inject default agentic tools when dispatching to lmstudio-agentic so the
+        // runner has a shell_exec tool to offer the model. Worker rejects empty tools[].
+        let tools;
+        if (run.provider === 'lmstudio-agentic') {
+          const { DEFAULT_AGENTIC_TOOLS } = await import('../workers/lmstudio-agentic.js');
+          tools = DEFAULT_AGENTIC_TOOLS;
+        }
         const result = await runner.run({
           task: built.bareTask,
           contextPrefix: built.contextPrefix,
@@ -161,6 +168,7 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
           reasoning_effort: run.reasoning_effort,
           run_id: run.run_id,
           provider: run.provider,
+          ...(tools ? { tools } : {}),
         });
         const finished_at = Date.now();
         store.complete(run.run_id, {

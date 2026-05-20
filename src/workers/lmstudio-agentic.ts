@@ -7,15 +7,21 @@
  *
  * Capabilities: `{ agentic: true, execution_model: 'tool_loop' }`.
  *
- * Architecture (per PLAN.md §Goal):
- *   1. Probe GET /api/v0/models — refuse if model lacks `tool_use` capability.
+ * Architecture (per PLAN.md §Goal + LMSTUDIO-ERRATA-2026.md §4-9):
+ *   1. Probe GET /v1/models (OpenAI-compat, per ERRATA E1) — refuse if model lacks
+ *      `tool_use` capability. REST v0 (/api/v0/models) does NOT include capabilities.
  *   2. Build messages (system contextPrefix + LFM2 nudge if applicable, user task).
  *   3. Loop POST /v1/chat/completions { stream:false, tools, tool_choice:'auto' }:
  *      a. If choices[0].message.tool_calls absent → final answer, exit success.
  *      b. Execute each tool call (shell_exec / bash; cwd clamped to task.workdir; 32KB trunc).
- *      c. Append {role:'tool', tool_call_id, content} for each tool result.
- *      d. Hash-detector: 3 consecutive identical per-turn fingerprints → LOOP_DETECTED abort.
- *      e. Re-send tools[] every turn.
+ *      c. Append assistant message — spread reasoning_content if present (ERRATA E2 —
+ *         Qwen 3.5/3.6 leak </think> into content otherwise).
+ *      d. For empty tool_call_id (LM Studio bug #830, ERRATA E3) — append synthetic
+ *         {role:'tool', tool_call_id:'__missing__', content:'ERROR: tool_call_id was empty'};
+ *         do NOT crash — let the loop detector + iteration cap absorb the misbehavior.
+ *      e. Append {role:'tool', tool_call_id, content} for each well-formed tool call.
+ *      f. Hash-detector: 3 consecutive identical per-turn fingerprints → LOOP_DETECTED abort.
+ *      g. Re-send tools[] every turn.
  *   4. Iteration cap 20; wall-clock cap via AbortController(task.timeout_ms).
  *
  * Test seams (PLAN.md T2): `fetchImpl`, `shellExec`, `maxIterations` constructor opts.
@@ -49,6 +55,32 @@ const SHELL_EXEC_NAMES = new Set<string>(['shell_exec', 'bash']);
 /** LFM2 model regex (PLAN §T6). */
 const LFM2_MODEL_RE = /^liquid\/lfm2-/i;
 
+/**
+ * Default shell_exec tool definition offered to the model when the caller
+ * does not supply `task.tools`. Matches the contract in PLAN.md §Tool Execution
+ * Sandbox Spec — single `command` arg, no schema-level cwd (cwd is clamped to
+ * `task.workdir` by the executor regardless of model emission).
+ */
+export const DEFAULT_AGENTIC_TOOLS = [
+  {
+    type: 'function' as const,
+    function: {
+      name: 'shell_exec',
+      description:
+        'Execute a shell command (bash syntax) in the task workdir. Stdout is truncated at 32KB. ' +
+        'Returns STDOUT/STDERR/EXIT. Use this for filesystem inspection, running tests, building, etc.',
+      parameters: {
+        type: 'object' as const,
+        properties: {
+          command: { type: 'string' as const, description: 'Shell command to run in the task workdir.' },
+        },
+        required: ['command'] as const,
+        additionalProperties: false as const,
+      },
+    },
+  },
+];
+
 /** Pythonic-output-suppression nudge (PLAN §T2 — pitfall 1.1). */
 const LFM2_NUDGE =
   'Output function calls strictly as JSON in the tool_calls field, never as Python literals.';
@@ -61,7 +93,8 @@ const DEFAULT_SYSTEM_PROMPT = 'You are a coding agent. Use the provided tools to
 export type ChatMessage =
   | { role: 'system'; content: string }
   | { role: 'user'; content: string }
-  | { role: 'assistant'; content: string | null; tool_calls?: ToolCall[] }
+  // reasoning_content (optional) preserved for ERRATA E2 — Qwen 3.5/3.6 multi-turn safety.
+  | { role: 'assistant'; content: string | null; tool_calls?: ToolCall[]; reasoning_content?: string }
   | ToolCallMessage;
 
 export interface ShellExecArgs {
@@ -272,8 +305,26 @@ interface CapabilityProbeBody {
 }
 
 /**
- * Probe GET /api/v0/models, find entry by `id`, check `capabilities` contains 'tool_use'.
- * Returns `null` on success; `RelayError` on missing-capability / probe failure.
+ * Probe LM Studio for the target model's `tool_use` capability.
+ *
+ * ERRATA E1 with live-LM-Studio refinement: per LMSTUDIO-ERRATA-2026 §4, /v1/models
+ * is the documented OpenAI-compat capabilities source — BUT live testing against
+ * LM Studio 0.4.13+ (2026-05) showed /v1/models can omit the capabilities key for
+ * non-loaded models, while /api/v0/models reliably includes it for ALL listed
+ * models. So we probe BOTH:
+ *
+ *   1. Try /v1/models first (matches OpenAI ecosystem expectations).
+ *   2. If entry found but capabilities key absent → fall back to /api/v0/models.
+ *   3. Aggregate: any endpoint reporting "tool_use" wins (fail-open on the
+ *      OR of both responses), since both endpoints are authoritative per docs.
+ *
+ * Fail-closed if:
+ *   - both endpoints unreachable → PROVIDER_ERROR retryable
+ *   - model not present in either → INVALID_ARGS with `lms load` hint
+ *   - capabilities absent from BOTH endpoints → INVALID_ARGS (LM Studio too old)
+ *   - capabilities present but no "tool_use" in either → INVALID_ARGS
+ *
+ * Returns `null` on success.
  */
 async function probeCapability(
   endpoint: string,
@@ -282,26 +333,39 @@ async function probeCapability(
   fetchImpl: FetchFn,
   signal: AbortSignal
 ): Promise<ReturnType<typeof makeError> | null> {
-  const probeUrl = `${endpoint.replace(/\/+$/, '')}/api/v0/models`;
-  let res: Response;
-  try {
-    res = await fetchImpl(probeUrl, { method: 'GET', headers, signal });
-  } catch (err) {
-    return makeError(
-      'PROVIDER_ERROR',
-      `LM Studio capability probe failed: ${err instanceof Error ? err.message : String(err)}`,
-      true
-    );
+  const base = endpoint.replace(/\/+$/, '');
+
+  async function fetchCapsAt(path: string): Promise<{ entry?: CapabilityModelEntry; networkErr?: string; httpErr?: number }> {
+    try {
+      const res = await fetchImpl(`${base}${path}`, { method: 'GET', headers, signal });
+      if (!res.ok) return { httpErr: res.status };
+      const body = (await res.json().catch(() => ({}))) as CapabilityProbeBody;
+      const entry = body.data?.find((m) => m.id === model);
+      return entry ? { entry } : {};
+    } catch (err) {
+      return { networkErr: err instanceof Error ? err.message : String(err) };
+    }
   }
-  if (!res.ok) {
-    return makeError(
-      'PROVIDER_ERROR',
-      `LM Studio capability probe returned ${res.status}`,
-      true
-    );
+
+  // ERRATA E1: /v1/models (OpenAI-compat) is the primary probe.
+  const v1 = await fetchCapsAt('/v1/models');
+  // Live-LM-Studio refinement: /api/v0/models is the reliable fallback when
+  // /v1/models omits capabilities. Probed in parallel-style only when needed.
+  let v0: { entry?: CapabilityModelEntry; networkErr?: string; httpErr?: number } | null = null;
+  const needV0Fallback =
+    !!v1.networkErr || !!v1.httpErr || !v1.entry || !Array.isArray(v1.entry.capabilities);
+  if (needV0Fallback) {
+    v0 = await fetchCapsAt('/api/v0/models');
   }
-  const body = (await res.json().catch(() => ({}))) as CapabilityProbeBody;
-  const entry = body.data?.find((m) => m.id === model);
+
+  // Both endpoints failed at network/HTTP layer → PROVIDER_ERROR
+  if ((v1.networkErr || v1.httpErr) && v0 && (v0.networkErr || v0.httpErr)) {
+    const msg = v1.networkErr ?? v0.networkErr ?? `HTTP ${v1.httpErr ?? v0.httpErr}`;
+    return makeError('PROVIDER_ERROR', `LM Studio capability probe failed: ${msg}`, true);
+  }
+
+  // Model not present on either endpoint
+  const entry = v1.entry ?? v0?.entry;
   if (!entry) {
     return makeError(
       'INVALID_ARGS',
@@ -309,7 +373,20 @@ async function probeCapability(
       false
     );
   }
-  if (!Array.isArray(entry.capabilities) || !entry.capabilities.includes('tool_use')) {
+
+  // Aggregate capabilities from both endpoints (whichever has the array)
+  const capsList: string[] = [];
+  if (Array.isArray(v1.entry?.capabilities)) capsList.push(...v1.entry!.capabilities);
+  if (Array.isArray(v0?.entry?.capabilities)) capsList.push(...v0!.entry!.capabilities);
+
+  if (capsList.length === 0) {
+    return makeError(
+      'INVALID_ARGS',
+      `LM Studio capability metadata missing for "${model}" on both /v1/models and /api/v0/models — upgrade LM Studio to ≥ 0.3.16`,
+      false
+    );
+  }
+  if (!capsList.includes('tool_use')) {
     return makeError(
       'INVALID_ARGS',
       `model "${model}" does not advertise the 'tool_use' capability — agentic dispatch refused`,
@@ -327,6 +404,10 @@ interface ChatCompletionResponse {
       role: string;
       content?: string | null;
       tool_calls?: ToolCall[];
+      // ERRATA E2 — Qwen 3.5/3.6 emit reasoning_content alongside tool_calls.
+      // If we don't echo it back on the assistant message, the next-turn output
+      // leaks `</think>` into `content` (QwenLM/Qwen3.6 issue #26).
+      reasoning_content?: string;
     };
     finish_reason?: string;
   }>;
@@ -336,6 +417,9 @@ interface ChatCompletionResponse {
     total_tokens?: number;
   };
 }
+
+/** Synthetic tool_call_id used when model emits empty id (LM Studio bug #830, ERRATA E3). */
+const EMPTY_ID_SENTINEL = '__missing__';
 
 export class LmStudioAgenticRunner implements WorkerRunner {
   readonly capabilities: WorkerCapabilities = {
@@ -465,11 +549,17 @@ export class LmStudioAgenticRunner implements WorkerRunner {
           ));
         }
 
-        // Append assistant message (the model's reply, possibly with tool_calls)
+        // Append assistant message (the model's reply, possibly with tool_calls).
+        // ERRATA E2: spread reasoning_content verbatim when present — Qwen 3.5/3.6
+        // multi-turn loops leak `</think>` into `content` if reasoning_content isn't
+        // echoed back on the assistant message (QwenLM/Qwen3.6 issue #26).
         messages.push({
           role: 'assistant',
           content: choice.message.content ?? null,
           ...(choice.message.tool_calls ? { tool_calls: choice.message.tool_calls } : {}),
+          ...(choice.message.reasoning_content
+            ? { reasoning_content: choice.message.reasoning_content }
+            : {}),
         });
 
         const toolCalls = choice.message.tool_calls;
@@ -503,9 +593,20 @@ export class LmStudioAgenticRunner implements WorkerRunner {
           ));
         }
 
-        // 6. Execute tool calls and append results
+        // 6. Execute tool calls and append results.
+        // ERRATA E3: defensive empty-id handling (LM Studio bug #830) — synthesize
+        // a sentinel id and ERROR tool message so the model can self-correct without
+        // crashing the loop. The loop detector + iteration cap absorb misbehavior.
         for (const tc of toolCalls) {
           tool_call_count++;
+          if (typeof tc.id !== 'string' || tc.id.length === 0) {
+            messages.push({
+              role: 'tool',
+              tool_call_id: EMPTY_ID_SENTINEL,
+              content: 'ERROR: tool_call_id was empty (LM Studio bug #830) — please re-emit with a non-empty id',
+            });
+            continue;
+          }
           const toolResult = await executeToolCall(tc, task.workdir, this.shellExec);
           messages.push(toolResult);
         }
