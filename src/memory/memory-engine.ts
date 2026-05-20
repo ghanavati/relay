@@ -230,12 +230,28 @@ export function scoreMemory(
  *
  * Never exceeds the budget. If a single memory exceeds the remaining budget,
  * it's skipped (not truncated) — we trade completeness for coherence.
+ *
+ * PLAN-4 T4 — optional `similarities` ReadonlyMap<memory_id, cosine> threads
+ * pre-computed semantic similarities from the impure boundary
+ * (computeSemanticSimilarities in semantic-similarities.ts). When a memory's
+ * id is in the map, its similarity REPLACES the word-overlap content signal
+ * via ScoreOptions; otherwise word-overlap is used. Empty map behaves
+ * identically to no map (guards against callers passing `new Map()` "to be
+ * safe"). `ReadonlyMap` (not `Map`) — engine never mutates input.
  */
-export function budgetedRecall(memories: readonly Memory[], query: RecallQuery, now: number): RecallResult {
-  const scored: ScoredMemory[] = memories.map(m => ({
-    ...m,
-    score: scoreMemory(m, query, now),
-  }));
+export function budgetedRecall(
+  memories: readonly Memory[],
+  query: RecallQuery,
+  now: number,
+  similarities?: ReadonlyMap<string, number>
+): RecallResult {
+  const scored: ScoredMemory[] = memories.map(m => {
+    const sim = similarities?.get(m.memory_id);
+    return {
+      ...m,
+      score: scoreMemory(m, query, now, sim !== undefined ? { semanticSimilarity: sim } : undefined),
+    };
+  });
 
   // Sort by score DESC, then by accessed_at DESC for tiebreaking
   scored.sort((a, b) => b.score - a.score || b.accessed_at - a.accessed_at);
