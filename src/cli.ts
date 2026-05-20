@@ -648,7 +648,15 @@ async function dispatchBudget(rest: readonly string[]): Promise<number> {
 
   if (action === 'show') {
     const { executeBudgetShowCommand } = await import('./cli/cmd-budget.js');
-    return executeBudgetShowCommand({ json: isBool(flags, 'json') }, io);
+    return executeBudgetShowCommand(
+      {
+        json: isBool(flags, 'json'),
+        provider: lastOption(flags, 'provider'),
+        workdir: lastOption(flags, 'workdir'),
+        period: lastOption(flags, 'period'),
+      },
+      io,
+    );
   }
 
   io.stderr(`relay budget: unknown action '${action}'. Try: show\n`);
