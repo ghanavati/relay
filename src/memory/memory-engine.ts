@@ -94,6 +94,20 @@ export interface ScoreBreakdown {
 }
 
 /**
+ * PLAN-4 T3 — Optional scoring overrides threaded from the impure boundary.
+ *
+ * `semanticSimilarity` (raw cosine in [-1, 1], clamped here to [0, 1])
+ * REPLACES the word-overlap content signal when defined. When undefined,
+ * the engine falls back to {@link computeContentScore} (word-overlap).
+ *
+ * Defined in-file (no extra import) — preserves engine purity: this module
+ * imports ONLY from `./types` and uses only `./types`-exported constants.
+ */
+export interface ScoreOptions {
+  readonly semanticSimilarity?: number;
+}
+
+/**
  * Score a single memory against a query AND return per-component contributions.
  *
  * Same scoring formula as `scoreMemory` — this is the canonical implementation.
@@ -111,10 +125,28 @@ export interface ScoreBreakdown {
  *
  * trust and success bonuses are added at full strength in both modes (their
  * "weight" is implicit in the raw value cap).
+ *
+ * PLAN-4 T3 — When `opts.semanticSimilarity` is a number (NOT undefined),
+ * it REPLACES the word-overlap content signal. Defensive clamp to [0, 1]
+ * guards against bad callers (embedding-client returns normalized vectors
+ * and cosine ∈ [-1, 1]; we treat negatives as 0 since "anti-similar" is
+ * not a useful recall signal). No-query branch ignores opts entirely —
+ * similarity has no meaning without a query (preserves pre-change behavior).
  */
-export function scoreMemoryDetailed(memory: Memory, query: RecallQuery, now: number): ScoreBreakdown {
+export function scoreMemoryDetailed(
+  memory: Memory,
+  query: RecallQuery,
+  now: number,
+  opts?: ScoreOptions
+): ScoreBreakdown {
   const tagScore = computeTagScore(memory.tags, query.tags ?? []);
-  const contentScore = computeContentScore(memory.content, query.query);
+  // PLAN-4 T3 — semantic similarity, when provided, REPLACES word-overlap.
+  // Clamp to [0, 1] defensively (embedding-client returns normalized vectors,
+  // but cosine ∈ [-1, 1] in the general case; negative similarity is not a
+  // useful recall signal). `undefined` falls through to word-overlap.
+  const contentScore = opts?.semanticSimilarity !== undefined
+    ? Math.max(0, Math.min(1, opts.semanticSimilarity))
+    : computeContentScore(memory.content, query.query);
   const recencyScore = computeRecency(memory.accessed_at, now, memory.memory_type as MemoryType);
   const typeWeight = TYPE_WEIGHTS[memory.memory_type as MemoryType] ?? 0.5;
   const pinBonus = memory.pinned ? 0.5 : 0;
@@ -174,10 +206,17 @@ export function scoreMemoryDetailed(memory: Memory, query: RecallQuery, now: num
  *
  * Internally delegates to `scoreMemoryDetailed` and returns `.total`.
  * Signature is preserved for backward compatibility with existing callers
- * and tests that assert on the numeric output.
+ * and tests that assert on the numeric output. PLAN-4 T3 adds the optional
+ * `opts` parameter — when omitted, behavior is byte-identical to the
+ * pre-change result (regression-guarded by tests).
  */
-export function scoreMemory(memory: Memory, query: RecallQuery, now: number): number {
-  return scoreMemoryDetailed(memory, query, now).total;
+export function scoreMemory(
+  memory: Memory,
+  query: RecallQuery,
+  now: number,
+  opts?: ScoreOptions
+): number {
+  return scoreMemoryDetailed(memory, query, now, opts).total;
 }
 
 /**
@@ -191,12 +230,28 @@ export function scoreMemory(memory: Memory, query: RecallQuery, now: number): nu
  *
  * Never exceeds the budget. If a single memory exceeds the remaining budget,
  * it's skipped (not truncated) — we trade completeness for coherence.
+ *
+ * PLAN-4 T4 — optional `similarities` ReadonlyMap<memory_id, cosine> threads
+ * pre-computed semantic similarities from the impure boundary
+ * (computeSemanticSimilarities in semantic-similarities.ts). When a memory's
+ * id is in the map, its similarity REPLACES the word-overlap content signal
+ * via ScoreOptions; otherwise word-overlap is used. Empty map behaves
+ * identically to no map (guards against callers passing `new Map()` "to be
+ * safe"). `ReadonlyMap` (not `Map`) — engine never mutates input.
  */
-export function budgetedRecall(memories: readonly Memory[], query: RecallQuery, now: number): RecallResult {
-  const scored: ScoredMemory[] = memories.map(m => ({
-    ...m,
-    score: scoreMemory(m, query, now),
-  }));
+export function budgetedRecall(
+  memories: readonly Memory[],
+  query: RecallQuery,
+  now: number,
+  similarities?: ReadonlyMap<string, number>
+): RecallResult {
+  const scored: ScoredMemory[] = memories.map(m => {
+    const sim = similarities?.get(m.memory_id);
+    return {
+      ...m,
+      score: scoreMemory(m, query, now, sim !== undefined ? { semanticSimilarity: sim } : undefined),
+    };
+  });
 
   // Sort by score DESC, then by accessed_at DESC for tiebreaking
   scored.sort((a, b) => b.score - a.score || b.accessed_at - a.accessed_at);

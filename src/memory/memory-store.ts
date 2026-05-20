@@ -12,6 +12,15 @@ import { estimateTokens } from './memory-engine.js';
 import type Database from 'better-sqlite3';
 import { redactSecrets } from '../security/redaction.js';
 import { makeError, toRelayException } from '../errors.js';
+import { embedDocument as defaultEmbedDocument, type EmbeddingResult, type EmbedOptions } from './embedding-client.js';
+
+/**
+ * PLAN-4 T2 — Signature of the injectable embedding client used for lazy
+ * embed-on-write. Defaults to {@link defaultEmbedDocument} in production;
+ * tests inject a mock that returns scripted {@link EmbeddingResult} values
+ * without touching the network.
+ */
+export type EmbedDocumentFn = (text: string, opts: EmbedOptions) => Promise<EmbeddingResult>;
 
 const PRIVATE_TAG_RE = /<private>[\s\S]*?<\/private>/gi;
 const MAX_CONTENT_LENGTH = 100_000; // characters (~25K tokens)
@@ -238,13 +247,143 @@ function clusterByJaccard(
 export class MemoryStore {
   private readonly db: Database.Database;
   private readonly maxAutoAgeMs: number;
+  /**
+   * PLAN-4 T2 — Lazy embed-on-write hook. Defaults to embed-client's
+   * `embedDocument`; tests inject mocks that return scripted EmbeddingResult
+   * values without hitting the network.
+   */
+  private readonly embedClient: EmbedDocumentFn;
+  /**
+   * Per-instance stderr-warning dedup. Each (process, MemoryStore instance)
+   * emits at most one "RELAY: embedding skipped (...)" line per distinct
+   * EmbeddingReason. Instance scope (rather than module scope) keeps tests
+   * isolated when they create multiple stores sequentially.
+   */
+  private readonly warnedReasons: Set<string> = new Set();
 
-  constructor() {
+  constructor(opts?: { embedClient?: EmbedDocumentFn }) {
     this.db = getDb();
     const ttlDays = parseInt(process.env["RELAY_MEMORY_TTL_DAYS"] ?? "30", 10);
     this.maxAutoAgeMs = Number.isFinite(ttlDays) && ttlDays > 0
       ? ttlDays * 24 * 60 * 60 * 1000
       : 30 * 24 * 60 * 60 * 1000;
+    this.embedClient = opts?.embedClient ?? defaultEmbedDocument;
+  }
+
+  /**
+   * PLAN-4 T2 — Schedule lazy embedding generation after a sync INSERT.
+   *
+   * Returns immediately. Schedules a microtask that calls the embed client
+   * and (on success) UPDATEs the row's embedding_blob + embedding_model.
+   * NEVER awaits. NEVER throws. NEVER blocks the calling write.
+   *
+   * Failure modes (all silent except for one deduped stderr warning):
+   *   - RELAY_EMBEDDING_MODEL unset → no-op (feature off, zero embed calls).
+   *   - embed client returns { ok: false } → row stays NULL, warn once per reason.
+   *   - embed client promise rejects → row stays NULL, no warning.
+   *   - row deleted between INSERT and UPDATE → UPDATE hits zero rows (T-04-06).
+   */
+  private scheduleEmbed(memoryId: string, content: string): void {
+    const model = process.env['RELAY_EMBEDDING_MODEL'];
+    if (!model) return; // feature off — no embed, no warning
+    const endpoint = process.env['LMSTUDIO_ENDPOINT'] ?? 'http://127.0.0.1:1234';
+    // queueMicrotask (NOT setImmediate) — vitest/node:test microtask flush is
+    // deterministic via a single Promise.resolve() tick, setImmediate would
+    // race the test runner's task queue.
+    queueMicrotask(() => {
+      this.embedClient(content, { endpoint, model })
+        .then((result) => {
+          if (result.ok && result.vector) {
+            try {
+              this.updateEmbedding(memoryId, result.vector, model);
+            } catch {
+              // UPDATE failure is best-effort — never escalate.
+            }
+          } else if (!result.ok) {
+            this.warnEmbedSkipped(result.reason ?? 'unknown');
+          }
+        })
+        .catch(() => {
+          // Embed client rejected (should not happen — embedDocument never
+          // throws — but defense-in-depth for mocks that misbehave).
+        });
+    });
+  }
+
+  /**
+   * PLAN-4 T2 — Persist a freshly-computed embedding for an existing row.
+   * Best-effort: silent no-op if the row was deleted between INSERT and UPDATE.
+   */
+  private updateEmbedding(memoryId: string, vector: Float32Array, model: string): void {
+    const blob = Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
+    this.db
+      .prepare('UPDATE memories SET embedding_blob = ?, embedding_model = ? WHERE memory_id = ?')
+      .run(blob, model, memoryId);
+  }
+
+  /**
+   * PLAN-4 T2 — Stderr-loud warning per failure reason, deduped per instance.
+   * Format intentionally generic — no query text, no workdir, no content
+   * (info-disclosure mitigation T-04-02).
+   */
+  private warnEmbedSkipped(reason: string): void {
+    if (this.warnedReasons.has(reason)) return;
+    this.warnedReasons.add(reason);
+    process.stderr.write(
+      `RELAY: embedding skipped (LM Studio /v1/embeddings ${reason}). ` +
+        `Recall falling back to word-overlap. Run 'relay doctor' to check.\n`
+    );
+  }
+
+  /**
+   * PLAN-4 T5 — Read raw embedding state for a single memory row.
+   *
+   * Public read accessor used by `computeSemanticSimilarities()` helper and
+   * by tests asserting the lazy-embed UPDATE landed. Returns null when the
+   * memory_id is unknown. `blob` is the raw Buffer (caller materializes a
+   * Float32Array view); `model` is the model id that produced the blob.
+   *
+   * NOT exposed on the `Memory` interface — engine-purity rule forbids
+   * scoring functions from touching binary embeddings.
+   */
+  public getRawEmbedding(memoryId: string): { blob: Buffer | null; model: string | null } | null {
+    const row = this.db
+      .prepare('SELECT embedding_blob, embedding_model FROM memories WHERE memory_id = ?')
+      .get(memoryId) as { embedding_blob: Buffer | null; embedding_model: string | null } | undefined;
+    if (!row) return null;
+    return { blob: row.embedding_blob, model: row.embedding_model };
+  }
+
+  /**
+   * PLAN-4 T5 — Bulk fetch raw embedding state for a list of memory_ids.
+   *
+   * Returns a Map keyed by memory_id with `{ blob, model }` entries ONLY for
+   * rows whose `embedding_blob` is non-null AND `embedding_model` is non-null.
+   * Rows with NULL blob or NULL model are omitted (caller falls back to
+   * word-overlap for those). Used by `computeSemanticSimilarities()` to
+   * narrow the cosine candidate set.
+   */
+  public getRawEmbeddings(ids: readonly string[]): Map<string, { blob: Buffer; model: string }> {
+    const out = new Map<string, { blob: Buffer; model: string }>();
+    if (ids.length === 0) return out;
+    const placeholders = ids.map(() => '?').join(', ');
+    const rows = this.db
+      .prepare(
+        `SELECT memory_id, embedding_blob, embedding_model
+         FROM memories
+         WHERE memory_id IN (${placeholders})
+           AND embedding_blob IS NOT NULL
+           AND embedding_model IS NOT NULL`
+      )
+      .all(...ids) as Array<{
+        memory_id: string;
+        embedding_blob: Buffer;
+        embedding_model: string;
+      }>;
+    for (const row of rows) {
+      out.set(row.memory_id, { blob: row.embedding_blob, model: row.embedding_model });
+    }
+    return out;
   }
 
   /** SHIP-66: cap writes per run_id in a 5-minute window to prevent flooding. */
@@ -343,6 +482,11 @@ export class MemoryStore {
         initialTrustLevel,
       );
 
+    // PLAN-4 T2 — Lazy embed-on-write. Sync write above is complete; schedule
+    // background embed generation that UPDATEs the row when the vector is ready.
+    // No-op when RELAY_EMBEDDING_MODEL is unset. Never blocks, never throws.
+    this.scheduleEmbed(memoryId, content);
+
     this.gcByTokenBudget();
     return memoryId;
   }
@@ -376,6 +520,11 @@ export class MemoryStore {
     const now = Date.now();
     const workdir = params.workdir ?? null;
 
+    // Sanitize once outside the tx so we can pass the canonical text to
+    // scheduleEmbed after the row commits. Inside the tx we re-use this same
+    // string — no double sanitization.
+    const sanitizedContent = sanitizeContent(params.content);
+
     const upsertTx = this.db.transaction((): string => {
       // Supersede any existing active entry with the same entity_key + workdir
       const existingRows = this.db
@@ -394,7 +543,7 @@ export class MemoryStore {
       }
 
       // Write fresh entry
-      const content = sanitizeContent(params.content);
+      const content = sanitizedContent;
       const tokenCount = estimateTokens(content);
       // P2 codex finding #4 — mirror remember()'s behavior: stamp the computed
       // trust_level at insert time so the SQL filter in buildWhereClause()
@@ -442,6 +591,9 @@ export class MemoryStore {
     });
 
     const newId = upsertTx();
+    // PLAN-4 T2 — Lazy embed-on-write. Schedule after tx commits so the row
+    // exists when the microtask UPDATE fires. Mirrors remember() behavior.
+    this.scheduleEmbed(newId, sanitizedContent);
     // Auto-purge superseded rows older than 30 days on each upsert.
     // Prevents unbounded accumulation of stale entries (BUG-35 / R-05 addendum).
     try {

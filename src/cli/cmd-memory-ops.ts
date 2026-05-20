@@ -52,7 +52,7 @@ export async function executeRecallCommand(
   io: CliIO
 ): Promise<number> {
   const { handleRecall } = await import('../tools/recall.js');
-  const response = handleRecall({
+  const response = (await handleRecall({
     query: command.query,
     tags: command.tags,
     types: command.types as never,
@@ -63,7 +63,7 @@ export async function executeRecallCommand(
     created_before: command.createdBefore,
     file: command.file,
     min_trust: command.minTrust,
-  }) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+  })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
   const text = response.content[0]?.text ?? '';
   if (command.json) {
     io.stdout(`${text}\n`);
