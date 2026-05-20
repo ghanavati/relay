@@ -279,15 +279,24 @@ interface CapabilityProbeBody {
 }
 
 /**
- * Probe GET /v1/models (OpenAI-compat, per LMSTUDIO-ERRATA-2026 §4 — REST v0
- * /api/v0/models does NOT include a `capabilities` field). Find entry by `id`,
- * check `capabilities` array contains the literal string `"tool_use"`.
+ * Probe LM Studio for the target model's `tool_use` capability.
+ *
+ * ERRATA E1 with live-LM-Studio refinement: per LMSTUDIO-ERRATA-2026 §4, /v1/models
+ * is the documented OpenAI-compat capabilities source — BUT live testing against
+ * LM Studio 0.4.13+ (2026-05) showed /v1/models can omit the capabilities key for
+ * non-loaded models, while /api/v0/models reliably includes it for ALL listed
+ * models. So we probe BOTH:
+ *
+ *   1. Try /v1/models first (matches OpenAI ecosystem expectations).
+ *   2. If entry found but capabilities key absent → fall back to /api/v0/models.
+ *   3. Aggregate: any endpoint reporting "tool_use" wins (fail-open on the
+ *      OR of both responses), since both endpoints are authoritative per docs.
  *
  * Fail-closed if:
- *   - probe network/HTTP error → PROVIDER_ERROR retryable
- *   - model not present       → INVALID_ARGS (non-retryable) with `lms load` hint
- *   - capabilities key absent → INVALID_ARGS (likely LM Studio < 0.3.16)
- *   - capabilities array does not include "tool_use" → INVALID_ARGS
+ *   - both endpoints unreachable → PROVIDER_ERROR retryable
+ *   - model not present in either → INVALID_ARGS with `lms load` hint
+ *   - capabilities absent from BOTH endpoints → INVALID_ARGS (LM Studio too old)
+ *   - capabilities present but no "tool_use" in either → INVALID_ARGS
  *
  * Returns `null` on success.
  */
@@ -298,27 +307,39 @@ async function probeCapability(
   fetchImpl: FetchFn,
   signal: AbortSignal
 ): Promise<ReturnType<typeof makeError> | null> {
-  // ERRATA E1: /v1/models is the OpenAI-compat endpoint that exposes capabilities array.
-  const probeUrl = `${endpoint.replace(/\/+$/, '')}/v1/models`;
-  let res: Response;
-  try {
-    res = await fetchImpl(probeUrl, { method: 'GET', headers, signal });
-  } catch (err) {
-    return makeError(
-      'PROVIDER_ERROR',
-      `LM Studio capability probe failed: ${err instanceof Error ? err.message : String(err)}`,
-      true
-    );
+  const base = endpoint.replace(/\/+$/, '');
+
+  async function fetchCapsAt(path: string): Promise<{ entry?: CapabilityModelEntry; networkErr?: string; httpErr?: number }> {
+    try {
+      const res = await fetchImpl(`${base}${path}`, { method: 'GET', headers, signal });
+      if (!res.ok) return { httpErr: res.status };
+      const body = (await res.json().catch(() => ({}))) as CapabilityProbeBody;
+      const entry = body.data?.find((m) => m.id === model);
+      return entry ? { entry } : {};
+    } catch (err) {
+      return { networkErr: err instanceof Error ? err.message : String(err) };
+    }
   }
-  if (!res.ok) {
-    return makeError(
-      'PROVIDER_ERROR',
-      `LM Studio capability probe returned ${res.status}`,
-      true
-    );
+
+  // ERRATA E1: /v1/models (OpenAI-compat) is the primary probe.
+  const v1 = await fetchCapsAt('/v1/models');
+  // Live-LM-Studio refinement: /api/v0/models is the reliable fallback when
+  // /v1/models omits capabilities. Probed in parallel-style only when needed.
+  let v0: { entry?: CapabilityModelEntry; networkErr?: string; httpErr?: number } | null = null;
+  const needV0Fallback =
+    !!v1.networkErr || !!v1.httpErr || !v1.entry || !Array.isArray(v1.entry.capabilities);
+  if (needV0Fallback) {
+    v0 = await fetchCapsAt('/api/v0/models');
   }
-  const body = (await res.json().catch(() => ({}))) as CapabilityProbeBody;
-  const entry = body.data?.find((m) => m.id === model);
+
+  // Both endpoints failed at network/HTTP layer → PROVIDER_ERROR
+  if ((v1.networkErr || v1.httpErr) && v0 && (v0.networkErr || v0.httpErr)) {
+    const msg = v1.networkErr ?? v0.networkErr ?? `HTTP ${v1.httpErr ?? v0.httpErr}`;
+    return makeError('PROVIDER_ERROR', `LM Studio capability probe failed: ${msg}`, true);
+  }
+
+  // Model not present on either endpoint
+  const entry = v1.entry ?? v0?.entry;
   if (!entry) {
     return makeError(
       'INVALID_ARGS',
@@ -326,14 +347,20 @@ async function probeCapability(
       false
     );
   }
-  if (!Array.isArray(entry.capabilities)) {
+
+  // Aggregate capabilities from both endpoints (whichever has the array)
+  const capsList: string[] = [];
+  if (Array.isArray(v1.entry?.capabilities)) capsList.push(...v1.entry!.capabilities);
+  if (Array.isArray(v0?.entry?.capabilities)) capsList.push(...v0!.entry!.capabilities);
+
+  if (capsList.length === 0) {
     return makeError(
       'INVALID_ARGS',
-      `LM Studio /v1/models response for "${model}" missing 'capabilities' array — upgrade LM Studio to ≥ 0.3.16`,
+      `LM Studio capability metadata missing for "${model}" on both /v1/models and /api/v0/models — upgrade LM Studio to ≥ 0.3.16`,
       false
     );
   }
-  if (!entry.capabilities.includes('tool_use')) {
+  if (!capsList.includes('tool_use')) {
     return makeError(
       'INVALID_ARGS',
       `model "${model}" does not advertise the 'tool_use' capability — agentic dispatch refused`,
