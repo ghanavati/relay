@@ -17,7 +17,7 @@ export interface ParallelArgs {
 
 interface SpecTask {
   task: string;
-  provider: 'codex' | 'lmstudio' | 'openrouter' | 'anthropic';
+  provider: 'codex' | 'lmstudio' | 'openrouter' | 'anthropic' | 'lmstudio-agentic';
   model?: string;
   workdir?: string;
   timeout_ms?: number;
@@ -50,6 +50,10 @@ async function getRunner(provider: SpecTask['provider']): Promise<WorkerRunner> 
   if (provider === 'anthropic') {
     const { AnthropicRunner } = await import('../workers/anthropic.js');
     return new AnthropicRunner();
+  }
+  if (provider === 'lmstudio-agentic') {
+    const { LmStudioAgenticRunner } = await import('../workers/lmstudio-agentic.js');
+    return new LmStudioAgenticRunner();
   }
   throw new Error(`unsupported provider: ${provider as string}`);
 }
@@ -102,11 +106,11 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
     return 2;
   }
 
-  const validProviders = new Set(['codex', 'lmstudio', 'openrouter', 'anthropic']);
-  const httpProviders = new Set(['lmstudio', 'openrouter', 'anthropic']);
+  const validProviders = new Set(['codex', 'lmstudio', 'openrouter', 'anthropic', 'lmstudio-agentic']);
+  const httpProviders = new Set(['lmstudio', 'openrouter', 'anthropic', 'lmstudio-agentic']);
   for (const [idx, t] of spec.tasks.entries()) {
     if (!t.task?.trim()) { io.stderr(`task[${idx}].task is empty\n`); return 2; }
-    if (!validProviders.has(t.provider)) { io.stderr(`task[${idx}].provider must be codex|lmstudio|openrouter|anthropic\n`); return 2; }
+    if (!validProviders.has(t.provider)) { io.stderr(`task[${idx}].provider must be codex|lmstudio|openrouter|anthropic|lmstudio-agentic\n`); return 2; }
     if (httpProviders.has(t.provider) && !t.model) { io.stderr(`task[${idx}].model required for provider=${t.provider}\n`); return 2; }
   }
 

@@ -17,7 +17,7 @@ import type { CliIO } from './commands.js';
 
 export interface RunCommandArgs {
   task: string;
-  provider: 'codex' | 'openrouter' | 'lmstudio' | 'anthropic';
+  provider: 'codex' | 'openrouter' | 'lmstudio' | 'anthropic' | 'lmstudio-agentic';
   model?: string;
   workdir: string;
   timeoutMs: number;
@@ -25,7 +25,7 @@ export interface RunCommandArgs {
   json: boolean;
 }
 
-const HTTP_PROVIDERS = new Set(['openrouter', 'lmstudio', 'anthropic']);
+const HTTP_PROVIDERS = new Set(['openrouter', 'lmstudio', 'anthropic', 'lmstudio-agentic']);
 
 export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promise<number> {
   // 1. Validate
@@ -78,6 +78,9 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
     } else if (args.provider === 'anthropic') {
       const { AnthropicRunner } = await import('../workers/anthropic.js');
       runner = new AnthropicRunner();
+    } else if (args.provider === 'lmstudio-agentic') {
+      const { LmStudioAgenticRunner } = await import('../workers/lmstudio-agentic.js');
+      runner = new LmStudioAgenticRunner();
     } else {
       const exhaustive: never = args.provider;
       void exhaustive;
