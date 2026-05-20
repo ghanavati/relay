@@ -128,3 +128,99 @@ describe('T1 — preconditions', () => {
     );
   });
 });
+
+// ─── T2: SKELETON + PURE HELPERS ─────────────────────────────────────────
+
+import {
+  LmStudioAgenticRunner,
+  buildInitialMessages,
+  buildLfm2Nudge,
+} from './lmstudio-agentic.js';
+
+const shellExecToolDef: ToolDef = {
+  type: 'function',
+  function: {
+    name: 'shell_exec',
+    description: 'Execute a shell command in the task workdir.',
+    parameters: {
+      type: 'object',
+      properties: { command: { type: 'string' } },
+      required: ['command'],
+      additionalProperties: false,
+    },
+  },
+};
+
+function baseTask(overrides: Partial<WorkerTask> = {}): WorkerTask {
+  return {
+    task: 'do thing',
+    workdir: '/tmp/work',
+    timeout_ms: 5_000,
+    model: 'qwen/qwen3-coder-next',
+    run_id: 'test-run-1',
+    provider: 'lmstudio-agentic',
+    tools: [shellExecToolDef],
+    ...overrides,
+  };
+}
+
+describe('T2 — skeleton + pure helpers', () => {
+  test('LmStudioAgenticRunner.capabilities = agentic + tool_loop', () => {
+    const runner = new LmStudioAgenticRunner();
+    assert.equal(runner.capabilities?.agentic, true);
+    assert.equal(runner.capabilities?.execution_model, 'tool_loop');
+  });
+
+  test('buildInitialMessages — user message only when no contextPrefix', () => {
+    const msgs = buildInitialMessages(baseTask({ contextPrefix: undefined }));
+    assert.equal(msgs.length, 1);
+    assert.equal(msgs[0]?.role, 'user');
+    assert.equal(msgs[0]?.content, 'do thing');
+  });
+
+  test('buildInitialMessages — system + user when contextPrefix present', () => {
+    const msgs = buildInitialMessages(baseTask({ contextPrefix: 'You are a coding agent.' }));
+    assert.equal(msgs.length, 2);
+    assert.equal(msgs[0]?.role, 'system');
+    assert.equal(msgs[0]?.content, 'You are a coding agent.');
+    assert.equal(msgs[1]?.role, 'user');
+    assert.equal(msgs[1]?.content, 'do thing');
+  });
+
+  test('buildLfm2Nudge — non-LFM2 model returns null', () => {
+    assert.equal(buildLfm2Nudge('qwen/qwen3-coder-next'), null);
+    assert.equal(buildLfm2Nudge('openai/gpt-oss-20b'), null);
+    assert.equal(buildLfm2Nudge(undefined), null);
+    assert.equal(buildLfm2Nudge(''), null);
+  });
+
+  test('buildLfm2Nudge — LFM2 model returns JSON-format nudge', () => {
+    const nudge = buildLfm2Nudge('liquid/lfm2-24b-a2b');
+    assert.notEqual(nudge, null);
+    // PLAN T2 RED — exact string per pitfall 1.1
+    assert.equal(
+      nudge,
+      'Output function calls strictly as JSON in the tool_calls field, never as Python literals.'
+    );
+  });
+
+  test('buildLfm2Nudge — case-insensitive on prefix', () => {
+    assert.notEqual(buildLfm2Nudge('LIQUID/LFM2-foo'), null);
+    assert.notEqual(buildLfm2Nudge('Liquid/Lfm2-Bar'), null);
+  });
+
+  test('run() returns INVALID_ARGS when task.tools missing', async () => {
+    const runner = new LmStudioAgenticRunner();
+    const result = await runner.run(baseTask({ tools: undefined }));
+    assert.equal(result.status, 'error');
+    assert.equal(result.error?.code, 'INVALID_ARGS');
+    assert.match(result.error?.message ?? '', /tools/i);
+  });
+
+  test('run() returns INVALID_ARGS when task.tools empty', async () => {
+    const runner = new LmStudioAgenticRunner();
+    const result = await runner.run(baseTask({ tools: [] }));
+    assert.equal(result.status, 'error');
+    assert.equal(result.error?.code, 'INVALID_ARGS');
+  });
+});

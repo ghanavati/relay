@@ -7,16 +7,334 @@
  *
  * Capabilities: `{ agentic: true, execution_model: 'tool_loop' }`.
  *
- * SKELETON — T2 fleshes out pure helpers; T3 adds tool sandbox; T4 adds loop;
- * T5 adds hash-based loop detector; T6 adds LFM2 nudge.
+ * Architecture (per PLAN.md §Goal):
+ *   1. Probe GET /api/v0/models — refuse if model lacks `tool_use` capability.
+ *   2. Build messages (system contextPrefix + LFM2 nudge if applicable, user task).
+ *   3. Loop POST /v1/chat/completions { stream:false, tools, tool_choice:'auto' }:
+ *      a. If choices[0].message.tool_calls absent → final answer, exit success.
+ *      b. Execute each tool call (shell_exec / bash; cwd clamped to task.workdir; 32KB trunc).
+ *      c. Append {role:'tool', tool_call_id, content} for each tool result.
+ *      d. Hash-detector: 3 consecutive identical per-turn fingerprints → LOOP_DETECTED abort.
+ *      e. Re-send tools[] every turn.
+ *   4. Iteration cap 20; wall-clock cap via AbortController(task.timeout_ms).
+ *
+ * Test seams (PLAN.md T2): `fetchImpl`, `shellExec`, `maxIterations` constructor opts.
  */
 
+import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { z } from 'zod';
+
 import { makeError } from '../errors.js';
+import { getLmStudioEndpoint, getLmStudioApiKey } from '../config/providers.js';
 import type { WorkerRunner, WorkerCapabilities } from './runner.js';
-import type { WorkerTask, WorkerResult } from './types.js';
+import type {
+  WorkerTask,
+  WorkerResult,
+  ToolCall,
+  ToolCallMessage,
+} from './types.js';
+
+// ─── Constants ────────────────────────────────────────────────────────────
+
+/** Hard iteration cap (PLAN §T4). */
+const DEFAULT_MAX_ITERATIONS = 20;
+
+/** Maximum tool stdout bytes (PLAN §T3 sandbox spec). */
+const TOOL_STDOUT_MAX_BYTES = 32_768;
+
+/** Built-in tool names — both resolve to shell_exec handler (PLAN §T3 case 4). */
+const SHELL_EXEC_NAMES = new Set<string>(['shell_exec', 'bash']);
+
+/** LFM2 model regex (PLAN §T6). */
+const LFM2_MODEL_RE = /^liquid\/lfm2-/i;
+
+/** Pythonic-output-suppression nudge (PLAN §T2 — pitfall 1.1). */
+const LFM2_NUDGE =
+  'Output function calls strictly as JSON in the tool_calls field, never as Python literals.';
+
+/** Default system prompt when contextPrefix is absent (PLAN §T6 case 4 fallback). */
+const DEFAULT_SYSTEM_PROMPT = 'You are a coding agent. Use the provided tools to complete the task.';
+
+// ─── Types: OpenAI-compatible messages ────────────────────────────────────
+
+export type ChatMessage =
+  | { role: 'system'; content: string }
+  | { role: 'user'; content: string }
+  | { role: 'assistant'; content: string | null; tool_calls?: ToolCall[] }
+  | ToolCallMessage;
+
+export interface ShellExecArgs {
+  command: string;
+  cwd: string;
+  maxBytes: number;
+}
+
+export interface ShellExecResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
+export type FetchFn = typeof fetch;
+export type ShellExecFn = (args: ShellExecArgs) => Promise<ShellExecResult>;
 
 export interface LmStudioAgenticRunnerOpts {
-  // T2 — fetchImpl / shellExec / maxIterations seams populated in subsequent tasks.
+  fetchImpl?: FetchFn;
+  shellExec?: ShellExecFn;
+  maxIterations?: number;
+}
+
+// ─── Pure helpers (exported for test access — PLAN §T2) ────────────────
+
+/**
+ * Build the initial messages array for the first POST.
+ *
+ * Rules (PLAN §T2 + T6):
+ *   - When task.contextPrefix is present → [system, user].
+ *   - When task.contextPrefix is absent AND model is LFM2 → [system(nudge-only), user].
+ *   - When task.contextPrefix is absent AND model is not LFM2 → [user] only.
+ *   - When task.contextPrefix is present AND model is LFM2 → system content is contextPrefix + "\n\n" + nudge.
+ */
+export function buildInitialMessages(task: Pick<WorkerTask, 'task' | 'contextPrefix' | 'model'>): ChatMessage[] {
+  const messages: ChatMessage[] = [];
+  const nudge = buildLfm2Nudge(task.model);
+  const prefix = task.contextPrefix?.trim() ? task.contextPrefix : '';
+
+  if (prefix && nudge) {
+    messages.push({ role: 'system', content: `${prefix}\n\n${nudge}` });
+  } else if (prefix) {
+    messages.push({ role: 'system', content: prefix });
+  } else if (nudge) {
+    messages.push({ role: 'system', content: nudge });
+  }
+  // task.task is the user payload — bareTask convention (see generic-http-runner.ts:49-58)
+  messages.push({ role: 'user', content: task.task });
+  return messages;
+}
+
+/**
+ * Detect LFM2-family models and return the JSON-format nudge string.
+ * Returns `null` for any non-LFM2 model. Case-insensitive match.
+ */
+export function buildLfm2Nudge(modelName: string | undefined | null): string | null {
+  if (!modelName) return null;
+  return LFM2_MODEL_RE.test(modelName) ? LFM2_NUDGE : null;
+}
+
+/**
+ * Canonical JSON stringify — sorts object keys recursively before stringifying.
+ * Ensures `hashToolCall('x', {a:1,b:2})` === `hashToolCall('x', {b:2,a:1})` (PLAN §T5 case 1).
+ */
+export function canonicalJsonStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return '[' + value.map((v) => canonicalJsonStringify(v)).join(',') + ']';
+  }
+  const keys = Object.keys(value as Record<string, unknown>).sort();
+  const entries = keys.map((k) => `${JSON.stringify(k)}:${canonicalJsonStringify((value as Record<string, unknown>)[k])}`);
+  return '{' + entries.join(',') + '}';
+}
+
+/**
+ * sha256(name + '\x00' + canonicalJsonStringify(args)).
+ * `args` may be already-parsed JSON object OR the raw arguments string (when parse fails).
+ */
+export function hashToolCall(name: string, args: unknown): string {
+  const argsCanonical = typeof args === 'string' ? args : canonicalJsonStringify(args);
+  return createHash('sha256').update(name).update('\x00').update(argsCanonical).digest('hex');
+}
+
+// ─── Tool execution sandbox (PLAN §T3) ────────────────────────────────────
+
+const SHELL_EXEC_ARGS_SCHEMA = z
+  .object({ command: z.string().min(1) })
+  // passthrough() allows extra fields like a model-emitted `cwd` — but executor ignores them.
+  // This silently DROPS them rather than rejecting (PLAN §T3 case 5: cwd clamp).
+  .passthrough();
+
+/** Default real-shell executor. Truncates stdout/stderr at maxBytes (byte-safe). */
+const defaultShellExec: ShellExecFn = (args: ShellExecArgs) =>
+  new Promise<ShellExecResult>((resolve) => {
+    execFile(
+      '/bin/sh',
+      ['-c', args.command],
+      { cwd: args.cwd, timeout: 30_000, maxBuffer: 64 * 1024 },
+      (err, stdout, stderr) => {
+        const exitCode =
+          err && typeof (err as NodeJS.ErrnoException & { code?: number }).code === 'number'
+            ? ((err as NodeJS.ErrnoException & { code: number }).code as number)
+            : err
+              ? 1
+              : 0;
+        const stdoutAny = stdout as unknown;
+        const stderrAny = stderr as unknown;
+        const stdoutStr: string =
+          typeof stdoutAny === 'string'
+            ? stdoutAny
+            : Buffer.isBuffer(stdoutAny)
+              ? (stdoutAny as Buffer).toString('utf-8')
+              : '';
+        const stderrStr: string =
+          typeof stderrAny === 'string'
+            ? stderrAny
+            : Buffer.isBuffer(stderrAny)
+              ? (stderrAny as Buffer).toString('utf-8')
+              : '';
+        resolve({ stdout: stdoutStr, stderr: stderrStr, exitCode });
+      }
+    );
+  });
+
+/**
+ * Byte-safe truncation: slice the UTF-8 buffer at `maxBytes`, append marker.
+ * Repairs any final-char split codepoint by trimming to last clean UTF-8 boundary.
+ */
+function truncateBytes(input: string, maxBytes: number): { text: string; truncated: boolean; originalBytes: number } {
+  const buf = Buffer.from(input, 'utf-8');
+  const originalBytes = buf.length;
+  if (originalBytes <= maxBytes) return { text: input, truncated: false, originalBytes };
+  const sliced = buf.subarray(0, maxBytes);
+  let text = sliced.toString('utf-8');
+  // toString('utf-8') already handles split codepoints by emitting U+FFFD; we accept that.
+  // Append marker AFTER truncation — total may exceed maxBytes by marker length (PLAN §T3 case 6).
+  text = `${text}\n…[TRUNCATED: original ${originalBytes} bytes]`;
+  return { text, truncated: true, originalBytes };
+}
+
+/**
+ * Format the combined stdout/stderr/exit payload that gets sent back to the model.
+ * Combined stream is clamped at TOOL_STDOUT_MAX_BYTES (PLAN §T3 32KB truncation spec).
+ */
+function formatShellResult(result: ShellExecResult): string {
+  const stdoutPart = truncateBytes(result.stdout, TOOL_STDOUT_MAX_BYTES).text;
+  const stderrPart = truncateBytes(result.stderr, TOOL_STDOUT_MAX_BYTES).text;
+  return `STDOUT:\n${stdoutPart}\n\nSTDERR:\n${stderrPart}\n\nEXIT: ${result.exitCode}`;
+}
+
+/**
+ * Execute a single shell_exec/bash tool call. cwd is ALWAYS task.workdir — any
+ * model-emitted `cwd` field is silently dropped (PLAN §T3 case 5).
+ */
+export async function executeShellExec(
+  rawArgs: unknown,
+  workdir: string,
+  shellExec: ShellExecFn
+): Promise<string> {
+  const parsed = SHELL_EXEC_ARGS_SCHEMA.parse(rawArgs);
+  const result = await shellExec({
+    command: parsed.command,
+    cwd: workdir,
+    maxBytes: TOOL_STDOUT_MAX_BYTES,
+  });
+  return formatShellResult(result);
+}
+
+/**
+ * Dispatch a single tool call. Always returns a ToolCallMessage — never throws.
+ * Errors become `content: 'ERROR: <msg>'` so the model can self-correct (PLAN §T3 case 1-2, R8).
+ *
+ * tool_call_id MUST be byte-exact echo (PLAN §T3 case 7, R7).
+ */
+export async function executeToolCall(
+  call: ToolCall,
+  workdir: string,
+  shellExec: ShellExecFn
+): Promise<ToolCallMessage> {
+  const name = call.function.name;
+  if (!SHELL_EXEC_NAMES.has(name)) {
+    return { role: 'tool', tool_call_id: call.id, content: `ERROR: unknown tool ${name}` };
+  }
+  let parsedArgs: unknown;
+  try {
+    parsedArgs = JSON.parse(call.function.arguments);
+  } catch {
+    return { role: 'tool', tool_call_id: call.id, content: 'ERROR: arguments not valid JSON' };
+  }
+  try {
+    const content = await executeShellExec(parsedArgs, workdir, shellExec);
+    return { role: 'tool', tool_call_id: call.id, content };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { role: 'tool', tool_call_id: call.id, content: `ERROR: ${msg}` };
+  }
+}
+
+// ─── Capability probe (PLAN §T4 case 7) ───────────────────────────────────
+
+interface CapabilityModelEntry {
+  id: string;
+  capabilities?: string[];
+}
+
+interface CapabilityProbeBody {
+  data?: CapabilityModelEntry[];
+}
+
+/**
+ * Probe GET /api/v0/models, find entry by `id`, check `capabilities` contains 'tool_use'.
+ * Returns `null` on success; `RelayError` on missing-capability / probe failure.
+ */
+async function probeCapability(
+  endpoint: string,
+  model: string,
+  headers: Record<string, string>,
+  fetchImpl: FetchFn,
+  signal: AbortSignal
+): Promise<ReturnType<typeof makeError> | null> {
+  const probeUrl = `${endpoint.replace(/\/+$/, '')}/api/v0/models`;
+  let res: Response;
+  try {
+    res = await fetchImpl(probeUrl, { method: 'GET', headers, signal });
+  } catch (err) {
+    return makeError(
+      'PROVIDER_ERROR',
+      `LM Studio capability probe failed: ${err instanceof Error ? err.message : String(err)}`,
+      true
+    );
+  }
+  if (!res.ok) {
+    return makeError(
+      'PROVIDER_ERROR',
+      `LM Studio capability probe returned ${res.status}`,
+      true
+    );
+  }
+  const body = (await res.json().catch(() => ({}))) as CapabilityProbeBody;
+  const entry = body.data?.find((m) => m.id === model);
+  if (!entry) {
+    return makeError(
+      'INVALID_ARGS',
+      `model "${model}" is not loaded in LM Studio. Run: lms load ${model}`,
+      false
+    );
+  }
+  if (!Array.isArray(entry.capabilities) || !entry.capabilities.includes('tool_use')) {
+    return makeError(
+      'INVALID_ARGS',
+      `model "${model}" does not advertise the 'tool_use' capability — agentic dispatch refused`,
+      false
+    );
+  }
+  return null;
+}
+
+// ─── Main loop ───────────────────────────────────────────────────────────
+
+interface ChatCompletionResponse {
+  choices?: Array<{
+    message?: {
+      role: string;
+      content?: string | null;
+      tool_calls?: ToolCall[];
+    };
+    finish_reason?: string;
+  }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
 }
 
 export class LmStudioAgenticRunner implements WorkerRunner {
@@ -25,21 +343,221 @@ export class LmStudioAgenticRunner implements WorkerRunner {
     execution_model: 'tool_loop',
   };
 
-  constructor(_opts: LmStudioAgenticRunnerOpts = {}) {
-    // intentionally empty — T2 populates
+  private readonly fetchImpl: FetchFn;
+  private readonly shellExec: ShellExecFn;
+  private readonly maxIterations: number;
+
+  constructor(opts: LmStudioAgenticRunnerOpts = {}) {
+    this.fetchImpl = opts.fetchImpl ?? ((globalThis as { fetch: FetchFn }).fetch);
+    this.shellExec = opts.shellExec ?? defaultShellExec;
+    this.maxIterations = opts.maxIterations ?? DEFAULT_MAX_ITERATIONS;
   }
 
   async run(task: WorkerTask): Promise<WorkerResult> {
     const startedAt = Date.now();
-    void task;
+    let iterations = 0;
+    let tool_call_count = 0;
+    let total_tokens = 0;
+    let prompt_tokens = 0;
+    let completion_tokens = 0;
+
+    // 1. Validate tools[]
+    if (!task.tools || task.tools.length === 0) {
+      return this.errorResult(startedAt, iterations, tool_call_count, makeError(
+        'INVALID_ARGS',
+        'lmstudio-agentic requires task.tools[] (non-empty)',
+        false
+      ));
+    }
+    if (!task.model?.trim()) {
+      return this.errorResult(startedAt, iterations, tool_call_count, makeError(
+        'INVALID_ARGS',
+        'lmstudio-agentic requires task.model',
+        false
+      ));
+    }
+
+    const endpoint = getLmStudioEndpoint();
+    const apiKey = getLmStudioApiKey();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), task.timeout_ms);
+
+    try {
+      // 2. Capability probe (PLAN §T4 case 7)
+      const probeErr = await probeCapability(endpoint, task.model, headers, this.fetchImpl, controller.signal);
+      if (probeErr) {
+        return this.errorResult(startedAt, iterations, tool_call_count, probeErr);
+      }
+
+      // 3. Build initial messages — system (contextPrefix [+ LFM2 nudge]) + user
+      const messages: ChatMessage[] = buildInitialMessages(task);
+      // If no system prompt was created (no contextPrefix, no LFM2 nudge), inject the
+      // default — agentic workers need a system primer so the model knows it has tools.
+      if (!messages.some((m) => m.role === 'system')) {
+        messages.unshift({ role: 'system', content: DEFAULT_SYSTEM_PROMPT });
+      }
+
+      const chatUrl = `${endpoint.replace(/\/+$/, '')}/v1/chat/completions`;
+      const recentTurnHashes: string[] = [];
+
+      for (iterations = 1; iterations <= this.maxIterations; iterations++) {
+        // 4. POST chat completion
+        const body = {
+          model: task.model,
+          messages,
+          tools: task.tools,
+          tool_choice: 'auto',
+          stream: false,
+          temperature: 0.2,
+        };
+
+        let resp: Response;
+        try {
+          resp = await this.fetchImpl(chatUrl, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body),
+            signal: controller.signal,
+          });
+        } catch (err) {
+          if (controller.signal.aborted) {
+            return {
+              status: 'timeout',
+              output: '',
+              duration_ms: Date.now() - startedAt,
+              exit_code: null,
+              iterations,
+              tool_call_count,
+              error: makeError('TIMEOUT', `lmstudio-agentic timed out after ${task.timeout_ms}ms`, true),
+            };
+          }
+          return this.errorResult(startedAt, iterations, tool_call_count, makeError(
+            'PROVIDER_ERROR',
+            `LM Studio fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+            true
+          ));
+        }
+
+        if (!resp.ok) {
+          const errText = await resp.text().catch(() => '');
+          return this.errorResult(startedAt, iterations, tool_call_count, makeError(
+            'PROVIDER_ERROR',
+            `LM Studio returned ${resp.status}: ${errText.slice(0, 500)}`,
+            true
+          ));
+        }
+
+        const parsed = (await resp.json().catch(() => ({}))) as ChatCompletionResponse;
+        if (parsed.usage) {
+          total_tokens += parsed.usage.total_tokens ?? 0;
+          prompt_tokens += parsed.usage.prompt_tokens ?? 0;
+          completion_tokens += parsed.usage.completion_tokens ?? 0;
+        }
+        const choice = parsed.choices?.[0];
+        if (!choice?.message) {
+          return this.errorResult(startedAt, iterations, tool_call_count, makeError(
+            'PROVIDER_ERROR',
+            'LM Studio response missing choices[0].message',
+            true
+          ));
+        }
+
+        // Append assistant message (the model's reply, possibly with tool_calls)
+        messages.push({
+          role: 'assistant',
+          content: choice.message.content ?? null,
+          ...(choice.message.tool_calls ? { tool_calls: choice.message.tool_calls } : {}),
+        });
+
+        const toolCalls = choice.message.tool_calls;
+        if (!toolCalls || toolCalls.length === 0) {
+          // 5a. No tool calls → final answer; return success.
+          return {
+            status: 'success',
+            output: choice.message.content ?? '',
+            duration_ms: Date.now() - startedAt,
+            exit_code: 0,
+            iterations,
+            tool_call_count,
+            token_usage: total_tokens || null,
+            prompt_tokens: prompt_tokens || null,
+            completion_tokens: completion_tokens || null,
+          };
+        }
+
+        // 5b. Loop-detector check (PLAN §T5): combined-turn fingerprint.
+        // Per-turn fingerprint = sha256(sorted-joined per-call hashes). This is a defensible
+        // extension of REQ AGENTIC-02 to handle parallel tool_calls — single-call behavior is
+        // preserved because 1 call per turn yields fingerprint == single hash (VERIFICATION W2).
+        const turnHash = computeTurnFingerprint(toolCalls);
+        recentTurnHashes.push(turnHash);
+        if (recentTurnHashes.length > 3) recentTurnHashes.shift();
+        if (recentTurnHashes.length === 3 && new Set(recentTurnHashes).size === 1) {
+          return this.errorResult(startedAt, iterations, tool_call_count, makeError(
+            'UNSUPPORTED',
+            'LOOP_DETECTED: same tool-call signature 3 turns in a row',
+            false
+          ));
+        }
+
+        // 6. Execute tool calls and append results
+        for (const tc of toolCalls) {
+          tool_call_count++;
+          const toolResult = await executeToolCall(tc, task.workdir, this.shellExec);
+          messages.push(toolResult);
+        }
+      }
+
+      // 7. Loop exit without resolution → iteration cap hit (PLAN §T4 case 3)
+      return this.errorResult(startedAt, iterations - 1, tool_call_count, makeError(
+        'UNSUPPORTED',
+        `lmstudio-agentic iteration cap hit (${this.maxIterations} iterations)`,
+        false
+      ));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private errorResult(
+    startedAt: number,
+    iterations: number,
+    tool_call_count: number,
+    error: ReturnType<typeof makeError>
+  ): WorkerResult {
     return {
       status: 'error',
       output: '',
       duration_ms: Date.now() - startedAt,
       exit_code: null,
-      iterations: 0,
-      tool_call_count: 0,
-      error: makeError('UNSUPPORTED', 'lmstudio-agentic worker not yet implemented (T2)', false),
+      iterations,
+      tool_call_count,
+      error,
     };
   }
+}
+
+/**
+ * Compute the per-turn fingerprint used by the loop detector (PLAN §T5 case 4).
+ *
+ * Sorting the per-call hashes makes parallel-tool-call ordering deterministic
+ * across turns — model may emit [shell_exec(ls), shell_exec(pwd)] one turn and
+ * [shell_exec(pwd), shell_exec(ls)] the next; both produce the same fingerprint.
+ */
+export function computeTurnFingerprint(toolCalls: ToolCall[]): string {
+  const perCallHashes = toolCalls.map((tc) => {
+    // Use raw arguments string when JSON parse fails — preserves retry detection.
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(tc.function.arguments);
+    } catch {
+      parsed = tc.function.arguments;
+    }
+    return hashToolCall(tc.function.name, parsed);
+  });
+  perCallHashes.sort();
+  return createHash('sha256').update(perCallHashes.join('|')).digest('hex');
 }
