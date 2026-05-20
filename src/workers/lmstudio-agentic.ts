@@ -7,15 +7,21 @@
  *
  * Capabilities: `{ agentic: true, execution_model: 'tool_loop' }`.
  *
- * Architecture (per PLAN.md §Goal):
- *   1. Probe GET /api/v0/models — refuse if model lacks `tool_use` capability.
+ * Architecture (per PLAN.md §Goal + LMSTUDIO-ERRATA-2026.md §4-9):
+ *   1. Probe GET /v1/models (OpenAI-compat, per ERRATA E1) — refuse if model lacks
+ *      `tool_use` capability. REST v0 (/api/v0/models) does NOT include capabilities.
  *   2. Build messages (system contextPrefix + LFM2 nudge if applicable, user task).
  *   3. Loop POST /v1/chat/completions { stream:false, tools, tool_choice:'auto' }:
  *      a. If choices[0].message.tool_calls absent → final answer, exit success.
  *      b. Execute each tool call (shell_exec / bash; cwd clamped to task.workdir; 32KB trunc).
- *      c. Append {role:'tool', tool_call_id, content} for each tool result.
- *      d. Hash-detector: 3 consecutive identical per-turn fingerprints → LOOP_DETECTED abort.
- *      e. Re-send tools[] every turn.
+ *      c. Append assistant message — spread reasoning_content if present (ERRATA E2 —
+ *         Qwen 3.5/3.6 leak </think> into content otherwise).
+ *      d. For empty tool_call_id (LM Studio bug #830, ERRATA E3) — append synthetic
+ *         {role:'tool', tool_call_id:'__missing__', content:'ERROR: tool_call_id was empty'};
+ *         do NOT crash — let the loop detector + iteration cap absorb the misbehavior.
+ *      e. Append {role:'tool', tool_call_id, content} for each well-formed tool call.
+ *      f. Hash-detector: 3 consecutive identical per-turn fingerprints → LOOP_DETECTED abort.
+ *      g. Re-send tools[] every turn.
  *   4. Iteration cap 20; wall-clock cap via AbortController(task.timeout_ms).
  *
  * Test seams (PLAN.md T2): `fetchImpl`, `shellExec`, `maxIterations` constructor opts.
@@ -61,7 +67,8 @@ const DEFAULT_SYSTEM_PROMPT = 'You are a coding agent. Use the provided tools to
 export type ChatMessage =
   | { role: 'system'; content: string }
   | { role: 'user'; content: string }
-  | { role: 'assistant'; content: string | null; tool_calls?: ToolCall[] }
+  // reasoning_content (optional) preserved for ERRATA E2 — Qwen 3.5/3.6 multi-turn safety.
+  | { role: 'assistant'; content: string | null; tool_calls?: ToolCall[]; reasoning_content?: string }
   | ToolCallMessage;
 
 export interface ShellExecArgs {
@@ -272,8 +279,17 @@ interface CapabilityProbeBody {
 }
 
 /**
- * Probe GET /api/v0/models, find entry by `id`, check `capabilities` contains 'tool_use'.
- * Returns `null` on success; `RelayError` on missing-capability / probe failure.
+ * Probe GET /v1/models (OpenAI-compat, per LMSTUDIO-ERRATA-2026 §4 — REST v0
+ * /api/v0/models does NOT include a `capabilities` field). Find entry by `id`,
+ * check `capabilities` array contains the literal string `"tool_use"`.
+ *
+ * Fail-closed if:
+ *   - probe network/HTTP error → PROVIDER_ERROR retryable
+ *   - model not present       → INVALID_ARGS (non-retryable) with `lms load` hint
+ *   - capabilities key absent → INVALID_ARGS (likely LM Studio < 0.3.16)
+ *   - capabilities array does not include "tool_use" → INVALID_ARGS
+ *
+ * Returns `null` on success.
  */
 async function probeCapability(
   endpoint: string,
@@ -282,7 +298,8 @@ async function probeCapability(
   fetchImpl: FetchFn,
   signal: AbortSignal
 ): Promise<ReturnType<typeof makeError> | null> {
-  const probeUrl = `${endpoint.replace(/\/+$/, '')}/api/v0/models`;
+  // ERRATA E1: /v1/models is the OpenAI-compat endpoint that exposes capabilities array.
+  const probeUrl = `${endpoint.replace(/\/+$/, '')}/v1/models`;
   let res: Response;
   try {
     res = await fetchImpl(probeUrl, { method: 'GET', headers, signal });
@@ -309,7 +326,14 @@ async function probeCapability(
       false
     );
   }
-  if (!Array.isArray(entry.capabilities) || !entry.capabilities.includes('tool_use')) {
+  if (!Array.isArray(entry.capabilities)) {
+    return makeError(
+      'INVALID_ARGS',
+      `LM Studio /v1/models response for "${model}" missing 'capabilities' array — upgrade LM Studio to ≥ 0.3.16`,
+      false
+    );
+  }
+  if (!entry.capabilities.includes('tool_use')) {
     return makeError(
       'INVALID_ARGS',
       `model "${model}" does not advertise the 'tool_use' capability — agentic dispatch refused`,
@@ -327,6 +351,10 @@ interface ChatCompletionResponse {
       role: string;
       content?: string | null;
       tool_calls?: ToolCall[];
+      // ERRATA E2 — Qwen 3.5/3.6 emit reasoning_content alongside tool_calls.
+      // If we don't echo it back on the assistant message, the next-turn output
+      // leaks `</think>` into `content` (QwenLM/Qwen3.6 issue #26).
+      reasoning_content?: string;
     };
     finish_reason?: string;
   }>;
@@ -336,6 +364,9 @@ interface ChatCompletionResponse {
     total_tokens?: number;
   };
 }
+
+/** Synthetic tool_call_id used when model emits empty id (LM Studio bug #830, ERRATA E3). */
+const EMPTY_ID_SENTINEL = '__missing__';
 
 export class LmStudioAgenticRunner implements WorkerRunner {
   readonly capabilities: WorkerCapabilities = {
@@ -465,11 +496,17 @@ export class LmStudioAgenticRunner implements WorkerRunner {
           ));
         }
 
-        // Append assistant message (the model's reply, possibly with tool_calls)
+        // Append assistant message (the model's reply, possibly with tool_calls).
+        // ERRATA E2: spread reasoning_content verbatim when present — Qwen 3.5/3.6
+        // multi-turn loops leak `</think>` into `content` if reasoning_content isn't
+        // echoed back on the assistant message (QwenLM/Qwen3.6 issue #26).
         messages.push({
           role: 'assistant',
           content: choice.message.content ?? null,
           ...(choice.message.tool_calls ? { tool_calls: choice.message.tool_calls } : {}),
+          ...(choice.message.reasoning_content
+            ? { reasoning_content: choice.message.reasoning_content }
+            : {}),
         });
 
         const toolCalls = choice.message.tool_calls;
@@ -503,9 +540,20 @@ export class LmStudioAgenticRunner implements WorkerRunner {
           ));
         }
 
-        // 6. Execute tool calls and append results
+        // 6. Execute tool calls and append results.
+        // ERRATA E3: defensive empty-id handling (LM Studio bug #830) — synthesize
+        // a sentinel id and ERROR tool message so the model can self-correct without
+        // crashing the loop. The loop detector + iteration cap absorb misbehavior.
         for (const tc of toolCalls) {
           tool_call_count++;
+          if (typeof tc.id !== 'string' || tc.id.length === 0) {
+            messages.push({
+              role: 'tool',
+              tool_call_id: EMPTY_ID_SENTINEL,
+              content: 'ERROR: tool_call_id was empty (LM Studio bug #830) — please re-emit with a non-empty id',
+            });
+            continue;
+          }
           const toolResult = await executeToolCall(tc, task.workdir, this.shellExec);
           messages.push(toolResult);
         }
