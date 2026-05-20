@@ -110,6 +110,13 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
     task: args.task,
     run_id,
   });
+  // Inject default agentic tools when dispatching to lmstudio-agentic so the
+  // runner has a shell_exec tool to offer the model. Worker rejects empty tools[].
+  let tools;
+  if (args.provider === 'lmstudio-agentic') {
+    const { DEFAULT_AGENTIC_TOOLS } = await import('../workers/lmstudio-agentic.js');
+    tools = DEFAULT_AGENTIC_TOOLS;
+  }
   let result;
   try {
     result = await runner.run({
@@ -121,6 +128,7 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
       reasoning_effort: args.reasoningEffort,
       run_id,
       provider: args.provider,
+      ...(tools ? { tools } : {}),
     });
   } catch (err) {
     const message = (err as Error).message;
@@ -170,6 +178,9 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
       duration_ms: result.duration_ms,
       exit_code: result.exit_code,
       token_usage: result.token_usage ?? null,
+      // Agentic-worker metrics — populated when execution_model='tool_loop'.
+      ...(result.iterations !== undefined ? { iterations: result.iterations } : {}),
+      ...(result.tool_call_count !== undefined ? { tool_call_count: result.tool_call_count } : {}),
       error: result.error ? { code: result.error.code, message: result.error.message } : null,
     }) + '\n');
   } else {

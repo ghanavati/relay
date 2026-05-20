@@ -55,6 +55,32 @@ const SHELL_EXEC_NAMES = new Set<string>(['shell_exec', 'bash']);
 /** LFM2 model regex (PLAN §T6). */
 const LFM2_MODEL_RE = /^liquid\/lfm2-/i;
 
+/**
+ * Default shell_exec tool definition offered to the model when the caller
+ * does not supply `task.tools`. Matches the contract in PLAN.md §Tool Execution
+ * Sandbox Spec — single `command` arg, no schema-level cwd (cwd is clamped to
+ * `task.workdir` by the executor regardless of model emission).
+ */
+export const DEFAULT_AGENTIC_TOOLS = [
+  {
+    type: 'function' as const,
+    function: {
+      name: 'shell_exec',
+      description:
+        'Execute a shell command (bash syntax) in the task workdir. Stdout is truncated at 32KB. ' +
+        'Returns STDOUT/STDERR/EXIT. Use this for filesystem inspection, running tests, building, etc.',
+      parameters: {
+        type: 'object' as const,
+        properties: {
+          command: { type: 'string' as const, description: 'Shell command to run in the task workdir.' },
+        },
+        required: ['command'] as const,
+        additionalProperties: false as const,
+      },
+    },
+  },
+];
+
 /** Pythonic-output-suppression nudge (PLAN §T2 — pitfall 1.1). */
 const LFM2_NUDGE =
   'Output function calls strictly as JSON in the tool_calls field, never as Python literals.';
