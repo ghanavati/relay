@@ -4,6 +4,36 @@ import type { ResolvedMcpAttachment } from "../contracts/mcp.js";
 
 export type WorkerStatus = "success" | "error" | "timeout";
 
+/** OpenAI-compatible tool-function declaration (used by agentic workers, e.g. lmstudio-agentic). */
+export interface ToolFunctionDef {
+  name: string;                                  // tool callable name (e.g. "shell_exec")
+  description?: string;                          // model-facing free-text description
+  parameters?: Record<string, unknown>;          // JSON Schema for arguments
+}
+
+/** OpenAI-compatible top-level tool descriptor (only `function` type is supported in v0.2). */
+export interface ToolDef {
+  type: "function";
+  function: ToolFunctionDef;
+}
+
+/** A single tool invocation emitted by the assistant inside `choices[0].message.tool_calls[]`. */
+export interface ToolCall {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;                           // JSON-encoded string — must JSON.parse before use
+  };
+}
+
+/** Tool-result message appended to `messages[]` for the next loop iteration. */
+export interface ToolCallMessage {
+  role: "tool";
+  tool_call_id: string;
+  content: string;
+}
+
 export interface WorkerTask {
   task: string;
   contextPrefix?: string; // Stable context layers for Anthropic prompt caching (bare task must be used when set)
@@ -14,6 +44,7 @@ export interface WorkerTask {
   codex_approval_policy?: string;
   mcps?: ResolvedMcpAttachment[];
   images?: string[];  // Optional image URLs for multimodal requests (OpenRouter/LM Studio only)
+  tools?: ToolDef[];  // OpenAI-compatible tool schema for agentic workers (lmstudio-agentic)
   logStream?: WriteStream;
   onStderr?: (text: string) => void;
   run_id: string;
@@ -34,6 +65,8 @@ export interface WorkerResult {
   tool_use_blocks?: number;
   file_reads_before_first_write?: number;
   tool_retry_count?: number;
+  iterations?: number;       // POST iterations completed by an agentic tool-loop worker
+  tool_call_count?: number;  // total tool-call invocations executed during a tool-loop run
 }
 
 export interface DelegateMeta {

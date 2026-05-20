@@ -2,7 +2,8 @@ import type { WorkerTask, WorkerResult } from "./types.js";
 
 export type IntegrationLevel = "callable" | "status" | "full";
 export type AdapterType = "openclaw" | "process" | "http";
-export type ExecutionModel = "relay-loop" | "subprocess";
+// "tool_loop" — in-process OpenAI-style tool-calling loop (lmstudio-agentic worker)
+export type ExecutionModel = "relay-loop" | "subprocess" | "tool_loop";
 
 export interface WorkerCapabilities {
   agentic: boolean;

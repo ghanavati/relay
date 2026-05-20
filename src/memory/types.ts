@@ -50,6 +50,7 @@ export interface MemoryRow {
   readonly success_recall_count: number; // SHIP-61: incremented only when a successful run recalled this memory
   readonly files_json: string; // SHIP-52: JSON array of file paths this memory relates to
   readonly trust_level: string; // SHIP-67: 'unverified' | 'provisional' | 'trusted'
+  readonly embedding_blob: Buffer | null; // PLAN-4 §5: 3072-byte float32 vector (768 dims) or NULL when not yet backfilled
 }
 
 export interface Memory {
