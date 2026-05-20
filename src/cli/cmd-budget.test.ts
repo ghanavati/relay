@@ -11,10 +11,16 @@
 
 process.env['RELAY_DB_PATH'] = ':memory:';
 
-import { describe, test, beforeEach, before } from 'node:test';
+import { describe, test, beforeEach, before, after } from 'node:test';
 import * as assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname, resolve as resolvePath } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import Database from 'better-sqlite3';
 import { executeBudgetShowCommand, type BudgetShowArgs } from './cmd-budget.js';
-import { getDb } from '../runtime/store/db.js';
+import { applySchema, getDb } from '../runtime/store/db.js';
 import type { CliIO } from './commands.js';
 
 interface CapturedIO {
@@ -234,5 +240,78 @@ describe('executeBudgetShowCommand — schema_version stability guard', () => {
     await executeBudgetShowCommand({ json: true }, cap.io);
     const parsed = JSON.parse(cap.stdout.join('').trim());
     assert.equal(parsed.schema_version, 1, 'breaking this field is a SemVer-major change');
+  });
+});
+
+// ─── Dispatcher-level E2E (regression guard) ──────────────────────────────
+// Drives the built `dist/cli.js` binary via spawn so the test exercises the
+// real `dispatchBudget` argv → BudgetShowArgs forwarding path. The bug fix
+// in `dispatchBudget` (cli.ts) lives here: previously only `--json` was
+// forwarded; `--provider`/`--workdir`/`--period` were silently dropped.
+describe('relay budget show — dispatcher flag forwarding (E2E)', () => {
+  // dist/cli/cmd-budget.test.js → ../cli.js (dist/cli.js)
+  const HERE = dirname(fileURLToPath(import.meta.url));
+  const CLI_BIN = resolvePath(HERE, '..', 'cli.js');
+  let dbDir: string;
+  let dbPath: string;
+
+  before(() => {
+    dbDir = mkdtempSync(join(tmpdir(), 'relay-budget-dispatch-'));
+    dbPath = join(dbDir, 'relay.db');
+
+    // Open a FRESH Database handle directly — bypass getDb()'s module-level
+    // cache (which is already pinned to ':memory:' from earlier describes).
+    const seedDb = new Database(dbPath);
+    applySchema(seedDb);
+    seedDb.prepare('DELETE FROM cost_events').run();
+    const stmt = seedDb.prepare(
+      `INSERT INTO cost_events
+         (run_id, provider, model, prompt_tokens, completion_tokens, total_tokens, cost_usd, workdir, created_at)
+       VALUES (?, ?, ?, 0, 0, 0, ?, ?, ?)`,
+    );
+    const now = Date.now();
+    ALL_FIVE.forEach(([provider, workdir, cost], i) => {
+      stmt.run(`run-${i}`, provider, 'test-model', cost, workdir, now);
+    });
+    seedDb.close();
+  });
+
+  after(() => {
+    rmSync(dbDir, { recursive: true, force: true });
+  });
+
+  function runCli(args: string[]): { stdout: string; stderr: string; status: number | null } {
+    const res = spawnSync(process.execPath, [CLI_BIN, ...args], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        RELAY_DB_PATH: dbPath,
+      },
+    });
+    return { stdout: res.stdout ?? '', stderr: res.stderr ?? '', status: res.status };
+  }
+
+  test('--provider lmstudio --workdir /a --json propagates filters (regression)', () => {
+    const { stdout, status } = runCli([
+      'budget', 'show',
+      '--provider', 'lmstudio',
+      '--workdir', '/a',
+      '--json',
+    ]);
+    assert.equal(status, 0, 'dispatcher must exit 0 on valid filters');
+    const parsed = JSON.parse(stdout.trim());
+    assert.deepStrictEqual(
+      parsed.scope_filters,
+      { provider: 'lmstudio', workdir: '/a', period: null },
+      'dispatchBudget must forward --provider and --workdir (not drop them)',
+    );
+    // /a + lmstudio → just the single $0.01 row in ALL_FIVE
+    assert.equal(parsed.event_count, 1);
+  });
+
+  test('--period bogus exits 2 (dispatcher forwards --period for validation)', () => {
+    const { stderr, status } = runCli(['budget', 'show', '--period', 'bogus']);
+    assert.equal(status, 2, 'bad --period must exit 2 (not silently 0)');
+    assert.match(stderr, /unknown --period value 'bogus'/);
   });
 });
