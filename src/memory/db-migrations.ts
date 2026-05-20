@@ -98,6 +98,16 @@ export function migrateMemoryTables(db: Database.Database): void {
   if (!existingCols.has('embedding_blob')) {
     db.prepare('ALTER TABLE memories ADD COLUMN embedding_blob BLOB').run();
   }
+  // PLAN-4 T1 (cross-model rejection per PITFALL 2.3) — record which embedding
+  // model produced `embedding_blob`. Nullable TEXT, NO DEFAULT (NULL = not yet
+  // embedded, mirroring embedding_blob IS NULL). Cross-model rows (e.g. a
+  // row embedded with 'bge-large-en-v1.5' while the active model is
+  // 'nomic-embed-text-v1.5') get excluded from cosine similarity by
+  // semantic-similarities.ts. Without this column a silent model swap would
+  // mix vector spaces and corrupt recall.
+  if (!existingCols.has('embedding_model')) {
+    db.prepare('ALTER TABLE memories ADD COLUMN embedding_model TEXT').run();
+  }
 
   // 3. Indexes/triggers that depend on the columns added in step 2.
   for (const stmt of POST_ALTER_DDL) {
