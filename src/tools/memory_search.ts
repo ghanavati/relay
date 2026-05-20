@@ -14,12 +14,13 @@
 
 import { MemoryStore } from '../memory/memory-store.js';
 import { budgetedRecall } from '../memory/memory-engine.js';
+import { computeSemanticSimilarities } from '../memory/semantic-similarities.js';
 import type { RecallArgs } from '../contracts/memory.js';
 import type { MemoryType, RecallQuery } from '../memory/types.js';
 
 type McpToolResult = { content: Array<{ type: 'text'; text: string }> };
 
-export function handleMemorySearch(args: RecallArgs): McpToolResult {
+export async function handleMemorySearch(args: RecallArgs): Promise<McpToolResult> {
   const store = new MemoryStore();
 
   const query: RecallQuery = {
@@ -35,7 +36,10 @@ export function handleMemorySearch(args: RecallArgs): McpToolResult {
   };
 
   const candidates = store.getCandidates(query);
-  const result = budgetedRecall(candidates, query, Date.now());
+  // PLAN-4 T6 — Semantic similarities at impure boundary (see tools/recall.ts).
+  // Empty Map when env unset / LM Studio unreachable -> word-overlap fallback.
+  const similarities = await computeSemanticSimilarities(store, query, candidates);
+  const result = budgetedRecall(candidates, query, Date.now(), similarities);
 
   // Unlike `recall`, we do NOT call touchMemories() or logReads() here.
   // The AI has only seen a 100-char excerpt, not consumed the full memory —

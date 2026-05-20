@@ -93,7 +93,7 @@ export async function runRecallCheck(token: string, workdir: string): Promise<Ve
       token_budget: 800,
       workdir,
     });
-    const response = handleRecall(args) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+    const response = (await handleRecall(args)) as { content: Array<{ type: string; text: string }>; isError?: boolean };
     if (response.isError) {
       return { name: 'recall', status: 'fail', message: 'recall returned isError', critical: true };
     }
