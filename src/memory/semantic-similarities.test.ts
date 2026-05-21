@@ -18,6 +18,7 @@ import {
   blobToFloat32,
   cosineSimNormalized,
   computeSemanticSimilarities,
+  _resetWarnedReasonsForTesting,
   type SemanticSimilaritiesStore,
 } from './semantic-similarities.js';
 
@@ -409,6 +410,68 @@ describe('computeSemanticSimilarities (PLAN-4 T5)', () => {
     assert.strictEqual(result.get('m1'), 0, 'anti-parallel clamped to 0');
   });
 
+  test('non-local endpoint via env → empty Map, ZERO embed calls, one stderr warning', async () => {
+    process.env['RELAY_EMBEDDING_MODEL'] = NOMIC;
+    process.env['LMSTUDIO_ENDPOINT'] = 'https://attacker.example.com';
+    _resetWarnedReasonsForTesting();
+    const fetchMock = makeEmbedFetchSuccess(Array.from(makeFloat32()));
+    const store = makeStore({
+      m1: { blob: vectorToBlob(makeFloat32()), model: NOMIC },
+    });
+    const candidates = [makeMemory({ memory_id: 'm1' })];
+
+    const stderr = captureStderr();
+    let result: ReadonlyMap<string, number>;
+    try {
+      result = await computeSemanticSimilarities(
+        store,
+        { query: 'sensitive query', token_budget: 1000 },
+        candidates,
+        { fetchImpl: fetchMock.fetchImpl }
+      );
+    } finally {
+      stderr.restore();
+    }
+
+    assert.strictEqual(result.size, 0, 'locality gate trips → empty similarities map');
+    assert.strictEqual(fetchMock.calls, 0, 'fetch never invoked when endpoint is non-local');
+    const warnings = stderr.lines.filter((l) => l.includes('RELAY: embedding skipped'));
+    assert.strictEqual(warnings.length, 1, `expected one deduped warning, got ${warnings.length}`);
+    assert.ok(
+      warnings[0]!.includes('non-local-endpoint'),
+      `warning should name the locality reason, got: ${warnings[0]}`
+    );
+  });
+
+  test('non-local endpoint via opts.endpoint → empty Map, ZERO embed calls, one stderr warning', async () => {
+    process.env['RELAY_EMBEDDING_MODEL'] = NOMIC;
+    _resetWarnedReasonsForTesting();
+    const fetchMock = makeEmbedFetchSuccess(Array.from(makeFloat32()));
+    const store = makeStore({
+      m1: { blob: vectorToBlob(makeFloat32()), model: NOMIC },
+    });
+    const candidates = [makeMemory({ memory_id: 'm1' })];
+
+    const stderr = captureStderr();
+    let result: ReadonlyMap<string, number>;
+    try {
+      result = await computeSemanticSimilarities(
+        store,
+        { query: 'sensitive query', token_budget: 1000 },
+        candidates,
+        { fetchImpl: fetchMock.fetchImpl, endpoint: 'http://10.0.0.5:1234' }
+      );
+    } finally {
+      stderr.restore();
+    }
+
+    assert.strictEqual(result.size, 0);
+    assert.strictEqual(fetchMock.calls, 0);
+    const warnings = stderr.lines.filter((l) => l.includes('RELAY: embedding skipped'));
+    assert.strictEqual(warnings.length, 1);
+    assert.ok(warnings[0]!.includes('non-local-endpoint'));
+  });
+
   test('endpoint and model overridable via opts (for testing without env)', async () => {
     delete process.env['RELAY_EMBEDDING_MODEL'];
     delete process.env['LMSTUDIO_ENDPOINT'];
@@ -433,10 +496,10 @@ describe('computeSemanticSimilarities (PLAN-4 T5)', () => {
       store,
       { query: 'override test', token_budget: 1000 },
       candidates,
-      { fetchImpl, endpoint: 'http://custom:9999', model: NOMIC }
+      { fetchImpl, endpoint: 'http://127.0.0.1:9999', model: NOMIC }
     );
 
     assert.strictEqual(result.size, 1);
-    assert.ok(calls.some((c) => c.includes('http://custom:9999/v1/embeddings')));
+    assert.ok(calls.some((c) => c.includes('http://127.0.0.1:9999/v1/embeddings')));
   });
 });

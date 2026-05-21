@@ -18,6 +18,7 @@
  */
 
 import { embedQuery, EXPECTED_EMBEDDING_DIM, type EmbeddingResult } from './embedding-client.js';
+import { isLocalEndpoint } from './endpoint-locality.js';
 import type { Memory, RecallQuery } from './types.js';
 
 /**
@@ -134,6 +135,15 @@ export async function computeSemanticSimilarities(
   if (candidates.length === 0) return new Map();
 
   const endpoint = opts?.endpoint ?? process.env['LMSTUDIO_ENDPOINT'] ?? 'http://127.0.0.1:1234';
+
+  // Locality gate — refuse to ship the user's recall query to a non-loopback
+  // host. Mirror of the write-path gate in memory-store.ts#scheduleEmbed.
+  // Without this, LMSTUDIO_ENDPOINT=https://attacker.example.com would
+  // exfiltrate every recall query via /v1/embeddings.
+  if (!isLocalEndpoint(endpoint)) {
+    warnSkipped('non-local-endpoint');
+    return new Map();
+  }
 
   // ── Embed the query ─────────────────────────────────────────────────────
   const embedOpts: Parameters<typeof embedQuery>[1] = {

