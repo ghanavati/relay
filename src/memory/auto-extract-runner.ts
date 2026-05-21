@@ -14,14 +14,25 @@
  *
  * No exceptions thrown — every failure path is encoded as a status string.
  * Caller decides what to log / retry.
+ *
+ * Phase 6 (delta extraction):
+ *   - buildPrompt accepts optional `existingMemories` to enable diff-against-
+ *     known-patterns extraction. When provided + non-empty, the prompt asks
+ *     the model to extract only ADDS / CONTRADICTS / REFINES vs existing
+ *     entries. When empty/undefined, prompt is byte-identical to v0.1.
+ *   - Pre-flight prompt-size check rejects oversized prompts before HTTP
+ *     (status: 'error:prompt-too-large').
  */
+
+import type { Memory } from './types.js';
 
 export type ExtractionStatus =
   | 'ok'
   | 'error:llm-down'
   | 'error:timeout'
   | 'error:parse'
-  | 'error:empty';
+  | 'error:empty'
+  | 'error:prompt-too-large';
 
 export interface ExtractionResult {
   status: ExtractionStatus;
@@ -35,6 +46,8 @@ export interface ExtractionOptions {
   endpoint: string; // LMSTUDIO_ENDPOINT env or default localhost:1234
   model: string; // RELAY_AUTO_EXTRACT_MODEL env or default
   timeoutMs: number; // default 25000
+  existingMemories?: readonly Memory[]; // Phase 6: diff against known patterns
+  contextLimit?: number; // Phase 6: per-model context window for pre-flight check (default 32768)
 }
 
 /**
@@ -62,8 +75,36 @@ function trimEndpoint(endpoint: string): string {
   return endpoint.replace(/\/+$/, '');
 }
 
-function buildPrompt(transcript: string): string {
-  return PROMPT_TEMPLATE.replace('<<<TRANSCRIPT>>>', transcript);
+/** Default LM Studio context window assumed when caller doesn't specify. */
+export const DEFAULT_CONTEXT_LIMIT = 32_768;
+
+/** Pre-flight ratio: abort if prompt > 80% of context limit. */
+export const PROMPT_SIZE_CEILING_RATIO = 0.8;
+
+/** Cheap char-based token estimate (LM Studio doesn't expose tokenizer). ~4 chars per token. */
+function estimateTokens(s: string): number {
+  return Math.ceil(s.length / 4);
+}
+
+/**
+ * Build the extraction prompt. When `existingMemories` is non-empty, inject
+ * a delta-extraction directive before the transcript so the model knows to
+ * extract only ADDS / CONTRADICTS / REFINES vs known patterns.
+ *
+ * Backward compat: empty / undefined `existingMemories` produces a prompt
+ * byte-identical to the v0.1 single-arg call.
+ */
+export function buildPrompt(transcript: string, existingMemories?: readonly Memory[]): string {
+  if (!existingMemories || existingMemories.length === 0) {
+    return PROMPT_TEMPLATE.replace('<<<TRANSCRIPT>>>', transcript);
+  }
+  const bullets = existingMemories.map((m) => `- ${m.content}`).join('\n');
+  const existingBlock = `Existing known patterns (do not re-extract; flag contradictions explicitly, extract only ADDS, CONTRADICTS, or REFINES):\n${bullets}\n`;
+  // Inject EXISTING block immediately before the 'Transcript:' line so the
+  // model sees the contract before reading the transcript.
+  return PROMPT_TEMPLATE
+    .replace('Transcript:', `${existingBlock}\nTranscript:`)
+    .replace('<<<TRANSCRIPT>>>', transcript);
 }
 
 /**
@@ -227,6 +268,20 @@ export async function extractLessonsViaLmStudio(
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs);
 
   try {
+    // Phase 6 T5 — pre-flight prompt-size check runs FIRST (before any network)
+    // so an over-sized prompt aborts cleanly without spending a probe call.
+    const prompt = buildPrompt(opts.transcript, opts.existingMemories);
+    const limit = opts.contextLimit ?? DEFAULT_CONTEXT_LIMIT;
+    const ceiling = Math.floor(limit * PROMPT_SIZE_CEILING_RATIO);
+    const promptTokens = estimateTokens(prompt);
+    if (promptTokens > ceiling) {
+      return {
+        status: 'error:prompt-too-large',
+        durationMs: Date.now() - startedAt,
+        note: `prompt ~${promptTokens} tokens exceeds ${ceiling} ceiling (${Math.floor(PROMPT_SIZE_CEILING_RATIO * 100)}% of context limit ${limit})`,
+      };
+    }
+
     const probe = await probeLmStudio(opts.endpoint, opts.model, controller.signal);
     if (!probe.reachable) {
       return {
@@ -243,7 +298,6 @@ export async function extractLessonsViaLmStudio(
       };
     }
 
-    const prompt = buildPrompt(opts.transcript);
     const outcome = await callChatCompletions(
       opts.endpoint,
       opts.model,

@@ -60,6 +60,7 @@ import {
   type CheckLessonOptions,
 } from '../memory/auto-extract-berry.js';
 import { handleRemember } from '../tools/remember.js';
+import { MemoryStore } from '../memory/memory-store.js';
 
 // ── Hook payload schema ──────────────────────────────────────────────────────
 
@@ -138,6 +139,12 @@ export interface AutoExtractDeps {
   readonly cleanupAndValidate?: (raw: string, minConfidence: number) => CleanupResult;
   readonly checkBerry?: (opts: CheckLessonOptions) => Promise<BerryCheckResult>;
   readonly remember?: typeof handleRemember;
+  /**
+   * Phase 6 (delta extraction) — fetch existing memories for the workdir so the
+   * extractor can diff against known patterns. Default constructs MemoryStore
+   * and pulls top-50 candidates (~2000 token budget). Tests inject stubs.
+   */
+  readonly getExistingMemories?: (workdir: string) => readonly import('../memory/types.js').Memory[];
   readonly now?: () => number;
   readonly auditPath?: string;
   readonly env?: NodeJS.ProcessEnv;
@@ -403,11 +410,33 @@ async function runPipeline(
   const model = modelResolution.model;
 
   const extract = deps.extractLessons ?? extractLessonsViaLmStudio;
+  // Phase 6 T4 — fetch existing memories to enable delta extraction. Default
+  // pulls top candidates from MemoryStore for the workdir (~2000 token budget,
+  // bounded by getCandidates 500-row hard cap). Failure: empty list, extractor
+  // falls back to v0.1 behavior (no delta directive).
+  const getExisting =
+    deps.getExistingMemories ??
+    ((workdir: string) => {
+      try {
+        const store = new MemoryStore();
+        return store.getCandidates({ workdir, token_budget: 2000 });
+      } catch {
+        return [];
+      }
+    });
+  const existingMemories = (() => {
+    try {
+      return getExisting(payload.value.cwd);
+    } catch {
+      return [];
+    }
+  })();
   const extraction = await extract({
     transcript: redactedTranscript,
     endpoint,
     model,
     timeoutMs,
+    existingMemories,
   });
 
   if (extraction.status !== 'ok' || !extraction.rawOutput) {
