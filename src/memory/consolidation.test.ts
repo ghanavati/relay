@@ -23,6 +23,7 @@ function makeMemory(overrides: Partial<Memory> & { memory_id: string }): Memory 
     success_recall_count: 0,
     files: [],
     trust_level: 'medium' as Memory['trust_level'],
+    conflicts_with: [],
     ...overrides,
   };
 }

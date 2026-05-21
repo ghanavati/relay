@@ -38,6 +38,7 @@ function createMemory(overrides: Partial<Memory> = {}): Memory {
     success_recall_count: overrides.success_recall_count ?? 0,
     files: overrides.files ?? [],
     trust_level: overrides.trust_level ?? 'unverified',
+    conflicts_with: overrides.conflicts_with ?? [],
   };
 }
 
