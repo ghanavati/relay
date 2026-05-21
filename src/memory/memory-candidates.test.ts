@@ -125,9 +125,12 @@ describe('MemoryStore.getCandidates()', () => {
       expires_at: null,
     });
 
-    // Query for database schema — FTS should surface the PostgreSQL memory
+    // Query for an exact word from the relevant memory — FTS should rank it first.
+    // Previous query 'database schema storage' relied on BM25 ranking of the lone
+    // 'storage' hit, which is fragile across sqlite versions (CI Node 20 ships a
+    // different sqlite that ranks tied terms differently). Use an exact-word hit.
     const candidates = store.getCandidates({
-      query: 'database schema storage',
+      query: 'PostgreSQL',
       token_budget: 9999,
       workdir: '/fts-test',
     });
