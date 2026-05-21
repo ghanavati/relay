@@ -581,6 +581,12 @@ async function runPipeline(
   const writeErrors: string[] = [];
   for (const lesson of survivors) {
     try {
+      // Phase 6 — `kind: 'contradict'` routes to `memory_source='delta-contradiction'`
+      // so trust-tier logic / observability can surface delta conflicts separately
+      // from ordinary auto-extracted lessons. Missing/`'add'`/`'refine'` keep the
+      // legacy `auto-run-recorder` source (byte-identical v0.1 behavior).
+      const memorySource =
+        lesson.kind === 'contradict' ? 'delta-contradiction' : 'auto-run-recorder';
       remember(
         {
           content: lesson.content,
@@ -596,7 +602,7 @@ async function runPipeline(
           expires_in_hours: TTL_HOURS_30_DAYS,
           source_run_id: `auto-extract:${payload.value.session_id}`,
         },
-        'auto-run-recorder'
+        memorySource
       );
       written += 1;
     } catch (err) {

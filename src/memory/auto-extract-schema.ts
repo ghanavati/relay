@@ -11,11 +11,24 @@
 
 import { z } from 'zod';
 
-/** Single extracted memory candidate. Fields mirror MemoryStore.upsert minus storage metadata. */
+/**
+ * Single extracted memory candidate. Fields mirror MemoryStore.upsert minus storage metadata.
+ *
+ * `kind` (optional) — Phase 6 delta-extraction signal:
+ *   - `add`        → new lesson, no overlap with existing memories (default when missing)
+ *   - `refine`     → strengthens or clarifies an existing pattern
+ *   - `contradict` → flags a conflict with an existing pattern; writer routes
+ *                    to `memory_source='delta-contradiction'` so trust-tier
+ *                    logic can surface the conflict separately
+ *
+ * Backward compat: missing `kind` is treated as `'add'`, preserving byte-identical
+ * v0.1 behavior when no existing memories are provided to the extractor.
+ */
 export const ExtractedLesson = z.object({
   content: z.string().min(10).max(200),
   memory_type: z.enum(['lesson', 'fact', 'decision']),
   confidence: z.number().min(0).max(1),
+  kind: z.enum(['add', 'refine', 'contradict']).optional(),
 });
 
 /** Top-level shape: a bounded array of candidates. Cap at 3 to avoid noisy runs. */

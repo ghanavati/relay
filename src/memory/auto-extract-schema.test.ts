@@ -398,6 +398,84 @@ describe('cleanupAndValidate — redaction leak', () => {
   });
 });
 
+describe('cleanupAndValidate — kind field (Phase 6 delta-extraction signal)', () => {
+  test('accepts lesson without kind (defaults to add semantically; field optional)', () => {
+    const raw = JSON.stringify({
+      lessons: [
+        { content: 'no kind field present', memory_type: 'lesson', confidence: 0.8 },
+      ],
+    });
+    const result = cleanupAndValidate(raw);
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.lessons[0]?.kind, undefined, 'missing kind stays undefined');
+    }
+  });
+
+  test('accepts kind="add"', () => {
+    const raw = JSON.stringify({
+      lessons: [
+        { content: 'kind add valid one', memory_type: 'lesson', confidence: 0.8, kind: 'add' },
+      ],
+    });
+    const result = cleanupAndValidate(raw);
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.lessons[0]?.kind, 'add');
+    }
+  });
+
+  test('accepts kind="refine"', () => {
+    const raw = JSON.stringify({
+      lessons: [
+        { content: 'kind refine valid', memory_type: 'lesson', confidence: 0.8, kind: 'refine' },
+      ],
+    });
+    const result = cleanupAndValidate(raw);
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.lessons[0]?.kind, 'refine');
+    }
+  });
+
+  test('accepts kind="contradict" (load-bearing: routes to delta-contradiction memory_source)', () => {
+    const raw = JSON.stringify({
+      lessons: [
+        {
+          content: 'kind contradict valid',
+          memory_type: 'lesson',
+          confidence: 0.8,
+          kind: 'contradict',
+        },
+      ],
+    });
+    const result = cleanupAndValidate(raw);
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.lessons[0]?.kind, 'contradict');
+    }
+  });
+
+  test('rejects unknown kind values', () => {
+    const raw = JSON.stringify({
+      lessons: [
+        {
+          content: 'kind invalid value here',
+          memory_type: 'lesson',
+          confidence: 0.8,
+          kind: 'override',
+        },
+      ],
+    });
+    const result = cleanupAndValidate(raw);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.reason, 'schema-error');
+      assert.ok(result.detail !== undefined && result.detail.includes('kind'));
+    }
+  });
+});
+
 describe('schema exports — direct safeParse', () => {
   test('ExtractedLesson validates a single lesson object', () => {
     const parsed = ExtractedLesson.safeParse({

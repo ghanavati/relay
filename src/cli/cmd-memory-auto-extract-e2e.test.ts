@@ -1241,6 +1241,86 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
     assert.strictEqual(extractCallCount, 0, 'LLM extractor must never be invoked');
     assert.strictEqual(readMemories(projectCwd).length, 0, 'no memory rows must be written');
   });
+
+  // ── Phase 6 delta-extraction: kind=contradict routes to delta-contradiction ──
+  //
+  // Closes a HIGH codex finding: the `delta-contradiction` MemorySource enum
+  // value was added but never persisted because the writer always hard-coded
+  // `auto-run-recorder`. With the schema's optional `kind` field and the
+  // writer branch, `kind: 'contradict'` MUST land as memory_source='delta-contradiction'.
+  test('14. lesson with kind="contradict" persists with memory_source="delta-contradiction"', async () => {
+    const addLesson: ExtractedLessonT = Object.freeze({
+      content: 'add lesson, ordinary auto-run-recorder source',
+      memory_type: 'lesson',
+      confidence: 0.85,
+      kind: 'add',
+    });
+    const contradictLesson: ExtractedLessonT = Object.freeze({
+      content: 'flagged conflict against existing pattern',
+      memory_type: 'lesson',
+      confidence: 0.85,
+      kind: 'contradict',
+    });
+
+    const deps: AutoExtractDeps = {
+      loadConsent: async () => ({ ok: true, consent: consentEnabled() }),
+      loadTranscript: () => fakeWindow(),
+      redact: (s) => s,
+      extractLessons: async (_opts: ExtractionOptions) => ({
+        status: 'ok',
+        rawOutput: JSON.stringify({ lessons: [addLesson, contradictLesson] }),
+        durationMs: 5,
+      }),
+      // Stub cleanup so the kind field survives end-to-end without depending on
+      // the schema test (separation of concerns: this test asserts the writer
+      // branches on kind, not that Zod accepts it).
+      cleanupAndValidate: (_raw: string, _min: number): CleanupResult => ({
+        ok: true,
+        lessons: [addLesson, contradictLesson],
+      }),
+      checkBerry: async (_opts: CheckLessonOptions): Promise<BerryCheckResult> => ({ ok: 'pass' }),
+      remember: handleRemember,
+      auditPath,
+      discoverModel: async (): Promise<string | null> => 'qwen/qwen3-coder-next',
+    };
+
+    const cap = makeIO(projectCwd);
+    const code = await withStdin(
+      makePayload({ sessionId: 'sess-contradict', cwd: projectCwd, transcriptPath }),
+      () =>
+        executeMemoryAutoExtractCommand(
+          { fromStdin: true, maxBytes: undefined, json: true },
+          cap.io,
+          deps
+        )
+    );
+
+    assert.strictEqual(code, 0);
+    const out = JSON.parse(cap.stdout.join('').trim()) as {
+      status: string;
+      lessons_written: number;
+    };
+    assert.strictEqual(out.status, 'ok');
+    assert.strictEqual(out.lessons_written, 2);
+
+    const rows = readMemories(projectCwd);
+    assert.strictEqual(rows.length, 2, 'both lessons must persist');
+
+    const sources = rows.map((r) => r.memory_source).sort();
+    assert.deepStrictEqual(
+      sources,
+      ['auto-run-recorder', 'delta-contradiction'],
+      'add → auto-run-recorder, contradict → delta-contradiction'
+    );
+
+    const contradictRow = rows.find((r) => r.memory_source === 'delta-contradiction');
+    assert.ok(contradictRow, 'contradict row must exist');
+    assert.strictEqual(contradictRow.content, contradictLesson.content);
+
+    const addRow = rows.find((r) => r.memory_source === 'auto-run-recorder');
+    assert.ok(addRow, 'add row must exist');
+    assert.strictEqual(addRow.content, addLesson.content);
+  });
 });
 
 // ── Pure-function unit tests for T4 / T9 helpers ─────────────────────────────
