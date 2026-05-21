@@ -554,6 +554,7 @@ export class MemoryStore {
              SELECT 1 FROM json_each(memories.tags_json)
              WHERE json_each.value IN (${tagPlaceholders})
            )
+         ORDER BY accessed_at DESC, memory_id ASC
          LIMIT ?`
       )
       .all(...params) as CandidateRow[];
