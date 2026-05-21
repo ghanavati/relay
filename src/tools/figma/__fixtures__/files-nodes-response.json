@@ -1,0 +1,51 @@
+{
+  "nodes": {
+    "0:1": {
+      "document": {
+        "id": "0:1",
+        "name": "Page 1",
+        "type": "CANVAS",
+        "children": [
+          {
+            "id": "1:23",
+            "name": "Header",
+            "type": "FRAME",
+            "children": [
+              {
+                "id": "1:24",
+                "name": "Logo",
+                "type": "VECTOR",
+                "children": []
+              },
+              {
+                "id": "1:25",
+                "name": "Nav",
+                "type": "FRAME",
+                "children": [
+                  {
+                    "id": "1:26",
+                    "name": "Link/Home",
+                    "type": "TEXT",
+                    "children": []
+                  },
+                  {
+                    "id": "1:27",
+                    "name": "Link/About",
+                    "type": "TEXT",
+                    "children": []
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "1:30",
+            "name": "Hero",
+            "type": "FRAME",
+            "children": []
+          }
+        ]
+      }
+    }
+  }
+}
