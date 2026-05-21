@@ -84,12 +84,30 @@ export function scrubError(err: unknown): Error {
     const out = new Error(scrubPat(err.message));
     out.name = err.name;
     if (err.stack) out.stack = scrubPat(err.stack);
-    // Preserve cause if present (Node 16+). Best-effort scrub if it's an Error.
+    // Preserve cause if present (Node 16+). Recursive scrub — Error nested,
+    // string/object/anything-else stringified through scrubPat so a future
+    // code path putting `{ headers: { 'X-Figma-Token': 'figd_...' } }` as a
+    // cause object cannot leak PAT via stderr / structured log serializers.
     const cause = (err as Error & { cause?: unknown }).cause;
     if (cause !== undefined) {
-      (out as Error & { cause?: unknown }).cause = cause instanceof Error ? scrubError(cause) : cause;
+      (out as Error & { cause?: unknown }).cause = scrubCause(cause);
     }
     return out;
   }
   return new Error(scrubPat(typeof err === 'string' ? err : JSON.stringify(err)));
+}
+
+/**
+ * Recursively scrub a cause value of any shape. Errors recurse via scrubError;
+ * everything else is JSON-stringified through scrubPat so embedded PATs never
+ * survive a `JSON.stringify({ cause })` at the log boundary.
+ */
+function scrubCause(cause: unknown): unknown {
+  if (cause instanceof Error) return scrubError(cause);
+  if (typeof cause === 'string') return scrubPat(cause);
+  try {
+    return scrubPat(JSON.stringify(cause));
+  } catch {
+    return '[unserializable cause]';
+  }
 }
