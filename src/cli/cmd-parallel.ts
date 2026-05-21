@@ -53,7 +53,20 @@ async function getRunner(provider: SpecTask['provider']): Promise<WorkerRunner> 
   }
   if (provider === 'lmstudio-agentic') {
     const { LmStudioAgenticRunner } = await import('../workers/lmstudio-agentic.js');
-    return new LmStudioAgenticRunner();
+    // Phase 7 — env-gated Figma REST tools. Null when PAT absent (FIGMA-03 graceful).
+    const { registerFigmaTools } = await import('../tools/figma/index.js');
+    const { loadPat } = await import('../tools/figma/pat-loader.js');
+    const { homedir } = await import('node:os');
+    const figmaHandlers = registerFigmaTools(process.env, homedir());
+    const figmaPat = loadPat(process.env, homedir()) ?? '';
+    const extraToolHandlers = figmaHandlers
+      ? figmaHandlers.map((h) => ({
+          name: h.def.function.name,
+          pat: figmaPat,
+          handle: h.handle as (a: unknown, c: { workdir: string; pat: string }) => Promise<unknown>,
+        }))
+      : undefined;
+    return new LmStudioAgenticRunner(extraToolHandlers ? { extraToolHandlers } : {});
   }
   throw new Error(`unsupported provider: ${provider as string}`);
 }
@@ -154,10 +167,16 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
         });
         // Inject default agentic tools when dispatching to lmstudio-agentic so the
         // runner has a shell_exec tool to offer the model. Worker rejects empty tools[].
+        // Phase 7: when registerFigmaTools returned handlers, merge their ToolDefs.
         let tools;
         if (run.provider === 'lmstudio-agentic') {
           const { DEFAULT_AGENTIC_TOOLS } = await import('../workers/lmstudio-agentic.js');
-          tools = DEFAULT_AGENTIC_TOOLS;
+          const { registerFigmaTools } = await import('../tools/figma/index.js');
+          const { homedir } = await import('node:os');
+          const figmaHandlers = registerFigmaTools(process.env, homedir());
+          tools = figmaHandlers
+            ? [...DEFAULT_AGENTIC_TOOLS, ...figmaHandlers.map((h) => h.def)]
+            : DEFAULT_AGENTIC_TOOLS;
         }
         const result = await runner.run({
           task: built.bareTask,
