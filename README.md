@@ -122,7 +122,7 @@ Worked examples for common workflows live under [docs/recipes/](docs/recipes/):
 - **Delegate**: dispatch coding tasks to Codex CLI, OpenRouter, LM Studio (local), or Anthropic. One worker or many in parallel.
 - **Audit trail**: every run captures filesystem diff, event timeline, and worker output to a local SQLite store.
 - **Memory**: persistent recall across CC sessions via `SessionStart` context-layer injection.
-- **Cost control**: per-provider budget caps with alerts (BudgetStore foundation in place; CLI surface in v0.2).
+- **Local-first execution**: agentic LM Studio worker (`--provider lmstudio-agentic`) runs multi-iteration tool loops on `qwen3-coder-next`/`qwen3.6-35b-a3b`/etc. — no API key, no cost.
 - **Hallucination check**: optional Berry MCP integration to validate claims.
 
 Model-agnostic. Single SQLite store. No external services required for solo use.
@@ -145,7 +145,7 @@ Wave 4 hardening landed (see [CHANGELOG.md](CHANGELOG.md)):
 - **Privacy** — Per-workdir consent (`.relay/auto-extract.json`), `RELAY_MEMORY_ALLOWED_WORKDIRS` allowlist, LIKE wildcard escaping in wipe, settings-file ENOENT-vs-EPARSE distinction.
 - **Distribution** — `scripts/install.sh` with `--dry-run`, node version check, npm-prefix permission probe, post-install `relay verify`.
 
-`relay budget` and `relay corpus` deferred to v0.2 (BudgetStore needs per-provider scope).
+`relay budget` removed in v0.2 — Relay pivoted to local-first execution where local-model cost is $0 by design. `relay corpus` deferred to a later milestone.
 
 ## Documentation
 

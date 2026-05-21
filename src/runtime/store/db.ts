@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import * as path from 'node:path';
 import { migrateCapabilityTables } from '../capability/db-migrations.js';
 import { migrateMemoryTables } from '../../memory/db-migrations.js';
-import { migrateBudgetTables } from '../budget/db-migrations.js';
 import { migrateAuthTables } from './migrations/auth.js';
 import {
   readSchemaVersion,
@@ -14,6 +13,7 @@ import {
   BASELINE_SCHEMA_DESCRIPTION,
 } from './schema-version.js';
 import { migrateDropOrphansV02 } from './migrate-v2-drop-orphans.js';
+import { migrateDropBudgetV03 } from './migrate-v3-drop-budget.js';
 import {
   writeV1Backup,
   shouldSkipBackup,
@@ -96,18 +96,7 @@ const DDL_STATEMENTS: readonly string[] = [
     created_at INTEGER NOT NULL
   )`,
   // verifications DROPped in v0.2 migration v2 — see migrate-v2-drop-orphans.ts
-  `CREATE TABLE IF NOT EXISTS cost_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id TEXT NOT NULL,
-    provider TEXT NOT NULL,
-    model TEXT,
-    prompt_tokens INTEGER NOT NULL DEFAULT 0,
-    completion_tokens INTEGER NOT NULL DEFAULT 0,
-    total_tokens INTEGER NOT NULL DEFAULT 0,
-    cost_usd REAL NOT NULL DEFAULT 0.0,
-    workdir TEXT NOT NULL,
-    created_at INTEGER NOT NULL
-  )`,
+  // cost_events DROPped in v0.2 migration v3 — budget feature removed (local-first pivot)
   // sign_offs + sign_off_amendments (+ idx + triggers) DROPped in v0.2 migration v2 — see migrate-v2-drop-orphans.ts
   // proxy_requests (+ idx) DROPped in v0.2 migration v2 — see migrate-v2-drop-orphans.ts
   `CREATE TABLE IF NOT EXISTS relay_sessions (
@@ -128,8 +117,7 @@ const DDL_STATEMENTS: readonly string[] = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_relay_sessions_started_at ON relay_sessions(started_at)`,
   `CREATE INDEX IF NOT EXISTS idx_relay_sessions_project ON relay_sessions(project_path)`,
-  `CREATE INDEX IF NOT EXISTS idx_cost_events_run_id ON cost_events(run_id)`,
-  `CREATE INDEX IF NOT EXISTS idx_cost_events_workdir ON cost_events(workdir)`,
+  // idx_cost_events_* DROPped in v0.2 migration v3 (budget feature removed)
   `CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status)`,
   `CREATE INDEX IF NOT EXISTS idx_runs_workdir ON runs(workdir)`,
   `CREATE INDEX IF NOT EXISTS idx_run_events_run_id ON run_events(run_id)`,
@@ -276,15 +264,15 @@ export function applySchema(db: Database.Database): void {
   migrateCapabilityTables(db);
   migrateMemoryTables(db);
   migrateSessionFields(db);
-  migrateBudgetTables(db);
   migrateRunsTaskHash(db);
   migrateRunEventsTraceFields(db);
   migrateRunsRecalledMemories(db);
   migrateRunsThinkingBlocks(db);
-  migrateCostEventsTextColumn(db);
   migrateAuthTables(db);
   // 4) v0.2 cleanup — drop 11 orphan tables (idempotent; no-op once v=2 is set).
   migrateDropOrphansV02(db);
+  // 5) v0.2 cleanup phase 2 — drop budget feature (cost_events + budget_*).
+  migrateDropBudgetV03(db);
 }
 
 /**
@@ -311,19 +299,6 @@ export async function prepareDatabase(db: Database.Database, storeDir: string): 
   }
 
   applySchema(db);
-}
-
-/**
- * SHIP-102 — adds cost_usd_text TEXT to cost_events for audit-safe decimal representation.
- * cost_usd REAL stays for backward compat; cost_usd_text is the canonical audit value.
- */
-function migrateCostEventsTextColumn(db: Database.Database): void {
-  const info = db.prepare('PRAGMA table_info(cost_events)').all() as { name: string }[];
-  const cols = new Set(info.map(r => r.name));
-  if (!cols.has('cost_usd_text')) {
-    db.prepare('ALTER TABLE cost_events ADD COLUMN cost_usd_text TEXT').run();
-    db.prepare("UPDATE cost_events SET cost_usd_text = printf('%.8f', cost_usd) WHERE cost_usd_text IS NULL").run();
-  }
 }
 
 /**

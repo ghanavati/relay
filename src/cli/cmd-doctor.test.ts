@@ -900,7 +900,7 @@ describe('checkSchemaVersion', () => {
     const probe = checkSchemaVersion(tmpDir);
     assert.strictEqual(probe.name, 'schema_version');
     assert.strictEqual(probe.status, 'ok');
-    assert.match(probe.detail, /applied=2.*matches expected=2/);
+    assert.match(probe.detail, /applied=3.*matches expected=3/);
   });
 
   test('T2: storeDir with schema_version=1 only (pre-v2) → status missing', () => {
@@ -914,7 +914,7 @@ describe('checkSchemaVersion', () => {
     }
     const probe = checkSchemaVersion(tmpDir);
     assert.strictEqual(probe.status, 'missing');
-    assert.match(probe.detail, /applied=1.*expected=2/);
+    assert.match(probe.detail, /applied=1.*expected=3/);
   });
 
   test('T3: storeDir with no relay.db → status missing, no throw', () => {
@@ -934,7 +934,7 @@ describe('checkSchemaVersion', () => {
     }
     const probe = checkSchemaVersion(tmpDir);
     assert.strictEqual(probe.status, 'failed');
-    assert.match(probe.detail, /applied=99.*exceeds expected=2/);
+    assert.match(probe.detail, /applied=99.*exceeds expected=3/);
     assert.match(probe.detail, /downgrade/);
   });
 

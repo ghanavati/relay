@@ -36,12 +36,12 @@ function withTmpDb<T>(run: (db: Database.Database) => T): T {
 }
 
 describe('db.ts — applySchema on fresh DB', () => {
-  test('writes schema_version=1 (bootstrap) AND schema_version=2 (v2 cleanup)', () => {
+  test('writes schema_version=1 (bootstrap) AND schema_version=2 (v2 cleanup) AND schema_version=3 (v3 budget-drop)', () => {
     withTmpDb(db => {
       applySchema(db);
       const rows = db.prepare('SELECT version FROM schema_version ORDER BY version').all() as Array<{ version: number }>;
       const versions = rows.map(r => r.version);
-      assert.deepEqual(versions, [1, 2], `expected [1,2], got ${JSON.stringify(versions)}`);
+      assert.deepEqual(versions, [1, 2, 3], `expected [1,2,3], got ${JSON.stringify(versions)}`);
     });
   });
 
@@ -62,8 +62,10 @@ describe('db.ts — applySchema on fresh DB', () => {
       assert.doesNotThrow(() => applySchema(db));
       const v1Count = (db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version = 1').get() as { n: number }).n;
       const v2Count = (db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version = 2').get() as { n: number }).n;
+      const v3Count = (db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version = 3').get() as { n: number }).n;
       assert.equal(v1Count, 1, `version=1 should appear exactly once (got ${v1Count})`);
       assert.equal(v2Count, 1, `version=2 should appear exactly once (got ${v2Count})`);
+      assert.equal(v3Count, 1, `version=3 should appear exactly once (got ${v3Count})`);
     });
   });
 
@@ -84,7 +86,7 @@ describe('db.ts — applySchema on fresh DB', () => {
       const tables = new Set(
         (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map(r => r.name)
       );
-      for (const keep of ['runs', 'run_events', 'idempotency_keys', 'memory_reads', 'relay_sessions', 'cost_events', 'run_diffs']) {
+      for (const keep of ['runs', 'run_events', 'idempotency_keys', 'memory_reads', 'relay_sessions', 'run_diffs']) {
         assert.equal(tables.has(keep), true, `non-orphan table "${keep}" must remain after applySchema`);
       }
     });
