@@ -109,3 +109,24 @@ describe('redactSecrets — env_assignment pattern (Wave 4b T8)', () => {
     assert.ok(names.includes('env_assignment'), 'env_assignment must be a registered pattern');
   });
 });
+
+describe('redactSecrets — figma_pat pattern (Phase 7)', () => {
+  test('figd_ PAT is redacted', () => {
+    const out = redactSecrets('header X-Figma-Token: figd_abcdef0123456789_-ghijkl');
+    assert.match(out, /\[REDACTED:FIGMA_PAT\]/);
+    assert.doesNotMatch(out, /figd_abcdef0123456789_-ghijkl/);
+  });
+
+  test('multiple Figma PATs in one string are all redacted', () => {
+    const out = redactSecrets('first=figd_AAAAAAAAAA second=figd_BBBBBBBBBB');
+    assert.doesNotMatch(out, /figd_AAAAAAAAAA/);
+    assert.doesNotMatch(out, /figd_BBBBBBBBBB/);
+    const matches = out.match(/\[REDACTED:FIGMA_PAT\]/g) ?? [];
+    assert.strictEqual(matches.length, 2);
+  });
+
+  test('figma_pat pattern is registered in REDACTION_PATTERNS', () => {
+    const names = REDACTION_PATTERNS.map((p) => p.name);
+    assert.ok(names.includes('figma_pat'), 'figma_pat must be a registered pattern');
+  });
+});
