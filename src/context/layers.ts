@@ -254,13 +254,41 @@ export async function loadRecalledLessonsContent(
     return 0;
   });
 
+  // PLAN-5 T6 — Build id → 1-based index map ONCE over the rendered list, so
+  // each row's annotations (carrying raw memory_id UUIDs from the engine
+  // layer) can be translated to `#N` references. Lookup uses the FINAL render
+  // order (post failure-first sort), not the engine's score order.
+  const idToIndex = new Map<string, number>();
+  for (let i = 0; i < sorted.length; i++) {
+    idToIndex.set(sorted[i]!.memory_id, i + 1);
+  }
+
   const lines = sorted.map((memory, index) => {
     // SHIP-67 — unverified memories get a visible warning prefix so the worker can
     // weight them appropriately. Failure lessons still surface with their own marker.
-    const prefix = memory.trust_level === 'unverified' ? '[UNVERIFIED] '
-                 : memory.tags.includes('failure')     ? '⚠ FAILED: '
-                 : '';
-    return `${index + 1}. ${prefix}${guardMemoryContent(memory.content)}`;
+    const unverifiedMarker = memory.trust_level === 'unverified' ? '[UNVERIFIED]' : '';
+    const failureMarker = memory.tags.includes('failure') ? '⚠ FAILED:' : '';
+
+    // PLAN-5 T6 — translate engine-layer annotations (raw UUIDs) to `#N`
+    // 1-based indices into the rendered list. Drop annotations whose peer is
+    // not in the rendered list (dangling reference, e.g. peer filtered by
+    // MIN_RELEVANCE_SCORE). Strict regex anchored to known prefixes prevents
+    // false rewrites of unrelated `⚠` markers.
+    const conflictMarkers: string[] = [];
+    for (const ann of memory.annotations ?? []) {
+      const m = ann.match(/^(⚠ (?:CONFLICTS WITH|CONTRADICTED BY)) ([0-9a-fA-F-]{36})$/);
+      if (!m) continue;
+      const peerIdx = idToIndex.get(m[2]!);
+      if (peerIdx === undefined) continue; // dangling — skip gracefully
+      conflictMarkers.push(`${m[1]} #${peerIdx}`);
+    }
+    const conflictMarker = conflictMarkers.join(' ');
+
+    const prefix = [unverifiedMarker, failureMarker, conflictMarker]
+      .filter(Boolean)
+      .join(' ');
+    const separator = prefix.length > 0 ? ' ' : '';
+    return `${index + 1}. ${prefix}${separator}${guardMemoryContent(memory.content)}`;
   });
   return `## Recalled Lessons (read before starting — learned from past failures)\n\n${lines.join("\n")}`;
 }
