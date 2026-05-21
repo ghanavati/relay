@@ -66,6 +66,16 @@ const PROMPT_TEMPLATE = [
   '<<<TRANSCRIPT>>>',
 ].join('\n');
 
+/**
+ * Delta-mode prompt addendum. Appended only when `existingMemories` is non-empty
+ * so v0.1 (no-existing-memories) prompts stay byte-identical. Instructs the model
+ * to classify each lesson as add | refine | contradict — the `kind` field is
+ * downstream-load-bearing: writer routes `contradict` to a distinct memory_source.
+ */
+const DELTA_KIND_DIRECTIVE = 'Each lesson MUST include "kind": "add" | "refine" | "contradict".';
+const DELTA_EXAMPLE_OUTPUT =
+  'Example: {"lessons":[{"content":"...","memory_type":"...","confidence":0.0-1.0,"kind":"add"}]}';
+
 const SAMPLING = Object.freeze({
   temperature: 1.0,
   top_p: 0.95,
@@ -99,7 +109,7 @@ export function buildPrompt(transcript: string, existingMemories?: readonly Memo
     return PROMPT_TEMPLATE.replace('<<<TRANSCRIPT>>>', transcript);
   }
   const bullets = existingMemories.map((m) => `- ${m.content}`).join('\n');
-  const existingBlock = `Existing known patterns (do not re-extract; flag contradictions explicitly, extract only ADDS, CONTRADICTS, or REFINES):\n${bullets}\n`;
+  const existingBlock = `Existing known patterns (do not re-extract; flag contradictions explicitly, extract only ADDS, CONTRADICTS, or REFINES):\n${bullets}\n${DELTA_KIND_DIRECTIVE}\n${DELTA_EXAMPLE_OUTPUT}\n`;
   // Inject EXISTING block immediately before the 'Transcript:' line so the
   // model sees the contract before reading the transcript.
   return PROMPT_TEMPLATE
