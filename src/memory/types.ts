@@ -8,7 +8,7 @@
 export type MemoryType = 'fact' | 'decision' | 'lesson' | 'context' | 'state' | 'handoff' | 'session';
 
 /** SHIP-64: which path wrote this memory — used for trust and audit. */
-export type MemorySource = 'human' | 'auto-run-recorder' | 'worker-mcp' | 'unknown';
+export type MemorySource = 'human' | 'auto-run-recorder' | 'worker-mcp' | 'unknown' | 'delta-contradiction';
 
 /**
  * SHIP-67: three-tier memory trust.
