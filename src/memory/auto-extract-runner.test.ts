@@ -360,3 +360,107 @@ describe('extractLessonsViaLmStudio — chat-completions stage', () => {
     assert.ok(result.durationMs >= 0);
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Phase 6 — delta extraction (T2 buildPrompt + T5 prompt-size check)
+// ───────────────────────────────────────────────────────────────────────────────
+
+import { buildPrompt, DEFAULT_CONTEXT_LIMIT, PROMPT_SIZE_CEILING_RATIO } from './auto-extract-runner.js';
+import type { Memory } from './types.js';
+
+function makeMemory(content: string, id = 'm'): Memory {
+  return {
+    memory_id: id,
+    memory_type: 'fact',
+    content,
+    tags: [],
+    workdir: null,
+    token_count: Math.ceil(content.length / 4),
+    pinned: false,
+    source_run_id: null,
+    git_ref: null,
+    created_at: 0,
+    accessed_at: 0,
+    expires_at: null,
+    entity_key: null,
+    sources: [],
+    recall_count: 0,
+    memory_source: 'unknown' as const,
+    success_recall_count: 0,
+    files: [],
+    trust_level: 'unverified' as const,
+    conflicts_with: [],
+  };
+}
+
+describe('Phase 6 — buildPrompt (delta extraction)', () => {
+  test('empty existingMemories → byte-identical to v0.1 single-arg behavior', () => {
+    const transcript = 'fake transcript content';
+    const v1Style = buildPrompt(transcript);
+    const v2EmptyArray = buildPrompt(transcript, []);
+    const v2Undefined = buildPrompt(transcript, undefined);
+    assert.strictEqual(v2EmptyArray, v1Style, 'empty array must equal single-arg call');
+    assert.strictEqual(v2Undefined, v1Style, 'undefined must equal single-arg call');
+    assert.ok(!v1Style.includes('Existing known patterns'), 'no delta directive in baseline');
+  });
+
+  test('non-empty existingMemories → injects Existing known patterns block before Transcript', () => {
+    const transcript = 'session log';
+    const memories = [
+      makeMemory('prefer kebab-case for CSS classes', 'a'),
+      makeMemory('always use TDD for bug fixes', 'b'),
+    ];
+    const prompt = buildPrompt(transcript, memories);
+
+    assert.ok(prompt.includes('Existing known patterns'), 'directive header present');
+    assert.ok(prompt.includes('- prefer kebab-case for CSS classes'), 'bullet 1 present');
+    assert.ok(prompt.includes('- always use TDD for bug fixes'), 'bullet 2 present');
+    assert.ok(prompt.includes('ADDS, CONTRADICTS, or REFINES'), 'delta instruction present');
+
+    // ordering — existing block comes BEFORE Transcript:
+    const existingIdx = prompt.indexOf('Existing known patterns');
+    const transcriptIdx = prompt.indexOf('Transcript:');
+    assert.ok(
+      existingIdx > 0 && existingIdx < transcriptIdx,
+      'existing block must precede Transcript section'
+    );
+    // transcript content still substituted
+    assert.ok(prompt.includes(transcript), 'transcript substituted');
+  });
+});
+
+describe('Phase 6 — pre-flight prompt-size check (T5)', () => {
+  test('prompt exceeding ceiling → error:prompt-too-large before HTTP', async () => {
+    const calls: FetchCall[] = [];
+    installFetch(() => {
+      throw new Error('fetch should NOT be called when prompt exceeds ceiling');
+    }, calls);
+    try {
+      // Force ceiling to be tiny so any transcript triggers it.
+      const transcript = 'x'.repeat(10_000); // ~2500 estimated tokens
+      const result = await extractLessonsViaLmStudio({
+        transcript,
+        endpoint: 'http://localhost:1234',
+        model: 'qwen/qwen3-coder-next',
+        timeoutMs: 5_000,
+        contextLimit: 100, // ceiling = 80 tokens, prompt ~2500
+      });
+      assert.strictEqual(result.status, 'error:prompt-too-large');
+      assert.ok(result.note && result.note.includes('exceeds'), 'note explains ceiling');
+      assert.strictEqual(calls.length, 0, 'no HTTP probe should fire');
+    } finally {
+      if (savedFetch) (globalThis as { fetch?: typeof fetch }).fetch = savedFetch;
+      savedFetch = undefined;
+    }
+  });
+
+  test('DEFAULT_CONTEXT_LIMIT + PROMPT_SIZE_CEILING_RATIO exported as numbers', () => {
+    assert.strictEqual(typeof DEFAULT_CONTEXT_LIMIT, 'number');
+    assert.ok(DEFAULT_CONTEXT_LIMIT >= 8192, 'default at least 8k context');
+    assert.strictEqual(typeof PROMPT_SIZE_CEILING_RATIO, 'number');
+    assert.ok(
+      PROMPT_SIZE_CEILING_RATIO > 0 && PROMPT_SIZE_CEILING_RATIO < 1,
+      'ratio is fraction'
+    );
+  });
+});
