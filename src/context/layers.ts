@@ -216,6 +216,7 @@ export async function loadRecalledLessonsContent(
 ): Promise<string | null> {
   const { MemoryStore } = await import("../memory/memory-store.js");
   const { budgetedRecall } = await import("../memory/memory-engine.js");
+  const { computeSemanticSimilarities } = await import("../memory/semantic-similarities.js");
   const store = new MemoryStore();
   const query = {
     types: opts?.types ?? (["lesson", "decision"] as const),
@@ -228,7 +229,11 @@ export async function loadRecalledLessonsContent(
   };
   const candidates = store.getCandidates(query);
   if (candidates.length === 0) return null;
-  const result = budgetedRecall(candidates, query, Date.now());
+  // PLAN-4 T6 — Compute semantic similarities at impure boundary BEFORE scoring.
+  // Empty Map (returned when RELAY_EMBEDDING_MODEL is unset or LM Studio unreachable)
+  // makes the engine fall through to word-overlap. Never throws.
+  const similarities = await computeSemanticSimilarities(store, query, candidates);
+  const result = budgetedRecall(candidates, query, Date.now(), similarities);
   if (result.memories.length === 0) return null;
 
   const accessedIds = result.memories.map(m => m.memory_id);

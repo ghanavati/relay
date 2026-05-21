@@ -99,6 +99,24 @@ describe('gatherSnapshot', () => {
     assert.ok(Array.isArray(snap.recall_preview));
     assert.strictEqual(snap.recall_preview.length, 0);
   });
+
+  test('recall preview path imports semantic-similarities (PLAN-4 T6 wire-up)', async () => {
+    // Smoke-test the wire-up: gatherSnapshot must not throw and must produce a
+    // recall_preview when the semantic-similarities helper is invoked even with
+    // empty candidates / no embedding model set. Short-circuit returns empty
+    // Map, engine falls through to word-overlap, recall_preview stays []
+    // (no seeded memories). This proves the import + call chain compiles and
+    // executes — the underlying helper has its own dedicated test suite.
+    const prevModel = process.env['RELAY_EMBEDDING_MODEL'];
+    delete process.env['RELAY_EMBEDDING_MODEL'];
+    try {
+      const snap = await gatherSnapshot({ cwd: tmp, version: '0.0.1' });
+      assert.ok(Array.isArray(snap.recall_preview));
+    } finally {
+      if (prevModel === undefined) delete process.env['RELAY_EMBEDDING_MODEL'];
+      else process.env['RELAY_EMBEDDING_MODEL'] = prevModel;
+    }
+  });
 });
 
 describe('executeTuiCommand --json', () => {

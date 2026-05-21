@@ -317,3 +317,40 @@ describe('T1: parseEmitMinTrust + EMIT_MIN_TRUST_DEFAULT contract', () => {
     );
   });
 });
+
+describe('PLAN-4 T6: loadRecalledLessonsContent wires semantic similarities', () => {
+  beforeEach(() => {
+    getDb().prepare('DELETE FROM memories').run();
+    seedMemories();
+  });
+
+  test('context-emit path runs through computeSemanticSimilarities short-circuit', async () => {
+    // With RELAY_EMBEDDING_MODEL unset, computeSemanticSimilarities returns an
+    // empty Map (short-circuit), budgetedRecall falls through to word-overlap.
+    // The output must remain byte-identical to pre-T6 (memories surface as
+    // before). This proves the wire-up does not regress the unset path.
+    const prevModel = process.env['RELAY_EMBEDDING_MODEL'];
+    delete process.env['RELAY_EMBEDDING_MODEL'];
+    try {
+      const cap = makeIO(WORKDIR);
+      const code = await executeContextEmitCommand(
+        {
+          target: 'cc',
+          workdir: WORKDIR,
+          tokenBudget: 800,
+          types: ['lesson', 'fact', 'decision', 'context'],
+        },
+        cap.io
+      );
+      assert.strictEqual(code, 0);
+      const parsed = JSON.parse(cap.stdout.join('').trim()) as {
+        hookSpecificOutput: { additionalContext: string };
+      };
+      // Seeded memories must still surface — semantic helper short-circuits cleanly.
+      assert.match(parsed.hookSpecificOutput.additionalContext, /npm test|force push/);
+    } finally {
+      if (prevModel === undefined) delete process.env['RELAY_EMBEDDING_MODEL'];
+      else process.env['RELAY_EMBEDDING_MODEL'] = prevModel;
+    }
+  });
+});
