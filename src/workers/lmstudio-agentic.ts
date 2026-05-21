@@ -186,13 +186,46 @@ const SHELL_EXEC_ARGS_SCHEMA = z
   // This silently DROPS them rather than rejecting (PLAN §T3 case 5: cwd clamp).
   .passthrough();
 
+/**
+ * Env vars passed through to the spawned shell. Everything else (notably
+ * ANTHROPIC_API_KEY, OPENROUTER_API_KEY, GITHUB_TOKEN, etc.) is stripped to
+ * prevent secret exfiltration via model-emitted shell commands. `RELAY_*` is
+ * allowed for tool-side coordination with the orchestrator.
+ */
+const SHELL_EXEC_ENV_ALLOW = new Set<string>([
+  'PATH',
+  'HOME',
+  'USER',
+  'LANG',
+  'LC_ALL',
+  'TERM',
+  'TMPDIR',
+]);
+
+/** Build a sanitized env containing only allow-listed keys + `RELAY_*` namespace. */
+export function buildShellExecEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value === undefined) continue;
+    if (SHELL_EXEC_ENV_ALLOW.has(key) || key.startsWith('RELAY_')) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 /** Default real-shell executor. Truncates stdout/stderr at maxBytes (byte-safe). */
 const defaultShellExec: ShellExecFn = (args: ShellExecArgs) =>
   new Promise<ShellExecResult>((resolve) => {
     execFile(
       '/bin/sh',
       ['-c', args.command],
-      { cwd: args.cwd, timeout: 30_000, maxBuffer: 64 * 1024 },
+      {
+        cwd: args.cwd,
+        timeout: 30_000,
+        maxBuffer: 64 * 1024,
+        env: buildShellExecEnv(process.env),
+      },
       (err, stdout, stderr) => {
         const exitCode =
           err && typeof (err as NodeJS.ErrnoException & { code?: number }).code === 'number'
@@ -612,8 +645,11 @@ export class LmStudioAgenticRunner implements WorkerRunner {
         }
       }
 
-      // 7. Loop exit without resolution → iteration cap hit (PLAN §T4 case 3)
-      return this.errorResult(startedAt, iterations - 1, tool_call_count, makeError(
+      // 7. Loop exit without resolution → iteration cap hit (PLAN §T4 case 3).
+      // Report `this.maxIterations` — the actual work count completed. (The for-loop
+      // post-increments `iterations` to maxIterations+1 on exit, so we don't use it.)
+      // Matches the timeout path which returns the in-flight iteration number.
+      return this.errorResult(startedAt, this.maxIterations, tool_call_count, makeError(
         'UNSUPPORTED',
         `lmstudio-agentic iteration cap hit (${this.maxIterations} iterations)`,
         false
