@@ -527,6 +527,29 @@ describe('T4 — tool loop, iteration cap, timeout, capability probe', () => {
     assert.equal(chatPosts.length, 20);
   });
 
+  test('iteration cap — reported iterations equals maxIterations (no off-by-one)', async () => {
+    // Regression: cap-hit path previously returned `iterations - 1`, undercounting
+    // by 1 vs the timeout path. Mirror cap=5 with 5 unique tool calls.
+    const cap = 5;
+    const responses = Array.from({ length: cap }, (_, i) => ({
+      kind: 'ok' as const,
+      body: asstWithToolCalls([{ id: `call_${i}`, command: `echo ${i}` }]),
+    }));
+    const { fetchImpl, requests } = makeScriptedFetch({ responses });
+    const stub: ShellExecFn = async () => ({ stdout: 'ok', stderr: '', exitCode: 0 });
+    const runner = new LmStudioAgenticRunner({ fetchImpl, shellExec: stub, maxIterations: cap });
+    const result = await runner.run(baseTask());
+    assert.equal(result.status, 'error');
+    assert.equal(result.error?.code, 'UNSUPPORTED');
+    assert.equal(
+      result.iterations,
+      cap,
+      `cap-hit must report ${cap} iterations (actual work), not ${cap - 1}`
+    );
+    const chatPosts = requests.filter((r) => r.url.endsWith('/v1/chat/completions'));
+    assert.equal(chatPosts.length, cap, 'sanity: cap chat POSTs were made');
+  });
+
   test('wall-clock timeout via AbortController → status=timeout, TIMEOUT retryable=true', async () => {
     const { fetchImpl } = makeScriptedFetch({ responses: [{ kind: 'never' }] });
     const stub: ShellExecFn = async () => ({ stdout: '', stderr: '', exitCode: 0 });
@@ -1255,5 +1278,122 @@ describe('T9 — ERRATA E3: defensive empty tool_call_id handling (LM Studio bug
     const body2 = JSON.parse(chatPosts[1]?.init.body as string);
     const toolMsg = body2.messages.find((m: { role: string }) => m.role === 'tool');
     assert.equal(toolMsg.tool_call_id, 'call_normal', 'non-empty id preserved byte-exact');
+  });
+});
+
+// ─── T10: shell_exec env allow-list (security — prevent secret exfiltration) ─
+
+import { buildShellExecEnv } from './lmstudio-agentic.js';
+
+describe('T10 — shell_exec env allow-list (no secret exfiltration)', () => {
+  test('buildShellExecEnv drops ANTHROPIC_API_KEY / OPENROUTER_API_KEY / GITHUB_TOKEN', () => {
+    const sanitized = buildShellExecEnv({
+      ANTHROPIC_API_KEY: 'sk-ant-LEAK',
+      OPENROUTER_API_KEY: 'sk-or-LEAK',
+      GITHUB_TOKEN: 'ghp_LEAK',
+      AWS_SECRET_ACCESS_KEY: 'aws-LEAK',
+      PATH: '/usr/bin:/bin',
+      HOME: '/home/u',
+    } as NodeJS.ProcessEnv);
+    assert.equal(sanitized['ANTHROPIC_API_KEY'], undefined, 'API key MUST be stripped');
+    assert.equal(sanitized['OPENROUTER_API_KEY'], undefined, 'API key MUST be stripped');
+    assert.equal(sanitized['GITHUB_TOKEN'], undefined, 'token MUST be stripped');
+    assert.equal(sanitized['AWS_SECRET_ACCESS_KEY'], undefined, 'AWS secret MUST be stripped');
+    assert.equal(sanitized['PATH'], '/usr/bin:/bin', 'PATH allowed');
+    assert.equal(sanitized['HOME'], '/home/u', 'HOME allowed');
+  });
+
+  test('buildShellExecEnv preserves RELAY_* namespace + standard allow-list', () => {
+    const sanitized = buildShellExecEnv({
+      PATH: '/p',
+      HOME: '/h',
+      USER: 'u',
+      LANG: 'C',
+      LC_ALL: 'C',
+      TERM: 'xterm',
+      TMPDIR: '/tmp',
+      RELAY_RUN_ID: 'run-42',
+      RELAY_WORKDIR: '/w',
+      NOT_ALLOWED: 'nope',
+    } as NodeJS.ProcessEnv);
+    assert.equal(sanitized['PATH'], '/p');
+    assert.equal(sanitized['HOME'], '/h');
+    assert.equal(sanitized['USER'], 'u');
+    assert.equal(sanitized['LANG'], 'C');
+    assert.equal(sanitized['LC_ALL'], 'C');
+    assert.equal(sanitized['TERM'], 'xterm');
+    assert.equal(sanitized['TMPDIR'], '/tmp');
+    assert.equal(sanitized['RELAY_RUN_ID'], 'run-42', 'RELAY_* must be passed through');
+    assert.equal(sanitized['RELAY_WORKDIR'], '/w', 'RELAY_* must be passed through');
+    assert.equal(sanitized['NOT_ALLOWED'], undefined, 'non-allow-listed must be stripped');
+  });
+
+  test('defaultShellExec (real subprocess) — ANTHROPIC_API_KEY does NOT reach spawned shell', async () => {
+    // Real integration: run `env` in a real /bin/sh via the default executor and
+    // assert the spawned process does NOT see process.env['ANTHROPIC_API_KEY'].
+    // The default executor is exercised by NOT passing the `shellExec` opt.
+    const originalLeak = process.env['ANTHROPIC_API_KEY'];
+    const sentinel = 'sk-ant-LEAK-MUST-NOT-LEAK-' + Math.random().toString(36).slice(2);
+    process.env['ANTHROPIC_API_KEY'] = sentinel;
+    const fs = await import('node:fs/promises');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'relay-t10-env-'));
+    try {
+      const eph = await startEphemeralLmStudio([
+        {
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: null,
+              tool_calls: [{
+                id: 'call_env_probe',
+                type: 'function',
+                function: { name: 'shell_exec', arguments: JSON.stringify({ command: 'env' }) },
+              }],
+            },
+            finish_reason: 'tool_calls',
+          }],
+        },
+        {
+          choices: [{ message: { role: 'assistant', content: 'done' }, finish_reason: 'stop' }],
+        },
+      ]);
+      const originalEndpoint = process.env['LMSTUDIO_ENDPOINT'];
+      process.env['LMSTUDIO_ENDPOINT'] = eph.url;
+      try {
+        // NOTE: deliberately NOT passing shellExec — exercises defaultShellExec.
+        const runner = new LmStudioAgenticRunner();
+        const result = await runner.run(baseTask({ workdir: tmp }));
+        assert.equal(result.status, 'success', `expected success; got ${result.error?.code ?? 'unknown'}: ${result.error?.message ?? ''}`);
+        // Inspect the iteration-2 body — the tool message carries `env` stdout.
+        assert.equal(eph.requestBodies.length, 2);
+        const body2 = JSON.parse(eph.requestBodies[1] ?? '{}');
+        const toolMsg = body2.messages.find((m: { role: string }) => m.role === 'tool');
+        assert.ok(toolMsg, 'tool message with env output must exist');
+        const envStdout = String(toolMsg.content ?? '');
+        assert.ok(/STDOUT:/.test(envStdout), 'tool output must be the env dump');
+        assert.equal(
+          envStdout.includes(sentinel),
+          false,
+          'CATASTROPHIC: ANTHROPIC_API_KEY leaked into spawned shell env'
+        );
+        assert.equal(
+          /ANTHROPIC_API_KEY=/.test(envStdout),
+          false,
+          'CATASTROPHIC: ANTHROPIC_API_KEY key name present in spawned shell env'
+        );
+        // Sanity: PATH (allow-listed) DID make it through.
+        assert.match(envStdout, /\nPATH=/, 'PATH must reach spawned shell (sanity)');
+      } finally {
+        await eph.close();
+        if (originalEndpoint === undefined) delete process.env['LMSTUDIO_ENDPOINT'];
+        else process.env['LMSTUDIO_ENDPOINT'] = originalEndpoint;
+      }
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+      if (originalLeak === undefined) delete process.env['ANTHROPIC_API_KEY'];
+      else process.env['ANTHROPIC_API_KEY'] = originalLeak;
+    }
   });
 });
