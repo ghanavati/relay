@@ -1330,6 +1330,31 @@ describe('T10 — shell_exec env allow-list (no secret exfiltration)', () => {
     assert.equal(sanitized['NOT_ALLOWED'], undefined, 'non-allow-listed must be stripped');
   });
 
+  test('buildShellExecEnv strips secret-shaped RELAY_* names — MED codex finding', () => {
+    const sanitized = buildShellExecEnv({
+      RELAY_RUN_ID: 'run-42',
+      RELAY_WORKDIR: '/w',
+      RELAY_BERRY_API_KEY: 'sk-leak',
+      RELAY_FIGMA_TOKEN: 'figd_leak',
+      RELAY_OPENAI_SECRET: 'leak',
+      RELAY_USER_PASSWORD: 'leak',
+      RELAY_PRIVATE_KEY: 'leak',
+      RELAY_AUTH_CREDENTIAL: 'leak',
+      PATH: '/p',
+    } as NodeJS.ProcessEnv);
+    // Allowed: benign RELAY_*
+    assert.equal(sanitized['RELAY_RUN_ID'], 'run-42');
+    assert.equal(sanitized['RELAY_WORKDIR'], '/w');
+    assert.equal(sanitized['PATH'], '/p');
+    // Denied: secret-shaped names, even within RELAY_* namespace
+    assert.equal(sanitized['RELAY_BERRY_API_KEY'], undefined, 'API_KEY denied');
+    assert.equal(sanitized['RELAY_FIGMA_TOKEN'], undefined, 'TOKEN denied');
+    assert.equal(sanitized['RELAY_OPENAI_SECRET'], undefined, 'SECRET denied');
+    assert.equal(sanitized['RELAY_USER_PASSWORD'], undefined, 'PASSWORD denied');
+    assert.equal(sanitized['RELAY_PRIVATE_KEY'], undefined, 'PRIVATE_KEY denied');
+    assert.equal(sanitized['RELAY_AUTH_CREDENTIAL'], undefined, 'CREDENTIAL denied');
+  });
+
   test('defaultShellExec (real subprocess) — ANTHROPIC_API_KEY does NOT reach spawned shell', async () => {
     // Real integration: run `env` in a real /bin/sh via the default executor and
     // assert the spawned process does NOT see process.env['ANTHROPIC_API_KEY'].

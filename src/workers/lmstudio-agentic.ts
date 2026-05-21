@@ -220,11 +220,21 @@ const SHELL_EXEC_ENV_ALLOW = new Set<string>([
   'TMPDIR',
 ]);
 
-/** Build a sanitized env containing only allow-listed keys + `RELAY_*` namespace. */
+/**
+ * Even within the `RELAY_*` namespace, deny secret-shaped names. A future
+ * `RELAY_BERRY_API_KEY` or `RELAY_FIGMA_TOKEN` must NOT reach the spawned
+ * shell — model-emitted commands could `echo $RELAY_FIGMA_TOKEN > /dev/...`.
+ * Match is case-insensitive on the suffix, applied to ANY env var name.
+ */
+const SECRET_NAME_PATTERN = /(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE|AUTH)\b/i;
+
+/** Build a sanitized env containing only allow-listed keys + safe `RELAY_*` names. */
 export function buildShellExecEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(source)) {
     if (value === undefined) continue;
+    // Deny secret-shaped names even when explicitly allow-listed or RELAY_-namespaced.
+    if (SECRET_NAME_PATTERN.test(key)) continue;
     if (SHELL_EXEC_ENV_ALLOW.has(key) || key.startsWith('RELAY_')) {
       out[key] = value;
     }
@@ -515,9 +525,14 @@ async function probeCapability(
   const v1 = await fetchCapsAt('/v1/models');
   // Live-LM-Studio refinement: /api/v0/models is the reliable fallback when
   // /v1/models omits capabilities. Probed in parallel-style only when needed.
+  // MED codex finding: ALSO fall back when v1 has a caps array that does NOT
+  // include 'tool_use' — v0 may carry richer caps and v1 omission shouldn't
+  // false-refuse a tool-capable model.
   let v0: { entry?: CapabilityModelEntry; networkErr?: string; httpErr?: number } | null = null;
+  const v1HasToolUse =
+    !!v1.entry?.capabilities && Array.isArray(v1.entry.capabilities) && v1.entry.capabilities.includes('tool_use');
   const needV0Fallback =
-    !!v1.networkErr || !!v1.httpErr || !v1.entry || !Array.isArray(v1.entry.capabilities);
+    !!v1.networkErr || !!v1.httpErr || !v1.entry || !Array.isArray(v1.entry.capabilities) || !v1HasToolUse;
   if (needV0Fallback) {
     v0 = await fetchCapsAt('/api/v0/models');
   }
