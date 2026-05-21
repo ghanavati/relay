@@ -112,10 +112,28 @@ export interface ShellExecResult {
 export type FetchFn = typeof fetch;
 export type ShellExecFn = (args: ShellExecArgs) => Promise<ShellExecResult>;
 
+/**
+ * Per-tool handler for non-shell tools (Phase 7 onward — Figma REST tools).
+ * Dispatched by name from `executeToolCall`; result is JSON.stringified into
+ * the tool message content for the model.
+ */
+export interface NamedToolHandler {
+  name: string;
+  handle: (args: unknown, ctx: { workdir: string; pat: string }) => Promise<unknown>;
+  /** PAT or other credential needed by the handler. Passed as `ctx.pat`. */
+  pat: string;
+}
+
 export interface LmStudioAgenticRunnerOpts {
   fetchImpl?: FetchFn;
   shellExec?: ShellExecFn;
   maxIterations?: number;
+  /**
+   * Phase 7 — additional non-shell tools (e.g. Figma REST). Dispatched by name
+   * in `executeToolCall`. Caller is responsible for resolving credentials
+   * (e.g. `registerFigmaTools(process.env)` for Figma).
+   */
+  extraToolHandlers?: NamedToolHandler[];
 }
 
 // ─── Pure helpers (exported for test access — PLAN §T2) ────────────────
@@ -301,13 +319,41 @@ export async function executeShellExec(
  * Errors become `content: 'ERROR: <msg>'` so the model can self-correct (PLAN §T3 case 1-2, R8).
  *
  * tool_call_id MUST be byte-exact echo (PLAN §T3 case 7, R7).
+ *
+ * Phase 7: when `extraToolHandlers` is provided (e.g. Figma REST tools from
+ * registerFigmaTools), the dispatcher first tries to match `call.function.name`
+ * against the handler map; on match it invokes `handle(args, ctx)` and stringifies
+ * the result. Falls through to SHELL_EXEC_NAMES dispatch on no match.
  */
 export async function executeToolCall(
   call: ToolCall,
   workdir: string,
-  shellExec: ShellExecFn
+  shellExec: ShellExecFn,
+  extraToolHandlers?: readonly NamedToolHandler[]
 ): Promise<ToolCallMessage> {
   const name = call.function.name;
+
+  // Phase 7 — try named handlers first (Figma REST tools, etc.)
+  const extra = extraToolHandlers?.find((h) => h.name === name);
+  if (extra) {
+    let parsedArgs: unknown;
+    try {
+      parsedArgs = JSON.parse(call.function.arguments);
+    } catch {
+      return { role: 'tool', tool_call_id: call.id, content: 'ERROR: arguments not valid JSON' };
+    }
+    try {
+      const result = await extra.handle(parsedArgs, { workdir, pat: extra.pat });
+      const content = typeof result === 'string' ? result : JSON.stringify(result);
+      return { role: 'tool', tool_call_id: call.id, content };
+    } catch (err) {
+      // Handler errors come back already-scrubbed from rest-client (Phase 7 T2),
+      // but cast through String() guards any non-Error throw.
+      const msg = err instanceof Error ? err.message : String(err);
+      return { role: 'tool', tool_call_id: call.id, content: `ERROR: ${msg}` };
+    }
+  }
+
   if (!SHELL_EXEC_NAMES.has(name)) {
     return { role: 'tool', tool_call_id: call.id, content: `ERROR: unknown tool ${name}` };
   }
@@ -463,11 +509,13 @@ export class LmStudioAgenticRunner implements WorkerRunner {
   private readonly fetchImpl: FetchFn;
   private readonly shellExec: ShellExecFn;
   private readonly maxIterations: number;
+  private readonly extraToolHandlers: readonly NamedToolHandler[];
 
   constructor(opts: LmStudioAgenticRunnerOpts = {}) {
     this.fetchImpl = opts.fetchImpl ?? ((globalThis as { fetch: FetchFn }).fetch);
     this.shellExec = opts.shellExec ?? defaultShellExec;
     this.maxIterations = opts.maxIterations ?? DEFAULT_MAX_ITERATIONS;
+    this.extraToolHandlers = opts.extraToolHandlers ?? [];
   }
 
   async run(task: WorkerTask): Promise<WorkerResult> {
@@ -640,7 +688,7 @@ export class LmStudioAgenticRunner implements WorkerRunner {
             });
             continue;
           }
-          const toolResult = await executeToolCall(tc, task.workdir, this.shellExec);
+          const toolResult = await executeToolCall(tc, task.workdir, this.shellExec, this.extraToolHandlers);
           messages.push(toolResult);
         }
       }

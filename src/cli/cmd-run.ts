@@ -80,7 +80,25 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
       runner = new AnthropicRunner();
     } else if (args.provider === 'lmstudio-agentic') {
       const { LmStudioAgenticRunner } = await import('../workers/lmstudio-agentic.js');
-      runner = new LmStudioAgenticRunner();
+      // Phase 7 — env-gated Figma REST tools. registerFigmaTools returns null
+      // when PAT is absent (FIGMA-03 graceful — model sees zero Figma tools,
+      // no startup error). loadPat is the source of truth for the resolved PAT
+      // value (env > ~/.relay/secrets/figma.json).
+      const { registerFigmaTools } = await import('../tools/figma/index.js');
+      const { loadPat } = await import('../tools/figma/pat-loader.js');
+      const { homedir } = await import('node:os');
+      const figmaHandlers = registerFigmaTools(process.env, homedir());
+      const figmaPat = loadPat(process.env, homedir()) ?? '';
+      const extraToolHandlers = figmaHandlers
+        ? figmaHandlers.map((h) => ({
+            name: h.def.function.name,
+            pat: figmaPat,
+            handle: h.handle as (a: unknown, c: { workdir: string; pat: string }) => Promise<unknown>,
+          }))
+        : undefined;
+      runner = new LmStudioAgenticRunner(
+        extraToolHandlers ? { extraToolHandlers } : {},
+      );
     } else {
       const exhaustive: never = args.provider;
       void exhaustive;
@@ -112,10 +130,17 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
   });
   // Inject default agentic tools when dispatching to lmstudio-agentic so the
   // runner has a shell_exec tool to offer the model. Worker rejects empty tools[].
+  // Phase 7: when registerFigmaTools returned handlers, merge their ToolDefs into
+  // the tools[] presented to the model (additive — preserves shell_exec).
   let tools;
   if (args.provider === 'lmstudio-agentic') {
     const { DEFAULT_AGENTIC_TOOLS } = await import('../workers/lmstudio-agentic.js');
-    tools = DEFAULT_AGENTIC_TOOLS;
+    const { registerFigmaTools } = await import('../tools/figma/index.js');
+    const { homedir } = await import('node:os');
+    const figmaHandlers = registerFigmaTools(process.env, homedir());
+    tools = figmaHandlers
+      ? [...DEFAULT_AGENTIC_TOOLS, ...figmaHandlers.map((h) => h.def)]
+      : DEFAULT_AGENTIC_TOOLS;
   }
   let result;
   try {

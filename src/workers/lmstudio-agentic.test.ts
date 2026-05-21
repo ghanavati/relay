@@ -841,14 +841,16 @@ describe('T7 — dispatch wiring smoke', () => {
     const src = await readSourceFile('src/cli/cmd-run.ts');
     assert.match(src, /args\.provider === 'lmstudio-agentic'/);
     assert.match(src, /import\(['"]\.\.\/workers\/lmstudio-agentic\.js['"]\)/);
-    assert.match(src, /new LmStudioAgenticRunner\(\)/);
+    // Constructor may accept opts (Phase 7: extraToolHandlers when FIGMA_API_TOKEN set).
+    assert.match(src, /new LmStudioAgenticRunner\(/);
   });
 
   test('cmd-parallel dispatch — provider literal "lmstudio-agentic" recognized in getRunner', async () => {
     const src = await readSourceFile('src/cli/cmd-parallel.ts');
     assert.match(src, /provider === 'lmstudio-agentic'/);
     assert.match(src, /import\(['"]\.\.\/workers\/lmstudio-agentic\.js['"]\)/);
-    assert.match(src, /return new LmStudioAgenticRunner\(\)/);
+    // Constructor may accept opts (Phase 7: extraToolHandlers when FIGMA_API_TOKEN set).
+    assert.match(src, /return new LmStudioAgenticRunner\(/);
   });
 
   test('cmd-parallel rejects model-less lmstudio-agentic task', async () => {
@@ -1395,5 +1397,99 @@ describe('T10 — shell_exec env allow-list (no secret exfiltration)', () => {
       if (originalLeak === undefined) delete process.env['ANTHROPIC_API_KEY'];
       else process.env['ANTHROPIC_API_KEY'] = originalLeak;
     }
+  });
+});
+
+// ─── T11 (Phase 7): extra tool handler dispatch (Figma REST) ────────────
+
+// executeToolCall already imported above for T3 — re-use it.
+
+describe('T11 — extraToolHandlers dispatch (Phase 7 Figma wire-up)', () => {
+  test('executeToolCall routes figma_list_layers to extra handler', async () => {
+    let captured: { args: unknown; ctx: { workdir: string; pat: string } } | null = null;
+    const fakeHandler = {
+      name: 'figma_list_layers',
+      pat: 'figd_test_pat',
+      handle: async (args: unknown, ctx: { workdir: string; pat: string }) => {
+        captured = { args, ctx };
+        return { layers: [{ id: '0:1', name: 'root', type: 'CANVAS', parent_id: null, depth: 0 }] };
+      },
+    };
+    const out = await executeToolCall(
+      {
+        id: 'call_fig_1',
+        type: 'function',
+        function: {
+          name: 'figma_list_layers',
+          arguments: JSON.stringify({ file_key: 'abc' }),
+        },
+      },
+      '/tmp/work',
+      async () => ({ stdout: '', stderr: '', exitCode: 0 }),
+      [fakeHandler],
+    );
+    assert.equal(out.role, 'tool');
+    assert.equal(out.tool_call_id, 'call_fig_1');
+    assert.ok(captured, 'handler must be invoked');
+    assert.deepEqual((captured as unknown as { args: { file_key: string } }).args, { file_key: 'abc' });
+    assert.equal((captured as unknown as { ctx: { pat: string } }).ctx.pat, 'figd_test_pat');
+    // Content must be JSON-stringified result of the handler
+    const parsed = JSON.parse(out.content);
+    assert.ok(Array.isArray(parsed.layers));
+  });
+
+  test('unknown tool name without extra handlers → ERROR: unknown tool', async () => {
+    const out = await executeToolCall(
+      {
+        id: 'call_x',
+        type: 'function',
+        function: { name: 'figma_get_selection', arguments: '{}' },
+      },
+      '/tmp/work',
+      async () => ({ stdout: '', stderr: '', exitCode: 0 }),
+      [], // no extra handlers — declarative absence for deferred tool
+    );
+    assert.match(out.content, /ERROR: unknown tool figma_get_selection/);
+  });
+
+  test('extra handler error is caught and returned as ERROR: <msg>', async () => {
+    const failing = {
+      name: 'figma_update_token',
+      pat: 'figd_x',
+      handle: async () => {
+        throw new Error('Figma 403 (PLAN_REQUIRED) — variable writes require Enterprise');
+      },
+    };
+    const out = await executeToolCall(
+      {
+        id: 'call_fig_err',
+        type: 'function',
+        function: { name: 'figma_update_token', arguments: '{}' },
+      },
+      '/tmp/work',
+      async () => ({ stdout: '', stderr: '', exitCode: 0 }),
+      [failing],
+    );
+    assert.match(out.content, /ERROR:.*PLAN_REQUIRED/);
+  });
+
+  test('shell_exec still routes to shellExec when extra handlers present', async () => {
+    let shellCalled = false;
+    const shellStub = async () => {
+      shellCalled = true;
+      return { stdout: 'ok', stderr: '', exitCode: 0 };
+    };
+    const out = await executeToolCall(
+      {
+        id: 'call_sh',
+        type: 'function',
+        function: { name: 'shell_exec', arguments: JSON.stringify({ command: 'ls' }) },
+      },
+      '/tmp/work',
+      shellStub,
+      [{ name: 'figma_list_layers', pat: 'figd_x', handle: async () => ({}) }],
+    );
+    assert.equal(shellCalled, true);
+    assert.match(out.content, /STDOUT:/);
   });
 });

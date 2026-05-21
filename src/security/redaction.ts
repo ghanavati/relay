@@ -18,6 +18,15 @@ export const REDACTION_PATTERNS: readonly RedactionPattern[] = [
     replacement: "[REDACTED:GITHUB_PAT]",
   },
   {
+    // Phase 7 — Figma personal access tokens (figd_...). Always-on (REDACTION_PATTERNS,
+    // not gated to auto-extract) because PATs may leak into ANY log path (worker stdout,
+    // debug dump, error stack). The tool-side `src/tools/figma/scrub.ts` is the precise
+    // utility; this catch-all guards every other write path in the codebase.
+    name: "figma_pat",
+    pattern: /figd_[A-Za-z0-9_-]+/g,
+    replacement: "[REDACTED:FIGMA_PAT]",
+  },
+  {
     name: "slack_token",
     pattern: /xox[baprs]-[A-Za-z0-9\-]{10,}/g,
     replacement: "[REDACTED:SLACK_TOKEN]",
