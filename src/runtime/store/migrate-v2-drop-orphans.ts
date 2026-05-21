@@ -25,8 +25,9 @@ import type Database from 'better-sqlite3';
 import {
   readSchemaVersion,
   writeSchemaVersion,
-  EXPECTED_SCHEMA_VERSION,
 } from './schema-version.js';
+
+const V2_TARGET = 2 as const;
 
 /** Tables dropped by this migration, in FK-safe order. */
 const DROP_TABLES: readonly string[] = [
@@ -70,12 +71,12 @@ const DROP_INDEXES: readonly string[] = [
 /**
  * Drop the 11 v0.1.x orphan tables and record schema_version=2.
  *
- * Idempotent — early-returns if `readSchemaVersion(db) >= EXPECTED_SCHEMA_VERSION`.
+ * Idempotent — early-returns if `readSchemaVersion(db) >= V2_TARGET`.
  * Atomic — every DROP runs inside a single `db.transaction` so a failure
  * mid-flight rolls back to the v1 state.
  */
 export function migrateDropOrphansV02(db: Database.Database): void {
-  if (readSchemaVersion(db) >= EXPECTED_SCHEMA_VERSION) {
+  if (readSchemaVersion(db) >= V2_TARGET) {
     return;
   }
 
@@ -98,7 +99,7 @@ export function migrateDropOrphansV02(db: Database.Database): void {
     // 4) record the migration
     writeSchemaVersion(
       db,
-      EXPECTED_SCHEMA_VERSION,
+      V2_TARGET,
       'drop 11 orphan tables per SCHEMA-02',
     );
   });

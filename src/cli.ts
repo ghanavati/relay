@@ -638,31 +638,7 @@ async function dispatchVerify(rest: readonly string[]): Promise<number> {
   return executeVerifyCommand({ json: isBool(flags, 'json') }, io);
 }
 
-async function dispatchBudget(rest: readonly string[]): Promise<number> {
-  const flags = parseFlags(rest);
-  const action = flags.positionals[0];
-
-  if (!action) {
-    io.stderr('relay budget requires an action: show\n');
-    return 2;
-  }
-
-  if (action === 'show') {
-    const { executeBudgetShowCommand } = await import('./cli/cmd-budget.js');
-    return executeBudgetShowCommand(
-      {
-        json: isBool(flags, 'json'),
-        provider: lastOption(flags, 'provider'),
-        workdir: lastOption(flags, 'workdir'),
-        period: lastOption(flags, 'period'),
-      },
-      io,
-    );
-  }
-
-  io.stderr(`relay budget: unknown action '${action}'. Try: show\n`);
-  return 2;
-}
+// `dispatchBudget` removed in v0.2 (budget feature stripped — local-first pivot).
 
 const VALID_COLOR_MODES = new Set<ColorMode>(['auto', 'always', 'never']);
 
@@ -721,7 +697,6 @@ async function main(): Promise<number> {
 
   if (cmd === 'run') return dispatchRun(rest);
   if (cmd === 'verify') return dispatchVerify(rest);
-  if (cmd === 'budget') return dispatchBudget(rest);
   if (cmd === 'doctor') {
     const flags = parseFlags(rest);
     // Phase 7 — --figma flag runs the dedicated probe instead of the full doctor.
