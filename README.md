@@ -3,9 +3,9 @@
 Solo CLI for delegating bounded coding tasks to AI workers (Codex, OpenRouter, LM Studio, Anthropic) and carrying persistent memory across Claude Code sessions. Local-first, model-agnostic, single SQLite store. No external services required.
 
 [![Status](https://img.shields.io/badge/status-pre--release-yellow)](#status)
-[![Version](https://img.shields.io/badge/version-0.1.1-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.2.0-blue)](CHANGELOG.md)
 [![Node](https://img.shields.io/badge/node-20%20%7C%2022-brightgreen)](#install)
-[![Tests](https://img.shields.io/badge/tests-946%20passing-brightgreen)](.github/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-1371%20passing-brightgreen)](.github/workflows/test.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 
 ## Install
@@ -133,19 +133,16 @@ Local-first by design. All memory lives in a single SQLite file under `~/.relay/
 
 ## Status
 
-Pre-release `0.1.1`. Currently **946 tests** passing, single-writer SQLite + FTS5, four worker backends (Codex, LM Studio, OpenRouter, Anthropic), four cross-LLM context-injection wrappers (cc / codex / lmstudio-http / lmstudio-cli). CI runs Node 20 + 22 on every push.
+Pre-release `0.2.0`. Currently **1371 tests** passing, single-writer SQLite + FTS5, four worker backends (Codex, LM Studio, OpenRouter, Anthropic), four cross-LLM context-injection wrappers (cc / codex / lmstudio-http / lmstudio-cli). CI runs Node 20 + 22 on every push.
 
-Wave 4 hardening landed (see [CHANGELOG.md](CHANGELOG.md)):
+## v0.2 capabilities (shipped)
 
-- **Cross-LLM injection** — `relay context emit` replaces the old jq pipeline; defaults `--min-trust=provisional` to block unverified leaks.
-- **Auto-extract pipeline** — SessionEnd hook → consent gate → PII redaction → LM Studio extraction → schema validation → optional Berry check → `handleRemember`. Top-level try/catch, `partial:write` status, dynamic model resolution (`RELAY_AUTO_EXTRACT_MODEL` → `consent.model` → `lms ps` discovery), endpoint validation (refuses non-localhost unless `consent.allow_remote=true`).
-- **Hook stable-marker matching** — `_relay_id` field prevents accidental removal of foreign hooks. `relay setup --clean` removes only Relay-managed entries idempotently.
-- **Trust tier system** — `unverified` → `provisional` → `trusted`. `relay context emit` filters at `provisional` by default.
-- **`relay tui`** — Ink-based dashboard MVP (3 panels, 5s refresh).
-- **Privacy** — Per-workdir consent (`.relay/auto-extract.json`), `RELAY_MEMORY_ALLOWED_WORKDIRS` allowlist, LIKE wildcard escaping in wipe, settings-file ENOENT-vs-EPARSE distinction.
-- **Distribution** — `scripts/install.sh` with `--dry-run`, node version check, npm-prefix permission probe, post-install `relay verify`.
-
-`relay budget` removed in v0.2 — Relay pivoted to local-first execution where local-model cost is $0 by design. `relay corpus` deferred to a later milestone.
+- **Agentic local execution** — `relay run --provider lmstudio-agentic` runs multi-iteration tool loops on local LM Studio models (qwen3-coder-next, qwen3.6-35b-a3b, etc.). No API key, no cost.
+- **Semantic recall** — memory recalls by meaning via nomic-embed-text-v1.5. Word-overlap fallback when model offline.
+- **Conflict detection** — contradictory memories surface as `⚠ CONFLICTS WITH #N` at recall, with negation-aware suppression gate.
+- **Delta extraction** — auto-extract diffs against existing memories, no re-extraction, contradictions flagged.
+- **Figma REST tools** — `figma_list_layers` + `figma_update_token` via local agentic runner. PAT scrubbed across log paths.
+- **Schema cleanup** — versioned migrations (v1->v2->v3) drop 11 orphan tables + budget feature. Online .v1-backup written before destructive migration.
 
 ## Documentation
 
