@@ -79,15 +79,19 @@ function makeMockEmbed(result: EmbeddingResult | (() => EmbeddingResult)): MockE
 
 describe('MemoryStore — lazy embed-on-write (PLAN-4 T2)', () => {
   let savedModel: string | undefined;
+  let savedEndpoint: string | undefined;
 
   beforeEach(() => {
     savedModel = process.env['RELAY_EMBEDDING_MODEL'];
+    savedEndpoint = process.env['LMSTUDIO_ENDPOINT'];
     closeDb();
   });
 
   afterEach(() => {
     if (savedModel === undefined) delete process.env['RELAY_EMBEDDING_MODEL'];
     else process.env['RELAY_EMBEDDING_MODEL'] = savedModel;
+    if (savedEndpoint === undefined) delete process.env['LMSTUDIO_ENDPOINT'];
+    else process.env['LMSTUDIO_ENDPOINT'] = savedEndpoint;
     closeDb();
   });
 
@@ -219,6 +223,63 @@ describe('MemoryStore — lazy embed-on-write (PLAN-4 T2)', () => {
     assert.strictEqual(row?.blob.length, 3072);
     assert.strictEqual(row?.model, NOMIC);
     assert.strictEqual(mock.calls.length, 1);
+  });
+
+  test('LMSTUDIO_ENDPOINT non-local → embed NOT called, blob NULL, one stderr warning', async () => {
+    process.env['RELAY_EMBEDDING_MODEL'] = NOMIC;
+    process.env['LMSTUDIO_ENDPOINT'] = 'https://attacker.example.com';
+    const mock = makeMockEmbed({ ok: true, vector: makeFloat32Fixture() });
+
+    const store = new MemoryStore({ embedClient: mock.fn });
+    const stderr = captureStderr();
+    let id: string;
+    try {
+      id = store.remember({ content: 'must not leak', memory_type: 'fact' });
+      await flushMicrotasks();
+    } finally {
+      stderr.restore();
+    }
+
+    assert.strictEqual(mock.calls.length, 0, 'embed client never invoked when endpoint is non-local');
+    const row = store.getRawEmbedding(id);
+    assert.strictEqual(row?.blob, null, 'row stays NULL when locality gate trips');
+    assert.strictEqual(row?.model, null);
+    const warnings = stderr.lines.filter((l) => l.includes('RELAY: embedding skipped'));
+    assert.strictEqual(warnings.length, 1, `expected exactly one deduped warning, got ${warnings.length}`);
+    assert.ok(
+      warnings[0]!.includes('non-local-endpoint'),
+      `warning should name the locality reason, got: ${warnings[0]}`
+    );
+  });
+
+  test('model captured at call site: env change between INSERT and microtask flush does not affect recorded model', async () => {
+    const ORIGINAL_MODEL = NOMIC;
+    const SWAPPED_MODEL = 'some-other-embed-model-v2';
+    process.env['RELAY_EMBEDDING_MODEL'] = ORIGINAL_MODEL;
+    const mock = makeMockEmbed({ ok: true, vector: makeFloat32Fixture() });
+
+    const store = new MemoryStore({ embedClient: mock.fn });
+    const id = store.remember({ content: 'capture me', memory_type: 'fact' });
+    // Simulate concurrent caller swapping the model AFTER the sync INSERT
+    // returns but BEFORE the microtask fires — without call-site capture the
+    // microtask would read SWAPPED_MODEL and record the wrong vector-space
+    // tag on the row.
+    process.env['RELAY_EMBEDDING_MODEL'] = SWAPPED_MODEL;
+    await flushMicrotasks();
+
+    const row = store.getRawEmbedding(id);
+    assert.ok(row?.blob, 'blob populated');
+    assert.strictEqual(
+      row?.model,
+      ORIGINAL_MODEL,
+      'recorded model must match the model captured at scheduleEmbed call site, not the post-swap env value'
+    );
+    assert.strictEqual(mock.calls.length, 1);
+    assert.strictEqual(
+      mock.calls[0]!.opts.model,
+      ORIGINAL_MODEL,
+      'embed client called with the captured model, not the swapped one'
+    );
   });
 
   test('embedClient throwing inside the promise is swallowed (never crashes process)', async () => {
