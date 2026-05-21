@@ -191,6 +191,7 @@ ${c.cyan('DELEGATION COMMANDS')}
     [--json]
 
   relay doctor [--json]                    Probe provider + DB health
+  relay doctor --figma                     Phase 7: Probe FIGMA_API_TOKEN + Figma REST + deferred-tools (v0.3)
   relay verify [--json]                    End-to-end smoke (memory + context + hook + db)
   relay history [--limit N] [--provider P] [--status S] [--json]
   relay diff <run_id> [--json]             Show files_changed + diffs for a run
@@ -723,6 +724,14 @@ async function main(): Promise<number> {
   if (cmd === 'budget') return dispatchBudget(rest);
   if (cmd === 'doctor') {
     const flags = parseFlags(rest);
+    // Phase 7 — --figma flag runs the dedicated probe instead of the full doctor.
+    if (isBool(flags, 'figma')) {
+      const { probeFigma, formatFigmaProbeOutput } = await import('./cli/cmd-doctor-figma.js');
+      const { homedir } = await import('node:os');
+      const result = await probeFigma({ env: process.env, homeDir: homedir() });
+      io.stdout(formatFigmaProbeOutput(result));
+      return result.restStatus === 'failed' ? 1 : 0;
+    }
     const { executeDoctorCommand } = await import('./cli/cmd-doctor.js');
     return executeDoctorCommand({ json: isBool(flags, 'json') }, io);
   }
