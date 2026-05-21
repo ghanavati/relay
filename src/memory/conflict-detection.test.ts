@@ -18,6 +18,8 @@ import {
   contentJaccard,
   isConflictCandidate,
   resolveConflicts,
+  hasNegation,
+  hasAsymmetricNegation,
   type ConflictPolicy,
 } from './conflict-detection.js';
 import { RECALL_K_CAP } from './conflict-thresholds.js';
@@ -271,6 +273,116 @@ describe('resolveConflicts — K cap (CONFLICT-03 / ROADMAP SC#5)', () => {
     resolveConflicts(memos, 'annotate');
     const elapsed = Date.now() - t0;
     assert.ok(elapsed < 100, `RECALL_K_CAP×RECALL_K_CAP pairwise pass took ${elapsed}ms (cap 100)`);
+  });
+});
+
+// ── negation gate (HIGH codex finding) ────────────────────────────────────
+
+describe('hasNegation', () => {
+  test('"do not use X" → true', () => {
+    assert.strictEqual(hasNegation('do not use X'), true);
+  });
+  test('"X is not good" → true', () => {
+    assert.strictEqual(hasNegation('X is not good'), true);
+  });
+  test('"never X" → true', () => {
+    assert.strictEqual(hasNegation('never X'), true);
+  });
+  test('"avoid X" → true', () => {
+    assert.strictEqual(hasNegation('avoid X'), true);
+  });
+  test("\"don't do this\" → true", () => {
+    assert.strictEqual(hasNegation("don't do this"), true);
+  });
+  test('"use X" → false', () => {
+    assert.strictEqual(hasNegation('use X'), false);
+  });
+  test('"X is good" → false', () => {
+    assert.strictEqual(hasNegation('X is good'), false);
+  });
+  test('"always X" → false', () => {
+    assert.strictEqual(hasNegation('always X'), false);
+  });
+  test('case-insensitive: "NEVER X" → true', () => {
+    assert.strictEqual(hasNegation('NEVER X'), true);
+  });
+});
+
+describe('hasAsymmetricNegation', () => {
+  test('("use X", "do not use X") → true', () => {
+    assert.strictEqual(hasAsymmetricNegation('use X', 'do not use X'), true);
+  });
+  test('("use X", "use Y") → false (neither negated)', () => {
+    assert.strictEqual(hasAsymmetricNegation('use X', 'use Y'), false);
+  });
+  test("(\"avoid X\", \"don't use X\") → false (both negated)", () => {
+    assert.strictEqual(hasAsymmetricNegation('avoid X', "don't use X"), false);
+  });
+});
+
+describe('isConflictCandidate — negation override (HIGH codex finding)', () => {
+  test('high content Jaccard + asymmetric negation → CONFLICT (not suppressed as dup)', () => {
+    // "prefer kebab-case for CSS" vs "do not use kebab-case for CSS" — heavy
+    // token overlap, but asymmetric negation flips dup-suppression to candidate.
+    assert.strictEqual(
+      isConflictCandidate({
+        tagJac: 0.8,
+        contentJac: 0.7,
+        sharedTagCount: 2,
+        contentA: 'prefer kebab-case for CSS',
+        contentB: 'do not use kebab-case for CSS',
+      }),
+      true
+    );
+  });
+
+  test('high content Jaccard + symmetric (no) negation → still suppressed (paraphrase)', () => {
+    assert.strictEqual(
+      isConflictCandidate({
+        tagJac: 0.8,
+        contentJac: 0.7,
+        sharedTagCount: 2,
+        contentA: 'prefer kebab-case for CSS',
+        contentB: 'use kebab-case in CSS files',
+      }),
+      false
+    );
+  });
+
+  test('high content Jaccard, contents omitted → legacy suppression stands', () => {
+    assert.strictEqual(
+      isConflictCandidate({ tagJac: 0.8, contentJac: 0.7, sharedTagCount: 2 }),
+      false
+    );
+  });
+
+  test('negation override does not bypass cosine paraphrase gate', () => {
+    // Asymmetric negation flips the contentJac gate, but cosine paraphrase
+    // gate still suppresses (semantic equivalence wins over surface negation).
+    assert.strictEqual(
+      isConflictCandidate({
+        tagJac: 0.8,
+        contentJac: 0.7,
+        sharedTagCount: 2,
+        cosine: 0.9,
+        contentA: 'prefer kebab-case for CSS',
+        contentB: 'do not use kebab-case for CSS',
+      }),
+      false
+    );
+  });
+
+  test('negation override still respects sharedTagCount floor', () => {
+    assert.strictEqual(
+      isConflictCandidate({
+        tagJac: 0.8,
+        contentJac: 0.7,
+        sharedTagCount: 1,
+        contentA: 'use X',
+        contentB: 'do not use X',
+      }),
+      false
+    );
   });
 });
 

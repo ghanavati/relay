@@ -59,6 +59,40 @@ export interface ConflictCandidateInputs {
    * to Jaccard-only verdict — DELTA-MEM-CONFLICT.md §4 W4 / PITFALL 2.5.
    */
   readonly cosine?: number;
+  /**
+   * Raw content of the two memories. Optional; when both provided, the
+   * negation gate runs: a high content-Jaccard suppression is OVERRIDDEN
+   * when exactly one side carries a negation marker (e.g. "use X" vs
+   * "do not use X"). Without these strings the legacy Jaccard-only gate
+   * stands. Closes HIGH codex finding: direct negations were being
+   * suppressed as paraphrase-class duplicates.
+   */
+  readonly contentA?: string;
+  readonly contentB?: string;
+}
+
+/**
+ * Word-boundary negation markers. Case-insensitive. Catches direct verbal
+ * negations ("not", "never", "don't") plus prohibitive verbs ("avoid",
+ * "forbid") and copular negations ("isn't", "wasn't"). Deliberately scoped
+ * to whole words to avoid matching tokens like "snapshot" or "another".
+ */
+const NEGATION_RE =
+  /\b(?:not|no|never|don't|do not|avoid|stop|disable|reject|deny|forbid|prohibit|cannot|can't|won't|will not|shouldn't|should not|mustn't|must not|isn't|is not|aren't|are not|wasn't|was not|weren't|were not)\b/i;
+
+/** True iff `content` contains at least one word-boundary negation marker. */
+export function hasNegation(content: string): boolean {
+  return NEGATION_RE.test(content);
+}
+
+/**
+ * True iff exactly one of the two contents carries a negation marker.
+ * Symmetric absence (both negated, neither negated) → false; asymmetric
+ * presence → true. Used to override the content-Jaccard "paraphrase"
+ * suppression for direct contradictions like "use X" vs "do not use X".
+ */
+export function hasAsymmetricNegation(a: string, b: string): boolean {
+  return hasNegation(a) !== hasNegation(b);
 }
 
 /**
@@ -68,6 +102,11 @@ export interface ConflictCandidateInputs {
  *   - shared_tag_count >= MIN_SHARED_TAGS (≥ 2 — guard against single-tag coincidence)
  *   - cosine            < COSINE_GATE_MAX (when both embeddings present; suppress paraphrase)
  *
+ * Negation override: when `contentA` and `contentB` are both supplied and
+ * exactly one side carries a negation marker, the content_jaccard ceiling
+ * is bypassed. This catches "use X" vs "do not use X" pairs that share
+ * almost all tokens yet are direct contradictions, not duplicates.
+ *
  * When `cosine` is undefined the cosine gate is bypassed — Jaccard-only
  * verdict stands. This matches the Phase 4 degradation contract: missing
  * data never blocks a verdict.
@@ -75,7 +114,17 @@ export interface ConflictCandidateInputs {
 export function isConflictCandidate(inputs: ConflictCandidateInputs): boolean {
   if (inputs.sharedTagCount < MIN_SHARED_TAGS) return false;
   if (inputs.tagJac <= TAG_JAC_MIN) return false;
-  if (inputs.contentJac >= CONTENT_JAC_MAX) return false;
+  if (inputs.contentJac >= CONTENT_JAC_MAX) {
+    // Override gate: asymmetric negation flips a "duplicate" verdict back to
+    // "candidate conflict". Without raw content the legacy verdict stands.
+    if (
+      inputs.contentA === undefined ||
+      inputs.contentB === undefined ||
+      !hasAsymmetricNegation(inputs.contentA, inputs.contentB)
+    ) {
+      return false;
+    }
+  }
   if (inputs.cosine !== undefined && inputs.cosine >= COSINE_GATE_MAX) return false;
   return true;
 }
