@@ -83,10 +83,15 @@ async function readRecallPreview(workdir: string, limit: number): Promise<Memory
   try {
     const { MemoryStore } = await import('../memory/memory-store.js');
     const { budgetedRecall } = await import('../memory/memory-engine.js');
+    const { computeSemanticSimilarities } = await import('../memory/semantic-similarities.js');
     const store = new MemoryStore();
     const query = { query: undefined, tags: [], token_budget: 4000, workdir } as Parameters<typeof budgetedRecall>[1];
     const candidates = store.getCandidates(query);
-    const result = budgetedRecall(candidates, query, Date.now());
+    // PLAN-4 T6 — Compute semantic similarities at impure boundary BEFORE scoring.
+    // Empty Map (returned when query.query is undefined or RELAY_EMBEDDING_MODEL unset)
+    // makes the engine fall through to word-overlap. Never throws.
+    const similarities = await computeSemanticSimilarities(store, query, candidates);
+    const result = budgetedRecall(candidates, query, Date.now(), similarities);
     return result.memories.slice(0, limit).map((m) => ({
       memory_id: m.memory_id,
       memory_type: m.memory_type,
