@@ -48,6 +48,7 @@ function makeMemory(overrides: Partial<Memory> = {}): Memory {
     success_recall_count: 0,
     files: [],
     trust_level: 'unverified' as const,
+    conflicts_with: [],
     ...overrides,
   };
 }

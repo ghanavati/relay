@@ -86,6 +86,19 @@ function escapeLikeWildcards(value: string): string {
 }
 
 function rowToMemory(row: MemoryRow): Memory {
+  // PLAN-5 T2 — parse conflicts_with_json defensively. Default '[]' guarantees
+  // legacy rows (pre-Phase-5) read as no-conflicts; try/catch wraps malformed
+  // payloads (manual SQL editing, future schema drift) so a single bad row
+  // never crashes recall.
+  let conflictsWith: string[] = [];
+  try {
+    const parsed = JSON.parse(row.conflicts_with_json ?? '[]') as unknown;
+    if (Array.isArray(parsed)) {
+      conflictsWith = parsed.filter((x): x is string => typeof x === 'string');
+    }
+  } catch {
+    // Malformed JSON — treat as empty. Never throw on a single bad row.
+  }
   return {
     memory_id: row.memory_id,
     memory_type: row.memory_type as MemoryType,
@@ -110,6 +123,7 @@ function rowToMemory(row: MemoryRow): Memory {
       row.success_recall_count ?? 0,
       row.pinned === 1
     ),
+    conflicts_with: conflictsWith,
   };
 }
 

@@ -52,6 +52,7 @@ export interface MemoryRow {
   readonly trust_level: string; // SHIP-67: 'unverified' | 'provisional' | 'trusted'
   readonly embedding_blob: Buffer | null; // PLAN-4 §5: 3072-byte float32 vector (768 dims) or NULL when not yet backfilled
   readonly embedding_model: string | null; // PLAN-4 T1: model id that produced embedding_blob — used for cross-model rejection (PITFALL 2.3). NULL = not yet embedded.
+  readonly conflicts_with_json: string; // PLAN-5 T1 (CONFLICT-01): JSON array of memory_ids this row contradicts. NOT NULL DEFAULT '[]'.
 }
 
 export interface Memory {
@@ -74,10 +75,23 @@ export interface Memory {
   readonly success_recall_count: number;
   readonly files: readonly string[]; // SHIP-52: files this memory relates to
   readonly trust_level: TrustLevel; // SHIP-67: derived from source + success_recall_count + pinned
+  readonly conflicts_with: readonly string[]; // PLAN-5 T2 (CONFLICT-02/03): memory_ids of same-workdir rows this row contradicts. Empty = no known conflicts.
 }
 
 export interface ScoredMemory extends Memory {
   readonly score: number;
+  /**
+   * PLAN-5 T4 — recall-time annotations applied by `resolveConflicts`.
+   *
+   * Each entry is a fully-formed marker like `⚠ CONFLICTS WITH <memory_id>` or
+   * `⚠ CONTRADICTED BY <memory_id>` (winner / loser respectively under
+   * policy='annotate'). The render layer (`context/layers.ts`) translates
+   * the inner UUIDs to 1-based `#N` indices before injection.
+   *
+   * `undefined` when no annotations apply — keeps the engine bit-identical
+   * to pre-Phase-5 output for memories with empty `conflicts_with`.
+   */
+  readonly annotations?: readonly string[];
 }
 
 export interface RecallResult {
@@ -98,6 +112,18 @@ export interface RecallQuery {
   readonly created_before?: number;  // epoch ms — upper bound on created_at
   readonly files?: readonly string[]; // SHIP-52: restrict to memories associated with these file paths
   readonly min_trust?: TrustLevel;    // T2: minimum trust tier — 'unverified' (default, no filter), 'provisional' (excludes unverified), 'trusted' (only trusted)
+  /**
+   * PLAN-5 T4 (CONFLICT-03) — how to surface contradictory memories at recall.
+   *   - 'annotate'           (default): keep both, attach `⚠ CONFLICTS WITH #N` markers
+   *   - 'drop-lower-trust'   : drop the lower-trust peer (precedence trust > score > recency)
+   *   - 'drop-all-conflicts' : drop every memory that appears in any conflict pair
+   *
+   * Pinned memories are NEVER dropped regardless of policy (CONFLICT-03,
+   * DELTA-MEM-CONFLICT.md §10 Q2). Default is additive — unset preserves
+   * pre-Phase-5 behavior bit-exactly when no rows have populated
+   * conflicts_with arrays.
+   */
+  readonly conflictPolicy?: 'annotate' | 'drop-lower-trust' | 'drop-all-conflicts';
 }
 
 /** Weights per memory type for relevance scoring — higher = more relevant by default. */
