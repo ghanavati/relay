@@ -108,6 +108,14 @@ export function migrateMemoryTables(db: Database.Database): void {
   if (!existingCols.has('embedding_model')) {
     db.prepare('ALTER TABLE memories ADD COLUMN embedding_model TEXT').run();
   }
+  // PLAN-5 T1 (CONFLICT-01) — write-time conflict detection stores reciprocal
+  // memory_ids as a JSON array. NOT NULL DEFAULT '[]' means legacy rows read
+  // safely without a backfill pass: '[]' = "no known conflicts" matches the
+  // pre-Phase-5 behavior bit-exactly. Recall annotation only fires when a
+  // memory's array is non-empty, so v0.1.2 → v0.2 upgrade observes no change.
+  if (!existingCols.has('conflicts_with_json')) {
+    db.prepare("ALTER TABLE memories ADD COLUMN conflicts_with_json TEXT NOT NULL DEFAULT '[]'").run();
+  }
 
   // 3. Indexes/triggers that depend on the columns added in step 2.
   for (const stmt of POST_ALTER_DDL) {
