@@ -606,7 +606,17 @@ export class MemoryStore {
         if (candVec) cosine = this.cosine(selfVec, candVec);
       }
 
-      if (!isConflictCandidate({ tagJac, contentJac, sharedTagCount: shared, cosine })) continue;
+      if (
+        !isConflictCandidate({
+          tagJac,
+          contentJac,
+          sharedTagCount: shared,
+          cosine,
+          contentA: content,
+          contentB: cand.content,
+        })
+      )
+        continue;
 
       // Update peer's conflicts_with_json (idempotent).
       let peerConflicts: string[] = [];
