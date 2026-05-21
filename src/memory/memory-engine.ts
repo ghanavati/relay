@@ -7,6 +7,7 @@
 
 import type { Memory, MemoryType, ScoredMemory, RecallQuery, RecallResult } from './types.js';
 import { TYPE_WEIGHTS, DECAY_HALF_LIFE_DAYS } from './types.js';
+import { resolveConflicts } from './conflict-detection.js';
 
 const MS_PER_DAY = 86_400_000;
 
@@ -262,12 +263,22 @@ export function budgetedRecall(
   const hasSearchCriteria = (query.query && query.query.trim().length > 0) || (query.tags && query.tags.length > 0);
   const candidates = hasSearchCriteria ? scored.filter(m => m.pinned || m.score >= MIN_RELEVANCE_SCORE) : scored;
 
+  // PLAN-5 T4 (CONFLICT-03) — pairwise pass between filter and pack loop.
+  // Default policy 'annotate' (ANNOTATE_BOTH). Input is capped to
+  // RECALL_K_CAP=32 inside resolveConflicts → O(K²) bounded sub-millisecond.
+  // Pinned memories survive every drop policy (CONFLICT-03 invariant).
+  // When no row carries conflicts_with the function returns inputs unchanged,
+  // preserving pre-Phase-5 behavior bit-exactly.
+  const policy = query.conflictPolicy ?? 'annotate';
+  const { kept: resolved } = resolveConflicts(candidates, policy);
+
   const selected: ScoredMemory[] = [];
   let totalTokens = 0;
   // Count threshold-excluded memories so omitted_count reflects ALL exclusions
-  let omittedCount = scored.length - candidates.length;
+  // (includes conflict-dropped rows under drop policies).
+  let omittedCount = scored.length - candidates.length + (candidates.length - resolved.length);
 
-  for (const memory of candidates) {
+  for (const memory of resolved) {
     if (totalTokens + memory.token_count <= query.token_budget) {
       selected.push(memory);
       totalTokens += memory.token_count;

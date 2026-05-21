@@ -14,6 +14,16 @@ import { redactSecrets } from '../security/redaction.js';
 import { makeError, toRelayException } from '../errors.js';
 import { embedDocument as defaultEmbedDocument, type EmbeddingResult, type EmbedOptions } from './embedding-client.js';
 import { isLocalEndpoint } from './endpoint-locality.js';
+import {
+  tagJaccard,
+  contentJaccard,
+  isConflictCandidate,
+} from './conflict-detection.js';
+import {
+  WRITE_CANDIDATE_CAP,
+  MIN_SHARED_TAGS,
+} from './conflict-thresholds.js';
+import { EXPECTED_EMBEDDING_DIM } from './embedding-client.js';
 
 /**
  * PLAN-4 T2 — Signature of the injectable embedding client used for lazy
@@ -86,6 +96,19 @@ function escapeLikeWildcards(value: string): string {
 }
 
 function rowToMemory(row: MemoryRow): Memory {
+  // PLAN-5 T2 — parse conflicts_with_json defensively. Default '[]' guarantees
+  // legacy rows (pre-Phase-5) read as no-conflicts; try/catch wraps malformed
+  // payloads (manual SQL editing, future schema drift) so a single bad row
+  // never crashes recall.
+  let conflictsWith: string[] = [];
+  try {
+    const parsed = JSON.parse(row.conflicts_with_json ?? '[]') as unknown;
+    if (Array.isArray(parsed)) {
+      conflictsWith = parsed.filter((x): x is string => typeof x === 'string');
+    }
+  } catch {
+    // Malformed JSON — treat as empty. Never throw on a single bad row.
+  }
   return {
     memory_id: row.memory_id,
     memory_type: row.memory_type as MemoryType,
@@ -110,6 +133,7 @@ function rowToMemory(row: MemoryRow): Memory {
       row.success_recall_count ?? 0,
       row.pinned === 1
     ),
+    conflicts_with: conflictsWith,
   };
 }
 
@@ -401,6 +425,212 @@ export class MemoryStore {
     return out;
   }
 
+  /**
+   * PLAN-5 T3/T5 — Decode a stored embedding BLOB into a Float32Array.
+   *
+   * Defensive checks:
+   *   - null buffer → null
+   *   - wrong byte length (≠ EXPECTED_EMBEDDING_DIM × 4) → null
+   *   - any non-finite value → null
+   * Caller treats null as "embedding missing" and falls back to Jaccard-only
+   * verdict (DELTA-MEM-CONFLICT.md §4 W4 / PITFALL 2.5).
+   */
+  private decodeEmbedding(blob: Buffer | null): Float32Array | null {
+    if (!blob) return null;
+    const expectedBytes = EXPECTED_EMBEDDING_DIM * 4;
+    if (blob.byteLength !== expectedBytes) return null;
+    // 4-byte alignment check — Buffer.from(typedArray.buffer, ...) guarantees
+    // it, but be defensive for upstream BLOB encoding edge cases.
+    let view: Float32Array;
+    if (blob.byteOffset % 4 === 0) {
+      view = new Float32Array(blob.buffer, blob.byteOffset, EXPECTED_EMBEDDING_DIM);
+    } else {
+      const copy = new ArrayBuffer(expectedBytes);
+      new Uint8Array(copy).set(new Uint8Array(blob.buffer, blob.byteOffset, expectedBytes));
+      view = new Float32Array(copy);
+    }
+    // All-finite check — silent NaN/Infinity poisons cosine math.
+    for (let i = 0; i < view.length; i++) {
+      const v = view[i]!;
+      if (!Number.isFinite(v)) return null;
+    }
+    return view;
+  }
+
+  /**
+   * PLAN-5 T5 — Cosine similarity over two Float32Array vectors.
+   *
+   * nomic-embed-text-v1.5 outputs L2-normalized vectors per the model card
+   * (cosine ≡ dot product for nomic). We compute full cosine defensively
+   * (≈ 100µs per 768-dim pair) so future model swaps with partial
+   * normalization don't silently corrupt the verdict. Returns 0 when either
+   * input has zero magnitude — protects against NaN.
+   */
+  private cosine(a: Float32Array, b: Float32Array): number {
+    if (a.length !== b.length) return 0;
+    let dot = 0;
+    let normA = 0;
+    let normB = 0;
+    for (let i = 0; i < a.length; i++) {
+      const ai = a[i]!;
+      const bi = b[i]!;
+      dot += ai * bi;
+      normA += ai * ai;
+      normB += bi * bi;
+    }
+    if (normA === 0 || normB === 0) return 0;
+    const cos = dot / (Math.sqrt(normA) * Math.sqrt(normB));
+    // Clamp to [0, 1] — anti-similar (cos < 0) is not a useful conflict signal,
+    // and the gate (< COSINE_GATE_MAX) cares only about non-negative magnitude.
+    if (cos < 0) return 0;
+    if (cos > 1) return 1;
+    return cos;
+  }
+
+  /**
+   * PLAN-5 T3 — Detect conflicts for a freshly inserted row and persist
+   * reciprocal IDs to BOTH sides within the calling transaction.
+   *
+   * MUST be invoked from inside an active db.transaction(...) — the
+   * reciprocal UPDATEs must roll back atomically with the INSERT if any
+   * single step fails (PITFALL 3.2).
+   *
+   * Algorithm:
+   *   1. Skip entirely when |mergedTags| < MIN_SHARED_TAGS (DELTA-MEM-CONFLICT.md §4 W1).
+   *   2. Prefilter same-workdir, same-type, non-superseded rows whose
+   *      `tags_json` shares at least one tag with the new row. LIMIT to
+   *      WRITE_CANDIDATE_CAP (PITFALL 3.1).
+   *   3. For each candidate compute tag_jaccard, content_jaccard, shared
+   *      tag count. Pass through isConflictCandidate().
+   *   4. If both rows have embedding_blob populated AND the same
+   *      embedding_model, compute cosine and apply the gate.
+   *   5. For each confirmed conflict: UPDATE peer's conflicts_with_json to
+   *      include the new id (idempotently — skip if already present), and
+   *      collect the peer id for the new row's INSERT-time array.
+   *
+   * Detection SQL uses strict `workdir = ?` — never `workdir IS NULL OR
+   * workdir = ?`. CONFLICT-05 / CC.3 / Phase-5 SC#4.
+   */
+  private detectAndPersistConflicts(
+    newId: string,
+    workdir: string | null,
+    memoryType: MemoryType,
+    mergedTags: readonly string[],
+    content: string,
+  ): void {
+    // Skip when the new row doesn't have enough tags to share ≥2 with anyone.
+    if (mergedTags.length < MIN_SHARED_TAGS) return;
+    // Workdir-strict-equal (CONFLICT-05). NULL workdir is global — only
+    // matches global vs global; we do NOT mix global with workdir-scoped.
+    const workdirClause = workdir === null ? 'workdir IS NULL' : 'workdir = ?';
+    const params: unknown[] = [];
+    if (workdir !== null) params.push(workdir);
+    params.push(memoryType);
+    params.push(newId);
+    // Tag overlap via json_each + IN — at least one tag must overlap to be
+    // a candidate. SQLite has json_each shipped since 3.9 (better-sqlite3
+    // bundles current).
+    const tagPlaceholders = mergedTags.map(() => '?').join(', ');
+    params.push(...mergedTags);
+    params.push(WRITE_CANDIDATE_CAP);
+
+    interface CandidateRow {
+      memory_id: string;
+      content: string;
+      tags_json: string;
+      embedding_blob: Buffer | null;
+      embedding_model: string | null;
+      conflicts_with_json: string;
+    }
+    const candidates = this.db
+      .prepare(
+        `SELECT memory_id, content, tags_json, embedding_blob, embedding_model, conflicts_with_json
+         FROM memories
+         WHERE ${workdirClause}
+           AND memory_type = ?
+           AND superseded_by IS NULL
+           AND memory_id != ?
+           AND EXISTS (
+             SELECT 1 FROM json_each(memories.tags_json)
+             WHERE json_each.value IN (${tagPlaceholders})
+           )
+         LIMIT ?`
+      )
+      .all(...params) as CandidateRow[];
+
+    if (candidates.length === 0) return;
+
+    // Pre-compute new row's sets ONCE.
+    const newTagSet = new Set(mergedTags);
+    const newTokenSet = new Set(tokenize(content));
+    // Decode new row's embedding (the row was just INSERTed — embedding_blob
+    // is NULL at this point because scheduleEmbed runs after the tx commits).
+    // For now: rely on candidate side only. When the new row has no embedding,
+    // cosine gate degrades to Jaccard-only (T5 contract).
+    // NOTE: in the future, sync write-time embedding could populate this side
+    // too; we read the just-inserted row to support that.
+    const selfRow = this.db
+      .prepare('SELECT embedding_blob, embedding_model FROM memories WHERE memory_id = ?')
+      .get(newId) as { embedding_blob: Buffer | null; embedding_model: string | null } | undefined;
+    const selfVec = selfRow ? this.decodeEmbedding(selfRow.embedding_blob) : null;
+    const selfModel = selfRow?.embedding_model ?? null;
+
+    const peerIds: string[] = [];
+    const updateStmt = this.db.prepare(
+      'UPDATE memories SET conflicts_with_json = ? WHERE memory_id = ?'
+    );
+
+    for (const cand of candidates) {
+      let candTags: string[] = [];
+      try {
+        const parsed = JSON.parse(cand.tags_json) as unknown;
+        if (Array.isArray(parsed)) {
+          candTags = parsed.filter((x): x is string => typeof x === 'string');
+        }
+      } catch {
+        continue; // bad JSON — skip silently
+      }
+      const candTagSet = new Set(candTags);
+      // Shared tag count = intersection size.
+      let shared = 0;
+      for (const t of newTagSet) if (candTagSet.has(t)) shared++;
+      if (shared < MIN_SHARED_TAGS) continue;
+
+      const tagJac = tagJaccard(newTagSet, candTagSet);
+      const candTokenSet = new Set(tokenize(cand.content));
+      const contentJac = contentJaccard(newTokenSet, candTokenSet);
+
+      let cosine: number | undefined;
+      if (selfVec && cand.embedding_blob && cand.embedding_model && selfModel === cand.embedding_model) {
+        const candVec = this.decodeEmbedding(cand.embedding_blob);
+        if (candVec) cosine = this.cosine(selfVec, candVec);
+      }
+
+      if (!isConflictCandidate({ tagJac, contentJac, sharedTagCount: shared, cosine })) continue;
+
+      // Update peer's conflicts_with_json (idempotent).
+      let peerConflicts: string[] = [];
+      try {
+        const parsed = JSON.parse(cand.conflicts_with_json ?? '[]') as unknown;
+        if (Array.isArray(parsed)) {
+          peerConflicts = parsed.filter((x): x is string => typeof x === 'string');
+        }
+      } catch {
+        peerConflicts = [];
+      }
+      if (!peerConflicts.includes(newId)) {
+        peerConflicts.push(newId);
+        updateStmt.run(JSON.stringify(peerConflicts), cand.memory_id);
+      }
+      peerIds.push(cand.memory_id);
+    }
+
+    if (peerIds.length > 0) {
+      // Persist new row's conflicts_with_json (the INSERT seeded it with '[]').
+      updateStmt.run(JSON.stringify(peerIds), newId);
+    }
+  }
+
   /** SHIP-66: cap writes per run_id in a 5-minute window to prevent flooding. */
   private assertWriteRateLimit(source_run_id: string | undefined): void {
     if (!source_run_id) return;
@@ -438,6 +668,8 @@ export class MemoryStore {
     memory_source?: MemorySource;
     files?: readonly string[];
   }): string {
+    // Guards run OUTSIDE the transaction — they protect against bad inputs
+    // before any state changes; if they throw we don't want a half-committed tx.
     this.assertWriteRateLimit(params.source_run_id);
     assertWorkdirAllowed(params.workdir);
     const memoryId = randomUUID();
@@ -466,36 +698,52 @@ export class MemoryStore {
       0,
       params.pinned === true,
     );
-    this.db
-      .prepare(
-        `INSERT INTO memories (
-          memory_id, memory_type, content, tags_json, workdir,
-          token_count, pinned, source_run_id, git_ref,
-          superseded_by, created_at, accessed_at, expires_at,
-          entity_key, sources_json, content_hash, memory_source, files_json,
-          trust_level
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
+
+    // PLAN-5 T3 — wrap INSERT + conflict detection + reciprocal UPDATEs in a
+    // single db.transaction. If detection or UPDATE throws, the INSERT rolls
+    // back atomically — no stale references accumulate (PITFALL 3.2).
+    const rememberTx = this.db.transaction((): void => {
+      this.db
+        .prepare(
+          `INSERT INTO memories (
+            memory_id, memory_type, content, tags_json, workdir,
+            token_count, pinned, source_run_id, git_ref,
+            superseded_by, created_at, accessed_at, expires_at,
+            entity_key, sources_json, content_hash, memory_source, files_json,
+            trust_level
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          memoryId,
+          params.memory_type,
+          content,
+          JSON.stringify(mergedTags),
+          params.workdir ?? null,
+          tokenCount,
+          params.pinned ? 1 : 0,
+          params.source_run_id ?? null,
+          params.git_ref ?? null,
+          now,
+          now,
+          params.expires_at ?? null,
+          params.entity_key ?? null,
+          JSON.stringify(params.sources ?? []),
+          contentHash,
+          params.memory_source ?? 'unknown',
+          JSON.stringify(params.files ?? []),
+          initialTrustLevel,
+        );
+
+      // Detect conflicts and update both sides inside the same tx.
+      this.detectAndPersistConflicts(
         memoryId,
-        params.memory_type,
-        content,
-        JSON.stringify(mergedTags),
         params.workdir ?? null,
-        tokenCount,
-        params.pinned ? 1 : 0,
-        params.source_run_id ?? null,
-        params.git_ref ?? null,
-        now,
-        now,
-        params.expires_at ?? null,
-        params.entity_key ?? null,
-        JSON.stringify(params.sources ?? []),
-        contentHash,
-        params.memory_source ?? 'unknown',
-        JSON.stringify(params.files ?? []),
-        initialTrustLevel,
+        params.memory_type,
+        mergedTags,
+        content,
       );
+    });
+    rememberTx();
 
     // PLAN-4 T2 — Lazy embed-on-write. Sync write above is complete; schedule
     // background embed generation that UPDATEs the row when the vector is ready.
@@ -572,6 +820,9 @@ export class MemoryStore {
         0,
         params.pinned === true,
       );
+      // Pre-compute merged tags so the conflict detector receives the same
+      // set we persist on this row.
+      const mergedTags = [...new Set([...(params.tags ?? []), ...extractKeywords(content)])];
       this.db
         .prepare(
           `INSERT INTO memories (
@@ -586,7 +837,7 @@ export class MemoryStore {
           newId,
           params.memory_type,
           content,
-          JSON.stringify([...new Set([...(params.tags ?? []), ...extractKeywords(content)])]),
+          JSON.stringify(mergedTags),
           workdir,
           tokenCount,
           params.pinned ? 1 : 0,
@@ -601,6 +852,16 @@ export class MemoryStore {
           JSON.stringify(params.files ?? []),
           initialTrustLevel,
         );
+
+      // PLAN-5 T3 — same-transaction conflict detection mirrors remember().
+      // Runs inside upsertTx so reciprocal UPDATEs are atomic with the INSERT.
+      this.detectAndPersistConflicts(
+        newId,
+        workdir,
+        params.memory_type,
+        mergedTags,
+        content,
+      );
 
       return newId;
     });
