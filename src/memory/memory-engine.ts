@@ -287,8 +287,21 @@ export function budgetedRecall(
     }
   }
 
+  // MED codex finding — pack-truncation dangling-annotation fix.
+  // After packing, filter each kept memory's conflicts_with to peer IDs
+  // actually present in `selected`. Otherwise the render layer (context/
+  // layers.ts) would emit `⚠ CONFLICTS WITH #N` references to phantom peers
+  // that got omitted under token-budget pressure.
+  const selectedIds = new Set(selected.map((m) => m.memory_id));
+  const packed: ScoredMemory[] = selected.map((m) => {
+    if (m.conflicts_with.length === 0) return m;
+    const peersPresent = m.conflicts_with.filter((id) => selectedIds.has(id));
+    if (peersPresent.length === m.conflicts_with.length) return m;
+    return { ...m, conflicts_with: peersPresent };
+  });
+
   return {
-    memories: selected,
+    memories: packed,
     total_tokens: totalTokens,
     budget_remaining: query.token_budget - totalTokens,
     omitted_count: omittedCount,
