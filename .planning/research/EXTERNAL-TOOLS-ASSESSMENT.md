@@ -124,6 +124,97 @@ For Claude Code session `11f4ce27-5f1d-4d8b-be22-c7ab2d018f6d`, the session exis
 
 ---
 
+## Next Product Slice — Relay Session Control
+
+**Intent:** Build the first real product slice behind the new positioning. This is not a README smoke test and not a marketing exercise. The goal is to make the core product behavior real enough that skeptical LLMs and skeptical users can test it directly.
+
+### Product thesis
+
+Relay should make AI agent work addressable, visible, and steerable.
+
+The primary object becomes a **session**: a durable unit of AI work tied to a tool, model/provider, transcript, working directory, task, events, files touched, current status, and related memory.
+
+Today Relay can remember context and record delegated runs. The next step is to let a user ask:
+
+- What AI sessions exist?
+- Which ones are active or recently active?
+- What is this session doing?
+- What files and context did it touch?
+- Can I send a correction into this specific session?
+
+### First target
+
+Target **Claude Code sessions first**.
+
+Reason: Claude Code already persists session artifacts under `~/.claude/projects/.../*.jsonl`, and the CLI already supports resuming a specific session with:
+
+```bash
+claude --resume <session_id> --print "..."
+```
+
+Relay does not currently invoke Claude Code as a `relay run --provider claude-code` worker. This slice should not pretend otherwise. It should bridge existing Claude Code session artifacts and expose them through a Relay session surface.
+
+### Initial command surface
+
+```bash
+relay session list
+relay session inspect <session_id>
+relay session tail <session_id> [--follow]
+relay session send <session_id> "message"
+```
+
+`relay session list` should discover recent Claude Code sessions and show enough information to choose the right one: session ID, title/name when available, cwd, branch, last prompt, last activity time, and inferred state (`active`, `recent`, `stale`, `unknown`).
+
+`relay session inspect <session_id>` should summarize one session: metadata, recent turns, notable tool calls, files touched if extractable, linked PR metadata if present, and Relay memories/context for that workdir when available.
+
+`relay session tail <session_id>` should render a live or near-live transcript stream from Claude's JSONL. Initial rendering can be simple: user messages, assistant text, tool uses, tool results, stop hooks, errors, file-history snapshots, and metadata events. It must not mutate Claude's JSONL files.
+
+`relay session send <session_id> "message"` should send a steering message by invoking Claude Code's resume path. This proves that a Relay-addressed session can receive a correction. It is not full live control yet.
+
+### Product behavior this proves
+
+If this slice works, Relay is no longer only a memory CLI or run-history viewer. It becomes the beginning of an operator layer:
+
+> I have an AI coding session running. Relay can find it, show me what it is doing, and let me intervene.
+
+That is the first credible bridge from "memory + dispatch" to "agent operations/control layer."
+
+### Critical constraints
+
+- Do not corrupt, rewrite, or append directly to Claude JSONL transcripts.
+- Do not claim generic multi-tool support until Codex or another tool is also attachable.
+- Do not claim pause/kill/approval gates until real process control exists.
+- Do not claim Relay can inspect hidden model state. It can inspect persisted transcript/events only.
+- Treat malformed or missing session artifacts as user-facing `RelayError`s with context.
+- Keep this as a CLI-first slice. A TUI/control room can build on top after the primitives are real.
+
+### What to test with other LLMs
+
+Ask other LLMs to critique this product slice, not the old README:
+
+> Relay wants to become an agent operations/control layer. The proposed first slice is `relay session list/inspect/tail/send` for Claude Code sessions by reading persisted JSONL and using `claude --resume` for steering. Be hostile: is this enough to make the positioning credible, what is still overclaimed, what implementation traps will break user trust, and what would make a skeptical GitHub visitor care?
+
+Expected useful critique:
+
+- whether `send` without pause/kill is enough to call it "steerable"
+- whether Claude-only still supports the "across tools" story
+- whether transcript tailing is actually live enough
+- whether session discovery is reliable across cwd/project layouts
+- whether the first demo is obvious and valuable
+
+### Success bar
+
+The slice is successful when it works against a real Claude Code session ID such as `11f4ce27-5f1d-4d8b-be22-c7ab2d018f6d` and a skeptical reviewer can see the product shift in one terminal demo:
+
+1. `relay session list` finds the session.
+2. `relay session inspect <id>` explains the session.
+3. `relay session tail <id>` shows recent or live activity.
+4. `relay session send <id> "..."` sends a real steering message through Claude Code.
+
+Only after that should the public README move from "memory + audit trail" toward "operator console/control layer."
+
+---
+
 ## External Tools Assessment — 2026-05-21
 
 **Session:** AEGIS, TurboVec, figma-console-mcp evaluation against Relay roadmap
