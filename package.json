@@ -1,7 +1,7 @@
 {
   "name": "relay",
   "version": "0.1.2",
-  "description": "Solo CLI for delegating bounded coding tasks to AI workers (Codex, OpenRouter, LM Studio, Anthropic) with audit trail, memory, and parallel dispatch.",
+  "description": "Operations and control layer for AI coding agents: persistent cross-tool memory, multi-model dispatch (Codex, LM Studio, OpenRouter, Anthropic), audit trail, and steerable agentic execution. Local SQLite store.",
   "type": "module",
   "license": "AGPL-3.0-or-later",
   "author": "Ghanavati",
@@ -11,13 +11,17 @@
     "url": "https://github.com/ghanavati/relay.git"
   },
   "keywords": [
-    "ai",
-    "memory",
+    "ai-agents",
+    "agent-ops",
+    "agent-memory",
+    "ai-coding",
+    "agentic",
     "cli",
     "claude-code",
     "codex",
     "lm-studio",
-    "openrouter"
+    "openrouter",
+    "memory"
   ],
   "engines": {
     "node": ">=20"

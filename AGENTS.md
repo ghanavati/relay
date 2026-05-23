@@ -1,10 +1,14 @@
-# AGENTS.md — Relay (solo CLI)
+# AGENTS.md — Relay (agent operations/control layer)
 
 Single source of truth for any AI working on this project. Read only the sections relevant to your task.
 
 ## What this is
 
-Relay is a solo-use CLI for delegating bounded coding tasks to AI workers (Codex, OpenRouter, LM Studio, Anthropic) with a local SQLite audit trail and persistent memory. Extracted from the relay-mcp monorepo on 2026-05-02.
+Relay is the operations/control layer around AI coding agents. It makes agent work persistent (cross-tool memory), addressable (named sessions), inspectable (audit + provenance), and steerable (live session control, v0.3 in flight). Worker backends today: Codex CLI, OpenRouter, LM Studio (single-shot + agentic tool-loop), Anthropic. Single SQLite store.
+
+**NOT a "solo CLI", NOT "local-only", NOT a security platform.** Local LM Studio execution is a cost/privacy wedge, not the headline. The product is the layer around agents, not another agent.
+
+Extracted from the relay-mcp monorepo on 2026-05-02. Repositioning to control-layer framing dated 2026-05-23 (see `.planning/research/EXTERNAL-TOOLS-ASSESSMENT.md`).
 
 NOT in scope: compliance/regulatory artifacts, multi-tenant hosted mode, model registry lifecycle, billing, EU AI Act / SR 11-7 / DORA reports, oversight workflows.
 

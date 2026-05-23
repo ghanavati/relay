@@ -123,23 +123,27 @@ Worked examples for common workflows live under [docs/recipes/](docs/recipes/):
 - [Parallel dispatch with LM Studio](docs/recipes/parallel-with-lmstudio.md) — concurrency rules and worktree isolation.
 - [QMD companion](docs/recipes/qmd-companion.md) — pairing Relay with the QMD planner.
 
-## What it does
+## What Relay does
 
-- **Delegate**: dispatch coding tasks to Codex CLI, OpenRouter, LM Studio (local), or Anthropic. One worker or many in parallel.
-- **Audit trail**: every run captures filesystem diff, event timeline, and worker output to a local SQLite store.
-- **Memory**: persistent recall across CC sessions via `SessionStart` context-layer injection.
-- **Local-first execution**: agentic LM Studio worker (`--provider lmstudio-agentic`) runs multi-iteration tool loops on `qwen3-coder-next`/`qwen3.6-35b-a3b`/etc. — no API key, no cost.
-- **Hallucination check**: optional Berry MCP integration to validate claims.
+The operator layer around AI coding agents. Five concerns:
 
-Model-agnostic. Single SQLite store. No external services required for solo use.
+- **Persistent memory** — recall accumulated decisions, lessons, and contradictions across Claude Code, Codex, LM Studio, and any other tool. `SessionStart` hook injects the relevant slice every session, no manual reloading.
+- **Multi-model dispatch** — send a task to Codex CLI, OpenRouter, Anthropic, or a local LM Studio model (qwen, gemma, glm). One worker or many in parallel. Local-mode = zero API cost.
+- **Audit + provenance** — every run records the task, model, provider, injected context, tool calls, diffs, retries, and outcome. Searchable history that survives session boundaries.
+- **Steerable agentic execution** — `relay run --provider lmstudio-agentic` runs a real tool-call loop on a local model with shell access, sandboxed env, network blocklist, hash-based loop detection.
+- **Coming in v0.3 — addressable sessions** — `relay session list / inspect / tail / send` over your existing Claude Code sessions. Find what's running, see what it's doing, send a steering message into a specific session.
+
+Hallucination check via optional [Berry](https://github.com/anthropics/berry) MCP integration. Model-agnostic. Single SQLite store. Works against any combination of paid + local providers.
 
 ## Privacy & security
 
-Local-first by design. All memory lives in a single SQLite file under `~/.relay/relay.db` (configurable via `RELAY_DB_PATH`); nothing leaves your machine unless you explicitly delegate a run to a hosted provider. Memory writes are scoped to per-project workdirs and gated by an optional `RELAY_MEMORY_ALLOWED_WORKDIRS` allowlist. The `recalled_lessons` context layer only injects entries you have explicitly remembered or migrated; opt-in via `RELAY_RECALLED_LESSONS=1`. Provider API keys live in environment variables only — never in the SQLite store, never logged. Worktree isolation for parallel dispatch keeps concurrent workers from clobbering each other's filesystem state. See [SECURITY.md](SECURITY.md) for the full threat model.
+Local storage by default. All memory lives in a single SQLite file under `~/.relay/relay.db` (configurable via `RELAY_DB_PATH`); nothing leaves your machine unless you explicitly delegate a run to a hosted provider. Memory writes are scoped to per-project workdirs and gated by an optional `RELAY_MEMORY_ALLOWED_WORKDIRS` allowlist. The `recalled_lessons` context layer only injects entries you have explicitly remembered or migrated; opt-in via `RELAY_RECALLED_LESSONS=1`. Provider API keys live in environment variables only — never in the SQLite store, never logged. Worktree isolation for parallel dispatch keeps concurrent workers from clobbering each other's filesystem state. `shell_exec` strips secret-shaped env vars (`*KEY/*TOKEN/*SECRET/*PASSWORD`) and blocks outbound network binaries (`curl`, `wget`, `ssh`, etc.) before the local model gets a shell. See [SECURITY.md](SECURITY.md) for the full threat model.
 
 ## Status
 
-Pre-release `0.2.0`. Currently **1371 tests** passing, single-writer SQLite + FTS5, four worker backends (Codex, LM Studio, OpenRouter, Anthropic), four cross-LLM context-injection wrappers (cc / codex / lmstudio-http / lmstudio-cli). CI runs Node 20 + 22 on every push.
+Pre-release `0.2.0`. **1371 tests** passing, four worker backends (Codex, LM Studio single-shot + agentic, OpenRouter, Anthropic), four cross-LLM context-injection wrappers, semantic recall via `nomic-embed-text-v1.5`, conflict detection on contradictory memories, delta extraction in auto-extract, REST-based Figma tools. CI runs Node 20 + 22 on every push.
+
+**Next:** v0.3 session-control slice — `relay session list / inspect / tail / send` against your live Claude Code sessions. See [`.planning/research/EXTERNAL-TOOLS-ASSESSMENT.md`](.planning/research/EXTERNAL-TOOLS-ASSESSMENT.md) for the product thesis.
 
 ## v0.2 capabilities (shipped)
 
