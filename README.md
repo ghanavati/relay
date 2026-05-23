@@ -1,6 +1,12 @@
 # Relay
 
-Solo CLI for delegating bounded coding tasks to AI workers (Codex, OpenRouter, LM Studio, Anthropic) and carrying persistent memory across Claude Code sessions. Local-first, model-agnostic, single SQLite store. No external services required.
+**Operations and control layer for AI coding agents.** Make agent work persistent, addressable, inspectable, and steerable across the tools you already use.
+
+> Git records what code changed. Relay records what the agent did — tasks given, models used, context injected, retries, failures, and lessons.
+
+You probably use Claude Code one day, Cursor or Codex the next, an LM Studio model after that. None of them remember what you decided yesterday and none of them let you supervise their work the way you'd supervise a human. Relay sits between you and any LLM tool: it carries memory across sessions, dispatches tasks to whichever provider you want (local LM Studio for free, paid when you need to), and is becoming the layer that makes agent sessions addressable — `list`, `inspect`, `tail`, `send`.
+
+For AI-heavy developers, tech leads supervising parallel agent work, and teams adopting autonomous coding workflows. Solo install today, multi-user-ready surface.
 
 [![Status](https://img.shields.io/badge/status-pre--release-yellow)](#status)
 [![Version](https://img.shields.io/badge/version-0.2.0-blue)](CHANGELOG.md)
