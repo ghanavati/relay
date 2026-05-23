@@ -1,4 +1,130 @@
-# External Tools Assessment — May 2026
+# Relay Research Log — May 2026
+
+**Purpose:** Living research document for Relay positioning, external tool assessments, and product-scope decisions.
+**Rule:** Keep research here until it is either promoted into the roadmap/specs or deleted. If a conclusion becomes stale but still explains a decision, mark it `Deprecated YYYY-MM-DD` with the replacement.
+**Latest update:** 2026-05-23 — product-positioning session on Relay as an agent operations/control layer.
+
+---
+
+## Current Conclusions
+
+### Relay's category
+
+**Current conclusion:** Relay should not be framed as a "solo CLI" or "local-first CLI" as the primary category.
+
+Local execution is useful, but it is a wedge: cheap local LM Studio work, privacy by default, and low setup friction. It is not the core value prop. The durable category is:
+
+> Relay is an agent operations/control layer for AI coding work.
+
+That means Relay's job is to make agent work persistent, addressable, inspectable, steerable, and auditable across tools.
+
+### Core value prop
+
+**Current conclusion:** Relay's value is not "another agent that edits code." It is the layer around agents:
+
+- persistent cross-tool memory
+- task dispatch across providers/models
+- live or near-live visibility into sessions/runs
+- ability to supervise, steer, pause, kill, and resume agent work
+- current and historical diffs for agent-produced changes
+- record of prompts, model/provider, injected context, outputs, tool calls, failures, and lessons
+- conflict detection and contradiction management across accumulated memory
+
+Short form:
+
+> Git tracks code history. Relay tracks and supervises the agent work that produces code.
+
+### "Heard of Git?" answer
+
+Git is necessary but too low-level. Git can show what changed after a commit. Relay should show the operational history around the work:
+
+- the task given to the agent
+- which model/provider ran it
+- what context and memories were injected
+- what the agent tried before producing a diff
+- failed runs that never became commits
+- competing attempts from different agents
+- loop/retry/tool-call behavior
+- what lessons should affect future sessions
+
+So Relay does not replace Git. Relay records the AI labor layer that Git cannot see unless humans manually compress it into commit messages.
+
+### Session supervision direction
+
+**Current conclusion:** The stronger product shape is addressable live sessions.
+
+The target interface should look roughly like:
+
+```bash
+relay session list
+relay session tail <session_id>
+relay session send <session_id> "..."
+relay session inspect <session_id> --memory --diff --status
+relay session pause <session_id>
+relay session resume <session_id>
+relay session kill <session_id>
+```
+
+For each live session, Relay should expose:
+
+- active task and assigned owner/model/provider
+- current plan/status
+- transcript and tool-call stream
+- shell commands, file reads/writes, and approvals
+- current uncommitted diff
+- injected memories/context
+- errors, retries, loops, and suspicious behavior
+- token/time/cost burn where available
+- whether the session is blocked or needs human input
+
+This is the clearest answer to the Git objection: Git is after-the-fact; Relay supervision is before, during, and after the agent acts.
+
+### Current capability boundary
+
+**Current state as of 2026-05-23:** Relay can inspect recorded runs and memory, but it does not yet expose first-class live bidirectional session control.
+
+What works today:
+
+- `relay memory recall` / `remember`
+- `relay history`
+- `relay diff <run_id>`
+- `relay compare <run_a> <run_b>`
+- `relay memory tail`
+- Claude Code transcript discovery under `~/.claude/projects/.../*.jsonl`
+- Claude Code resume/message path via `claude --resume <session_id> --print "..."`
+
+What does not work today through Relay:
+
+- attach to an already-running Claude/Codex/LM Studio session
+- stream that session's live tool calls through Relay
+- send steering messages through `relay session send`
+- pause/resume/kill a specific session through Relay
+- inspect a live session's hidden state as a first-class Relay object
+
+For Claude Code session `11f4ce27-5f1d-4d8b-be22-c7ab2d018f6d`, the session exists on disk and can be resumed by Claude CLI. That is not the same as Relay-managed live supervision.
+
+### Who Relay is for
+
+**Current conclusion:** Relay is for people and teams running enough AI coding work that they need continuity and control:
+
+- AI-heavy developers using multiple tools
+- technical founders and consultants juggling project context
+- tech leads supervising parallel agent work
+- small engineering teams adopting autonomous coding workflows
+- platform/infra teams that need local or hosted oversight before broader rollout
+
+"Solo" may describe an install mode. It should not define the product.
+
+### What to de-emphasize
+
+- **Deprecated 2026-05-23:** "Solo CLI" as the headline category. Replacement: "agent operations/control layer."
+- **Deprecated 2026-05-23:** "Local-first" as the headline value prop. Replacement: "local is one deployment/cost/privacy mode."
+- **Still valid but secondary:** LM Studio local execution is useful because it removes cost and quota pressure.
+- **Still valid but secondary:** SQLite/local storage is useful for simplicity, privacy, and portability.
+
+---
+
+## External Tools Assessment — 2026-05-21
 
 **Session:** AEGIS, TurboVec, figma-console-mcp evaluation against Relay roadmap
 **Confidence:** HIGH — based on direct code read + live repo fetches
@@ -84,15 +210,19 @@ A `design-system.md` (or referenced in `CLAUDE.md`) is better than Relay memory 
 
 ## 4. What Relay is actually for
 
-**Core value:** Carrying memory + agency across LLM sessions so context isn't lost every time.
+**Updated current conclusion:** Carrying memory + agency across LLM sessions is correct, but it is the lower-level mechanism. The stronger product frame is agent operations/control: Relay should make agent work durable, addressable, inspectable, steerable, and auditable.
 
 **The real differentiators:**
 - Memory that persists across CC sessions (hook-injected at SessionStart)
 - Conflict detection when you've told Claude Code contradictory things over months
 - Delegation to local LLMs (LM Studio) for coding tasks — no API cost
 - Auto-extract captures lessons without manual effort
+- Run/session history around prompts, context, outputs, diffs, and failures
+- Future live supervision of addressable sessions (`session tail/send/inspect/pause/kill`)
 
-**Not the differentiator:** Figma tools (too thin), multi-user features (out of scope for v0.2), being a security platform.
+**Not the differentiator:** Figma tools (too thin), being a security platform, or "local-only" as a product category.
+
+**Scope note:** Multi-user features were out of scope for v0.2, but the product framing should not imply Relay is inherently solo. Multi-user/team/cloud modes are natural extensions of the same control-layer model.
 
 ---
 
