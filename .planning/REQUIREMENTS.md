@@ -53,8 +53,8 @@ Active requirements scoped to this milestone. REQ-IDs use category prefix + numb
 ## Future Requirements (deferred to v0.3+)
 
 - Universal LLM control / session bus (CONTROL):
-  - [ ] **CONTROL-01**: Relay can register and list LLM sessions across Claude Code, Codex, LM Studio, OpenRouter, Anthropic, and fake test adapters with explicit capability reporting.
-  - [ ] **CONTROL-02**: Relay can inspect and tail session events from the central SQLite event store.
+  - [x] **CONTROL-01**: Relay can register and list LLM sessions across Claude Code, Codex, LM Studio, OpenRouter, Anthropic, and fake test adapters with explicit capability reporting.
+  - [x] **CONTROL-02**: Relay can inspect and tail session events from the central SQLite event store.
   - [ ] **CONTROL-03**: Relay can send a human-authored message to any registered target session when that target adapter reports a delivery capability.
   - [ ] **CONTROL-04**: LLM-initiated cross-session sends are denied by default and require explicit grants with TTL and message budget.
   - [ ] **CONTROL-05**: Relay exposes LLM-facing control tools (`relay_session_list`, `relay_session_send`, `relay_inbox_read`, `relay_inbox_ack`) to agentic workers and MCP-capable frontends.
