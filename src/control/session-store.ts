@@ -371,6 +371,16 @@ export class ControlSessionStore {
     return rows.map((row) => this.rowToEvent(row));
   }
 
+  /**
+   * All D-14 control lifecycle events (control_requested / approved / denied
+   * / executed) whose payload names this request_id, in append order. Used by
+   * the broker's approval queue; mechanical read — resolution POLICY stays in
+   * the broker. Naturally tiny per request; bounded for safety.
+   */
+  listControlRequestEvents(_request_id: string): ControlEvent[] {
+    throw new Error('not implemented: listControlRequestEvents (08-07 Task 2)');
+  }
+
   // ── Mailbox (D-04/D-05/D-06) ──────────────────────────────────────────────
 
   /**

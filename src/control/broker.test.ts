@@ -21,10 +21,12 @@ import * as assert from 'node:assert/strict';
 import { getDb } from '../runtime/store/db.js';
 import { RELAY_ERROR_CODES, type ErrorCode } from '../errors.js';
 import { ControlSessionStore } from './session-store.js';
+import { gatherControlSnapshot } from './read-model.js';
 import type { ControlCapability } from './types.js';
 import {
   ControlBroker,
   createControlBroker,
+  DEFAULT_CONTROL_REQUEST_TTL_MS,
   DELIVERY_CAPABILITY_PREFERENCE,
   LOOP_DETECTION_THRESHOLD,
   LOOP_DETECTION_WINDOW_MS,
@@ -823,6 +825,341 @@ describe('ControlBroker.markDelivered / markFailed', () => {
   test('markDelivered on an unknown message throws', () => {
     const { broker } = makeBroker();
     assert.equal(errCode(() => broker.markDelivered(uid('nope'), { now: T0 })), 'RUN_NOT_FOUND');
+  });
+});
+
+// ─── Grant approval queue (Plan 07 / Task 2, D-14) ──────────────────────────
+//
+// Lifecycle: a model REQUESTS a grant (control_requested, pending) → the
+// human approves (grant issued + grant_issued + control_approved) or denies
+// (control_denied). Models can never approve their own requests — the gate
+// that keeps CONTROL-15 self-escalation impossible.
+
+/** Register a source/target pair and file a pending grant request. */
+function pendingGrantRequest(
+  store: ControlSessionStore,
+  broker: ControlBroker,
+  opts?: { ttl_ms?: number; max_messages?: number; expires_in_ms?: number },
+): { source: string; target: string; request_id: string } {
+  const source = uid('req-src');
+  const target = uid('req-tgt');
+  registerSession(store, source, ['register', 'tool_call', 'mailbox']);
+  registerSession(store, target, ['register', 'mailbox']);
+  const request_id = uid('rid');
+  broker.requestGrant(
+    {
+      request_id,
+      source_session_id: source,
+      target_session_id: target,
+      ttl_ms: opts?.ttl_ms ?? 60_000,
+      max_messages: opts?.max_messages ?? 3,
+      ...(opts?.expires_in_ms !== undefined ? { expires_in_ms: opts.expires_in_ms } : {}),
+    },
+    T0,
+  );
+  return { source, target, request_id };
+}
+
+describe('ControlBroker.requestGrant', () => {
+  test('appends a source-anchored control_requested event with TTL, budget, and approval window', () => {
+    const { store, broker } = makeBroker();
+    const source = uid('req-src');
+    const target = uid('req-tgt');
+    registerSession(store, source, ['register', 'tool_call', 'mailbox']);
+    registerSession(store, target, ['register', 'mailbox']);
+    const event = broker.requestGrant(
+      {
+        source_session_id: source,
+        target_session_id: target,
+        ttl_ms: 60_000,
+        max_messages: 5,
+        reason: 'coordinate work',
+      },
+      T0,
+    );
+    assert.equal(event.event_type, 'control_requested');
+    assert.equal(event.session_id, source);
+    assert.equal(event.source_session_id, source);
+    assert.equal(event.target_session_id, target);
+    assert.equal(typeof event.payload['request_id'], 'string');
+    assert.equal(event.payload['action'], 'grant');
+    assert.equal(event.payload['ttl_ms'], 60_000);
+    assert.equal(event.payload['max_messages'], 5);
+    assert.equal(event.payload['expires_at'], T0 + DEFAULT_CONTROL_REQUEST_TTL_MS);
+    assert.equal(event.payload['reason'], 'coordinate work');
+  });
+
+  test('a fresh request is pending and visible in the Command Central read model', () => {
+    const { store, broker } = makeBroker();
+    const { request_id } = pendingGrantRequest(store, broker);
+    const state = broker.getControlRequest(request_id, T0 + 1);
+    assert.ok(state);
+    assert.equal(state.status, 'pending');
+    assert.equal(state.resolution, null);
+    const snap = gatherControlSnapshot({ store, now: T0 + 1 });
+    assert.ok(
+      snap.pending_actions.some((e) => e.payload['request_id'] === request_id),
+      'pending request surfaces in pending_actions',
+    );
+  });
+
+  test('an unregistered source or target is refused with CONTROL_SESSION_NOT_FOUND', () => {
+    const { store, broker } = makeBroker();
+    const known = uid('req-k');
+    registerSession(store, known, ['register', 'mailbox']);
+    assert.equal(
+      errCode(() =>
+        broker.requestGrant(
+          { source_session_id: uid('req-m'), target_session_id: known, ttl_ms: 1000, max_messages: 1 },
+          T0,
+        ),
+      ),
+      'CONTROL_SESSION_NOT_FOUND',
+    );
+    assert.equal(
+      errCode(() =>
+        broker.requestGrant(
+          { source_session_id: known, target_session_id: uid('req-m'), ttl_ms: 1000, max_messages: 1 },
+          T0,
+        ),
+      ),
+      'CONTROL_SESSION_NOT_FOUND',
+    );
+  });
+
+  test('self-requests are blocked (a grant to yourself authorizes nothing)', () => {
+    const { store, broker } = makeBroker();
+    const session = uid('req-self');
+    registerSession(store, session, ['register', 'mailbox', 'tool_call']);
+    assert.equal(
+      errCode(() =>
+        broker.requestGrant(
+          { source_session_id: session, target_session_id: session, ttl_ms: 1000, max_messages: 1 },
+          T0,
+        ),
+      ),
+      'CONTROL_SELF_SEND_BLOCKED',
+    );
+  });
+
+  test('getControlRequest returns undefined for unknown request ids', () => {
+    const { broker } = makeBroker();
+    assert.equal(broker.getControlRequest(uid('rid-none'), T0), undefined);
+  });
+});
+
+describe('ControlBroker.approveGrantRequest', () => {
+  test('human approval issues the requested grant and resolves the request', () => {
+    const { store, broker } = makeBroker();
+    const { source, target, request_id } = pendingGrantRequest(store, broker);
+    const grant = broker.approveGrantRequest({ request_id, approver: { kind: 'human' } }, T0 + 5);
+    assert.equal(grant.source_session_id, source);
+    assert.equal(grant.target_session_id, target);
+    assert.equal(grant.max_messages, 3);
+    assert.equal(grant.expires_at, T0 + 5 + 60_000);
+    const events = store.tailEvents(source);
+    const issued = events.filter((e) => e.event_type === 'grant_issued');
+    assert.equal(issued.length, 1);
+    assert.equal(issued[0]!.payload['grant_id'], grant.grant_id);
+    const approved = events.filter((e) => e.event_type === 'control_approved');
+    assert.equal(approved.length, 1);
+    assert.equal(approved[0]!.payload['request_id'], request_id);
+    assert.equal(approved[0]!.payload['grant_id'], grant.grant_id);
+    assert.equal(approved[0]!.payload['approved_by'], 'human');
+    const state = broker.getControlRequest(request_id, T0 + 6);
+    assert.ok(state);
+    assert.equal(state.status, 'approved');
+    // the issued grant now authorizes llm sends (D-04 integration)
+    const message = broker.sendMessage(
+      { source_session_id: source, target_session_id: target, sender_kind: 'llm', content: 'now permitted' },
+      T0 + 7,
+    );
+    assert.equal(message.status, 'queued');
+    // and the request leaves the pending queue
+    const snap = gatherControlSnapshot({ store, now: T0 + 8 });
+    assert.ok(!snap.pending_actions.some((e) => e.payload['request_id'] === request_id));
+  });
+
+  test('the human can override the requested TTL and budget at approval time', () => {
+    const { store, broker } = makeBroker();
+    const { request_id } = pendingGrantRequest(store, broker, { ttl_ms: 60_000, max_messages: 9 });
+    const grant = broker.approveGrantRequest(
+      { request_id, approver: { kind: 'human' }, ttl_ms: 5_000, max_messages: 1 },
+      T0 + 1,
+    );
+    assert.equal(grant.max_messages, 1);
+    assert.equal(grant.expires_at, T0 + 1 + 5_000);
+  });
+
+  test('unknown request ids fail with RUN_NOT_FOUND', () => {
+    const { broker } = makeBroker();
+    assert.equal(
+      errCode(() =>
+        broker.approveGrantRequest({ request_id: uid('rid-miss'), approver: { kind: 'human' } }, T0),
+      ),
+      'RUN_NOT_FOUND',
+    );
+  });
+
+  test('an already-approved request cannot be approved again', () => {
+    const { store, broker } = makeBroker();
+    const { request_id } = pendingGrantRequest(store, broker);
+    broker.approveGrantRequest({ request_id, approver: { kind: 'human' } }, T0 + 1);
+    assert.equal(
+      errCode(() => broker.approveGrantRequest({ request_id, approver: { kind: 'human' } }, T0 + 2)),
+      'INVALID_ARGS',
+    );
+  });
+
+  test('a denied request cannot be approved afterwards', () => {
+    const { store, broker } = makeBroker();
+    const { request_id } = pendingGrantRequest(store, broker);
+    broker.denyControlRequest({ request_id, denied_by: { kind: 'human' }, reason: 'no' }, T0 + 1);
+    assert.equal(
+      errCode(() => broker.approveGrantRequest({ request_id, approver: { kind: 'human' } }, T0 + 2)),
+      'INVALID_ARGS',
+    );
+  });
+
+  test('approving an expired request fails with CONTROL_GRANT_EXPIRED and auto-denies it', () => {
+    const { store, broker } = makeBroker();
+    const { source, target, request_id } = pendingGrantRequest(store, broker, {
+      expires_in_ms: 1_000,
+    });
+    const before = broker.getControlRequest(request_id, T0 + 1_000);
+    assert.ok(before);
+    assert.equal(before.status, 'expired', 'unresolved past the window reads as expired');
+    assert.equal(
+      errCode(() => broker.approveGrantRequest({ request_id, approver: { kind: 'human' } }, T0 + 1_000)),
+      'CONTROL_GRANT_EXPIRED',
+    );
+    // no grant materialized
+    assert.equal(broker.checkGrant(source, target, T0 + 1_001).allowed, false);
+    // the stale request is resolved (auto-denied) so the queue self-cleans
+    const after = broker.getControlRequest(request_id, T0 + 1_001);
+    assert.ok(after);
+    assert.equal(after.status, 'denied');
+    assert.equal(after.resolution?.payload['reason'], 'expired');
+    const snap = gatherControlSnapshot({ store, now: T0 + 1_002 });
+    assert.ok(!snap.pending_actions.some((e) => e.payload['request_id'] === request_id));
+  });
+
+  test('a model cannot approve its own grant request (D-14 self-approval denial)', () => {
+    const { store, broker } = makeBroker();
+    const { source, target, request_id } = pendingGrantRequest(store, broker);
+    assert.equal(
+      errCode(() =>
+        broker.approveGrantRequest(
+          { request_id, approver: { kind: 'llm', session_id: source } },
+          T0 + 1,
+        ),
+      ),
+      'CONTROL_SELF_SEND_BLOCKED',
+    );
+    // the request STAYS pending for the human — the attempt resolves nothing
+    const state = broker.getControlRequest(request_id, T0 + 2);
+    assert.ok(state);
+    assert.equal(state.status, 'pending');
+    // no grant materialized, no authority silently raised
+    assert.equal(broker.checkGrant(source, target, T0 + 2).allowed, false);
+    // the attempt is audited as a source-anchored blocked event
+    const blocked = store
+      .tailEvents(source)
+      .filter(
+        (e) => e.event_type === 'message_blocked' && e.payload['reason'] === 'self_approval_blocked',
+      );
+    assert.equal(blocked.length, 1);
+    assert.equal(blocked[0]!.payload['request_id'], request_id);
+  });
+
+  test("a model may approve a DIFFERENT session's request with visible attribution", () => {
+    const { store, broker } = makeBroker();
+    const { source, request_id } = pendingGrantRequest(store, broker);
+    const approver = uid('apr-third');
+    registerSession(store, approver, ['register', 'tool_call', 'mailbox']);
+    const grant = broker.approveGrantRequest(
+      { request_id, approver: { kind: 'llm', session_id: approver } },
+      T0 + 1,
+    );
+    assert.equal(grant.source_session_id, source);
+    const approved = store.tailEvents(source).filter((e) => e.event_type === 'control_approved');
+    assert.equal(approved.length, 1);
+    assert.equal(approved[0]!.payload['approved_by'], approver);
+    assert.equal(approved[0]!.payload['approved_by_kind'], 'llm');
+  });
+});
+
+describe('ControlBroker.denyControlRequest', () => {
+  test('human denial resolves the request without issuing a grant', () => {
+    const { store, broker } = makeBroker();
+    const { source, target, request_id } = pendingGrantRequest(store, broker);
+    const event = broker.denyControlRequest(
+      { request_id, denied_by: { kind: 'human' }, reason: 'not needed today' },
+      T0 + 1,
+    );
+    assert.equal(event.event_type, 'control_denied');
+    assert.equal(event.payload['request_id'], request_id);
+    assert.equal(event.payload['reason'], 'not needed today');
+    assert.equal(event.payload['denied_by'], 'human');
+    const state = broker.getControlRequest(request_id, T0 + 2);
+    assert.equal(state?.status, 'denied');
+    assert.equal(broker.checkGrant(source, target, T0 + 2).allowed, false);
+    // llm sends stay default-denied (D-04)
+    assert.equal(
+      errCode(() =>
+        broker.sendMessage(
+          { source_session_id: source, target_session_id: target, sender_kind: 'llm', content: 'still blocked' },
+          T0 + 3,
+        ),
+      ),
+      'CONTROL_GRANT_REQUIRED',
+    );
+  });
+
+  test('unknown request is RUN_NOT_FOUND; double deny is INVALID_ARGS', () => {
+    const { store, broker } = makeBroker();
+    assert.equal(
+      errCode(() =>
+        broker.denyControlRequest({ request_id: uid('rid-md'), denied_by: { kind: 'human' } }, T0),
+      ),
+      'RUN_NOT_FOUND',
+    );
+    const { request_id } = pendingGrantRequest(store, broker);
+    broker.denyControlRequest({ request_id, denied_by: { kind: 'human' } }, T0 + 1);
+    assert.equal(
+      errCode(() =>
+        broker.denyControlRequest({ request_id, denied_by: { kind: 'human' } }, T0 + 2),
+      ),
+      'INVALID_ARGS',
+    );
+  });
+});
+
+describe('ControlSessionStore.listControlRequestEvents', () => {
+  test('returns only control lifecycle events naming the request id, in append order', () => {
+    const { store, broker } = makeBroker();
+    const a = pendingGrantRequest(store, broker);
+    const b = pendingGrantRequest(store, broker);
+    broker.denyControlRequest({ request_id: b.request_id, denied_by: { kind: 'human' } }, T0 + 1);
+    // a non-lifecycle event that happens to carry a request_id payload key
+    store.appendEvent(
+      {
+        session_id: a.source,
+        event_type: 'message_blocked',
+        payload: { reason: 'self_approval_blocked', request_id: a.request_id },
+      },
+      T0 + 2,
+    );
+    const aEvents = store.listControlRequestEvents(a.request_id);
+    assert.equal(aEvents.length, 1, 'only control_* lifecycle events count');
+    assert.equal(aEvents[0]!.event_type, 'control_requested');
+    const bEvents = store.listControlRequestEvents(b.request_id);
+    assert.deepEqual(
+      bEvents.map((e) => e.event_type),
+      ['control_requested', 'control_denied'],
+    );
+    const ids = bEvents.map((e) => e.id);
+    assert.deepEqual([...ids].sort((x, y) => x - y), ids, 'append order');
   });
 });
 

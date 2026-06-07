@@ -952,3 +952,104 @@ describe('executePaletteCommand — broker-routed palette actions (D-13)', () =>
     }
   });
 });
+
+// ─── Inbox + grant approval queue (08-07 Task 2, D-14) ──────────────────────
+//
+// Pending model requests are visible in Command Central; the human approves
+// or denies through the broker grant APIs — TTL, budget, source, target, and
+// audit events all flow through the same policy path. Models cannot approve
+// their own requests (covered at the broker layer in broker.test.ts); here we
+// pin the operator surface: visibility, expiry markers, and palette routing.
+
+describe('Command Central approval queue (D-14)', () => {
+  function approvalRig(): PaletteRig & { source: string; target: string; request_id: string } {
+    const rig = paletteRig();
+    const source = uid('apv-src');
+    const target = uid('apv-tgt');
+    registerControl(rig.store, source, ['register', 'tool_call', 'mailbox']);
+    registerControl(rig.store, target, ['register', 'mailbox']);
+    const requested = rig.broker.requestGrant(
+      { source_session_id: source, target_session_id: target, ttl_ms: 60_000, max_messages: 2 },
+      Date.now(),
+    );
+    const request_id = requested.payload['request_id'] as string;
+    return { ...rig, source, target, request_id };
+  }
+
+  test('pending requests render expired markers from the approval window', () => {
+    const sel = fakeSession({ session_id: 'sess-exp' });
+    const view = buildCommandCentralView(
+      fakeControl({
+        sessions: [sel],
+        selected_session: sel,
+        pending_actions: [
+          fakeEvent({
+            id: 80,
+            session_id: 'sess-exp',
+            event_type: 'control_requested',
+            payload: { request_id: 'req-fresh', action: 'grant', expires_at: T0 + 60_000 },
+          }),
+          fakeEvent({
+            id: 81,
+            session_id: 'sess-exp',
+            event_type: 'control_requested',
+            payload: { request_id: 'req-stale', action: 'grant', expires_at: T0 - 1_000 },
+          }),
+        ],
+      }),
+      { width: 160 },
+    );
+    assert.equal(view.pending.length, 2);
+    assert.ok(!view.pending[0]!.includes('exp!'), 'unexpired requests carry no marker');
+    assert.ok(view.pending[1]!.includes('exp!'), 'expired requests are marked for the operator');
+  });
+
+  test('palette approve issues the grant through the broker with full audit', async () => {
+    const rig = approvalRig();
+    const result = await executePaletteCommand(`approve ${rig.request_id}`, { deps: rig.deps });
+    assert.equal(result.ok, true, `expected ok, got: ${JSON.stringify(result)}`);
+    const grant = rig.store.getGrant(rig.source, rig.target);
+    assert.ok(grant, 'grant issued through the broker');
+    assert.equal(grant.max_messages, 2, 'requested budget carried into the grant');
+    const events = rig.store.tailEvents(rig.source);
+    const approved = events.filter((e) => e.event_type === 'control_approved');
+    assert.equal(approved.length, 1);
+    assert.equal(approved[0]!.payload['approved_by'], 'human');
+    assert.equal(events.filter((e) => e.event_type === 'grant_issued').length, 1);
+  });
+
+  test('palette deny resolves the request without issuing a grant', async () => {
+    const rig = approvalRig();
+    const result = await executePaletteCommand(`deny ${rig.request_id} not today`, {
+      deps: rig.deps,
+    });
+    assert.equal(result.ok, true, `expected ok, got: ${JSON.stringify(result)}`);
+    assert.equal(rig.store.getGrant(rig.source, rig.target), undefined, 'no grant issued');
+    const state = rig.broker.getControlRequest(rig.request_id);
+    assert.ok(state);
+    assert.equal(state.status, 'denied');
+    assert.equal(state.resolution?.payload['reason'], 'not today');
+  });
+
+  test('palette approve of an unknown request surfaces RUN_NOT_FOUND', async () => {
+    const rig = paletteRig();
+    const result = await executePaletteCommand(`approve ${uid('apv-miss')}`, { deps: rig.deps });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, 'RUN_NOT_FOUND');
+  });
+
+  test('approved requests leave the shared snapshot pending queue', async () => {
+    const rig = approvalRig();
+    const before = gatherControlSnapshot({ store: rig.store });
+    assert.ok(
+      before.pending_actions.some((e) => e.payload['request_id'] === rig.request_id),
+      'pending request visible in Command Central before approval',
+    );
+    await executePaletteCommand(`approve ${rig.request_id}`, { deps: rig.deps });
+    const after = gatherControlSnapshot({ store: rig.store });
+    assert.ok(
+      !after.pending_actions.some((e) => e.payload['request_id'] === rig.request_id),
+      'approved request no longer pending',
+    );
+  });
+});
