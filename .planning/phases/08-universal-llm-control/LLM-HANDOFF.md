@@ -38,30 +38,28 @@ The plan is intentionally executable by both Claude Code and Codex. Do not assum
 ## Current Blockers Before Implementation
 
 - Active PAUL command shims are missing at `~/.claude/commands/paul/*.md`; archived PAUL files exist under `~/.claude/_archive/pre-cleanup-2026-05-19/`.
-- Worktree isolation is not ready: `.worktrees/` does not exist and is not currently ignored.
-- Baseline implementation-worktree verification has not run.
+- Worktree isolation is ready: `.worktrees/phase-8-control` exists on branch `phase-8-control`, and `.worktrees/` is ignored.
+- Baseline build/tests passed in the implementation worktree: `npm run build` passed and `npm test` passed with 1371 tests, 0 failures.
+- Baseline doctor is blocked: `node dist/cli.js doctor --json` reports failed checks for LM Studio reachability and hook roundtrip, plus missing Anthropic key, auto-extract log, loaded LM Studio model, and consent files.
 - grill-me-codex / `codex-review` adversarial plan review has not run.
 
 ## Required Preflight
 
 1. Commit these planning artifacts.
 2. Restore PAUL command shims or explicitly use archived PAUL semantics as a manual gate.
-3. Add `.worktrees/` to `.gitignore`, commit that setup change, then create a Phase 8 implementation worktree.
-4. In the worktree, run:
+3. Resolve or explicitly accept the doctor blocker before implementation subagents:
 
    ```bash
-   npm run build
-   npm test
-   relay doctor --json
+   node dist/cli.js doctor --json
    ```
 
-5. Run read-only Codex adversarial plan review over the full Phase 8 plan set. Store log at:
+4. Run read-only Codex adversarial plan review over the full Phase 8 plan set. Store log at:
 
    ```text
    .planning/phases/08-universal-llm-control/08-CODEX-PLAN-REVIEW-LOG.md
    ```
 
-6. Only after review approval or explicit human acceptance of unresolved issues, start wave execution.
+5. Only after review approval or explicit human acceptance of unresolved issues, start wave execution.
 
 ## Runtime Rules
 
