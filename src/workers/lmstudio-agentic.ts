@@ -113,15 +113,19 @@ export type FetchFn = typeof fetch;
 export type ShellExecFn = (args: ShellExecArgs) => Promise<ShellExecResult>;
 
 /**
- * Per-tool handler for non-shell tools (Phase 7 onward — Figma REST tools).
- * Dispatched by name from `executeToolCall`; result is JSON.stringified into
- * the tool message content for the model.
+ * Per-tool handler for non-shell tools (Phase 7 onward — Figma REST tools,
+ * Phase 8 — Relay control tools). Dispatched by name from `executeToolCall`;
+ * result is JSON.stringified into the tool message content for the model.
  */
 export interface NamedToolHandler {
   name: string;
   handle: (args: unknown, ctx: { workdir: string; pat: string }) => Promise<unknown>;
-  /** PAT or other credential needed by the handler. Passed as `ctx.pat`. */
-  pat: string;
+  /**
+   * PAT or other credential needed by the handler. Passed as `ctx.pat`.
+   * Optional since Phase 8 — credential-less tools (Relay control tools)
+   * omit it; dispatch substitutes ''.
+   */
+  pat?: string;
 }
 
 export interface LmStudioAgenticRunnerOpts {
@@ -438,7 +442,7 @@ export async function executeToolCall(
       return { role: 'tool', tool_call_id: call.id, content: 'ERROR: arguments not valid JSON' };
     }
     try {
-      const result = await extra.handle(parsedArgs, { workdir, pat: extra.pat });
+      const result = await extra.handle(parsedArgs, { workdir, pat: extra.pat ?? '' });
       const content = typeof result === 'string' ? result : JSON.stringify(result);
       return { role: 'tool', tool_call_id: call.id, content };
     } catch (err) {

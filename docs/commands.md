@@ -89,8 +89,10 @@ Report what Relay knows about the workdir: memory count, tag distribution, last 
 ## relay run
 
 ### relay run <task>
-Delegate a task to a worker. Flags: `--provider <codex|lmstudio|openrouter|anthropic>` (default `codex`), `--model <id>` (required for HTTP providers), `--workdir <path>` (default cwd), `--timeout-ms <N>` (default `300000`), `--reasoning-effort <low|medium|high>`, `--json`.
+Delegate a task to a worker. Flags: `--provider <codex|lmstudio|openrouter|anthropic|lmstudio-agentic>` (default `codex`), `--model <id>` (required for HTTP providers), `--workdir <path>` (default cwd), `--timeout-ms <N>` (default `300000`), `--reasoning-effort <low|medium|high>`, `--json`.
 Example: `relay run 'fix the failing test' --provider codex --model gpt-5.3-codex`.
+
+With `--provider lmstudio-agentic`, the run is registered as a Relay control session (session_id = run_id, ended when the run finishes) and the model is offered the `relay_session_list` / `relay_session_inspect` / `relay_session_send` / `relay_inbox_read` / `relay_inbox_ack` control tools alongside `shell_exec`. LLM-initiated sends stay default-deny — they require a grant issued via `relay session grant` (see `relay session`).
 
 ## relay parallel
 
