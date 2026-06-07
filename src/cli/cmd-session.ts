@@ -37,6 +37,8 @@ import {
   ControlSessionStateSchema,
   MAX_CONTROL_CONTENT_CHARS,
   type ControlEvent,
+  type ControlGrant,
+  type ControlMessage,
   type ControlSession,
 } from '../control/types.js';
 
@@ -423,6 +425,147 @@ function runRevoke(options: SessionCommandOptions, store: ControlSessionStore, i
     io.stdout(`revoked ${grant.grant_id} (${grant.source_session_id} -> ${grant.target_session_id})\n`);
   }
   return 0;
+}
+
+// ─── Shared session actions (08-07 Task 1, D-13) ────────────────────────────
+//
+// One implementation per operator action, used by BOTH the `relay session ...`
+// CLI subcommands and the Command Central palette (cmd-tui.ts). Same broker
+// methods, same policy checks, same audit events, same RelayError codes —
+// the UI never grows a parallel control implementation.
+
+/** Fully-resolved dependency set for shared session actions. */
+export interface SessionActionDeps {
+  readonly store: ControlSessionStore;
+  readonly broker: ControlBroker;
+  readonly registry: ControlAdapterRegistry;
+}
+
+export interface InspectResult {
+  readonly session: ControlSession;
+  readonly queued_count: number;
+  readonly events: readonly ControlEvent[];
+}
+
+export interface SendActionInput {
+  readonly target_session_id: string;
+  readonly content: string;
+  readonly from?: string | undefined;
+  readonly expires_in_ms?: number | undefined;
+  readonly deliver?: boolean | undefined;
+}
+
+export interface DelegateActionInput {
+  readonly target_session_id: string;
+  readonly task: string;
+  readonly from?: string | undefined;
+  readonly deliver?: boolean | undefined;
+}
+
+export interface SendActionResult {
+  readonly message: ControlMessage;
+  readonly status: string;
+  readonly delivery_capability?: string | undefined;
+  readonly delivery_detail?: string | undefined;
+}
+
+export interface GrantActionInput {
+  readonly source_session_id: string;
+  readonly target_session_id: string;
+  readonly ttl_ms?: number | undefined;
+  readonly max_messages?: number | undefined;
+}
+
+/** Session record + queued count + recent events (CLI inspect = palette inspect). */
+export function inspectSession(_deps: SessionActionDeps, _session_id: string): InspectResult {
+  throw new Error('not implemented: inspectSession (08-07 Task 1)');
+}
+
+/** Bounded event tail for one session (CLI tail = palette tail). */
+export function tailSession(
+  _deps: SessionActionDeps,
+  _session_id: string,
+  _opts?: { readonly after_id?: number | undefined; readonly limit?: number | undefined },
+): ControlEvent[] {
+  throw new Error('not implemented: tailSession (08-07 Task 1)');
+}
+
+/** Brokered human send + best-effort adapter delivery (CLI send = palette send). */
+export async function sendToSession(
+  _deps: SessionActionDeps,
+  _input: SendActionInput,
+  _now?: number,
+): Promise<SendActionResult> {
+  throw new Error('not implemented: sendToSession (08-07 Task 1)');
+}
+
+/** Brokered task delegation — target must declare tool_call (D-01). */
+export async function delegateToSession(
+  _deps: SessionActionDeps,
+  _input: DelegateActionInput,
+  _now?: number,
+): Promise<SendActionResult> {
+  throw new Error('not implemented: delegateToSession (08-07 Task 1)');
+}
+
+/** Issue a TTL-bound, budgeted grant + grant_issued audit event, atomically. */
+export function issueGrant(
+  _deps: SessionActionDeps,
+  _input: GrantActionInput,
+  _now?: number,
+): ControlGrant {
+  throw new Error('not implemented: issueGrant (08-07 Task 1)');
+}
+
+/** Revoke a grant + grant_revoked audit event, atomically. */
+export function revokeGrant(_deps: SessionActionDeps, _grant_id: string, _now?: number): ControlGrant {
+  throw new Error('not implemented: revokeGrant (08-07 Task 1)');
+}
+
+// ─── Command palette (08-07 Task 1, D-13/D-15) ──────────────────────────────
+
+/** Result of one palette command — frozen, UI renders it verbatim. */
+export type PaletteResult =
+  | { readonly ok: true; readonly message: string; readonly select_session_id?: string | undefined }
+  | { readonly ok: false; readonly code: string; readonly message: string };
+
+export interface PaletteContext {
+  readonly deps?: SessionCommandDeps | undefined;
+  readonly selected_session_id?: string | undefined;
+  readonly now?: number | undefined;
+}
+
+/** Usage lines for the palette commands (hints + error guidance). */
+export const PALETTE_USAGE: readonly string[] = Object.freeze([
+  'send <session> <message…>',
+  'delegate <session> <task…>',
+  'inspect [session]',
+  'tail [session]',
+  'grant <source> <target> [ttl] [max]',
+  'revoke <grant_id>',
+  'pause [session]',
+  'resume [session]',
+]);
+
+/** Tokenize one palette line into action + args. Unknown verbs are rejected. */
+export function parsePaletteCommand(
+  _line: string,
+):
+  | { readonly ok: true; readonly action: string; readonly args: readonly string[] }
+  | { readonly ok: false; readonly error: string } {
+  throw new Error('not implemented: parsePaletteCommand (08-07 Task 1)');
+}
+
+/**
+ * Execute one palette command through the SAME shared action functions the
+ * CLI uses (D-13). RelayError denials surface as `{ ok:false, code, message }`
+ * results — never silent degradation, never UI-local state mutation.
+ */
+export async function executePaletteCommand(
+  _line: string,
+  _ctx: PaletteContext = {},
+): Promise<PaletteResult> {
+  throw new Error('not implemented: executePaletteCommand (08-07 Task 1)');
 }
 
 // ─── Entry point ────────────────────────────────────────────────────────────

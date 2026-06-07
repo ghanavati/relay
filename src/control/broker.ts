@@ -50,6 +50,7 @@ import {
   type ControlMessage,
   type ControlRedaction,
   type ControlSenderKind,
+  type ControlSession,
 } from './types.js';
 
 // ─── Policy constants ───────────────────────────────────────────────────────
@@ -381,6 +382,33 @@ export class ControlBroker {
     opts: { capability?: ControlCapability; now?: number } = {},
   ): ControlMessage {
     return this.finishMessage(message_id, 'failed', opts, reason);
+  }
+
+  // ── Session control actions (08-07 Task 1, D-01/D-13) ────────────────────
+
+  /**
+   * Pause an active session. D-01: requires the session to DECLARE the
+   * `interrupt` capability — commands refuse unsupported operations instead
+   * of silently degrading.
+   */
+  pauseSession(_session_id: string, _now: number = Date.now()): ControlSession {
+    throw new Error('not implemented: pauseSession (08-07 Task 1)');
+  }
+
+  /**
+   * Resume an idle session. D-01: requires the session to DECLARE the
+   * `resume_send` capability.
+   */
+  resumeSession(_session_id: string, _now: number = Date.now()): ControlSession {
+    throw new Error('not implemented: resumeSession (08-07 Task 1)');
+  }
+
+  /**
+   * Delegate a task to another session through the brokered send path.
+   * The target must declare `tool_call` (it can act on delegated tasks).
+   */
+  delegateTask(_input: unknown, _now: number = Date.now()): ControlMessage {
+    throw new Error('not implemented: delegateTask (08-07 Task 1)');
   }
 
   // ── Internals ─────────────────────────────────────────────────────────────
