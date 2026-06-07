@@ -11,9 +11,15 @@ import * as assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { executeTuiCommand, gatherSnapshot } from './cmd-tui.js';
+import { buildCommandCentralView, executeTuiCommand, gatherSnapshot } from './cmd-tui.js';
 import type { CliIO } from './commands.js';
 import type { ControlSnapshot } from '../control/read-model.js';
+import type {
+  ControlEvent,
+  ControlGrant,
+  ControlMessage,
+  ControlSession,
+} from '../control/types.js';
 import { ControlSessionStore } from '../control/session-store.js';
 import { getDb } from '../runtime/store/db.js';
 
@@ -340,5 +346,226 @@ describe('executeTuiCommand --json', () => {
     assert.strictEqual(parsed.version, '2.0.0');
     assert.strictEqual(parsed.status.binary_version, '2.0.0');
     assert.strictEqual(parsed.status.providers.length, 4);
+  });
+});
+
+// ─── Command Central render shape (Task 3) ──────────────────────────────────
+//
+// buildCommandCentralView is PURE: fixtures below are plain frozen literals,
+// no store, no TTY, no provider network calls. The Ink components only map
+// this view model to Text nodes, so these tests pin the operator-console
+// shape for empty, active, blocked, and narrow-terminal snapshots.
+
+const T0 = 1_750_000_000_000;
+
+function fakeSession(
+  over: Partial<ControlSession> & { session_id: string },
+): ControlSession {
+  return {
+    session_id: over.session_id,
+    provider: over.provider ?? 'fake',
+    capabilities: over.capabilities ?? ['register', 'mailbox'],
+    state: over.state ?? 'active',
+    label: over.label ?? null,
+    workdir: over.workdir ?? null,
+    pid: over.pid ?? null,
+    metadata: over.metadata ?? null,
+    registered_at: over.registered_at ?? T0,
+    last_seen_at: over.last_seen_at ?? T0,
+  };
+}
+
+function fakeEvent(over: Partial<ControlEvent> & { id: number; session_id: string }): ControlEvent {
+  return {
+    id: over.id,
+    session_id: over.session_id,
+    event_type: over.event_type ?? 'session_updated',
+    source_session_id: over.source_session_id ?? null,
+    target_session_id: over.target_session_id ?? null,
+    payload: over.payload ?? {},
+    created_at: over.created_at ?? T0,
+  };
+}
+
+function fakeMessage(
+  over: Partial<ControlMessage> & { message_id: string; source_session_id: string; target_session_id: string },
+): ControlMessage {
+  return {
+    message_id: over.message_id,
+    source_session_id: over.source_session_id,
+    target_session_id: over.target_session_id,
+    sender_kind: over.sender_kind ?? 'human',
+    content: over.content ?? 'hello there',
+    content_hash: over.content_hash ?? 'a'.repeat(64),
+    status: over.status ?? 'queued',
+    redaction: over.redaction ?? { applied: false, rules: [] },
+    fail_reason: over.fail_reason ?? null,
+    expires_at: over.expires_at ?? null,
+    created_at: over.created_at ?? T0,
+    updated_at: over.updated_at ?? T0,
+  };
+}
+
+function fakeGrant(
+  over: Partial<ControlGrant> & { grant_id: string; source_session_id: string; target_session_id: string },
+): ControlGrant {
+  return {
+    grant_id: over.grant_id,
+    source_session_id: over.source_session_id,
+    target_session_id: over.target_session_id,
+    max_messages: over.max_messages ?? 5,
+    used_messages: over.used_messages ?? 0,
+    expires_at: over.expires_at ?? T0 + 60_000,
+    created_at: over.created_at ?? T0,
+    revoked_at: over.revoked_at ?? null,
+  };
+}
+
+function fakeControl(parts: Partial<ControlSnapshot>): ControlSnapshot {
+  return {
+    generated_at: parts.generated_at ?? T0,
+    sessions: parts.sessions ?? [],
+    selected_session: parts.selected_session ?? null,
+    events: parts.events ?? [],
+    inbox: parts.inbox ?? [],
+    grants: parts.grants ?? [],
+    pending_actions: parts.pending_actions ?? [],
+    blocked: parts.blocked ?? [],
+    audit: parts.audit ?? [],
+    providers: parts.providers ?? [],
+  };
+}
+
+describe('buildCommandCentralView — render shape (pure, no provider calls)', () => {
+  test('empty snapshot renders empty-state guidance in every pane', () => {
+    const view = buildCommandCentralView(fakeControl({}), { width: 160 });
+    assert.equal(view.narrow, false);
+    assert.equal(view.rail.length, 0);
+    assert.ok(view.rail_empty, 'rail must offer empty-state guidance');
+    assert.ok(view.main.empty, 'main pane must explain there is no selection');
+    assert.equal(view.main.events.length, 0);
+    assert.equal(view.inbox.length, 0);
+    assert.equal(view.grants.length, 0);
+    assert.equal(view.pending.length, 0);
+    assert.equal(view.audit.length, 0);
+    assert.ok(view.status.includes('sessions 0'));
+    assert.ok(view.hints.includes('q'), 'hints must document the quit key');
+  });
+
+  test('active snapshot maps sessions to badge rail rows with selection and queue rollups', () => {
+    const a = fakeSession({
+      session_id: 'sess-active',
+      state: 'active',
+      label: 'worker A',
+      capabilities: ['register', 'observe', 'mailbox'],
+    });
+    const b = fakeSession({ session_id: 'sess-idle', state: 'idle', provider: 'codex' });
+    const view = buildCommandCentralView(
+      fakeControl({
+        sessions: [a, b],
+        selected_session: a,
+        events: [
+          fakeEvent({ id: 1, session_id: 'sess-active', event_type: 'session_registered', created_at: T0 - 5000 }),
+          fakeEvent({ id: 2, session_id: 'sess-active', event_type: 'message_enqueued', created_at: T0 - 1000 }),
+        ],
+        inbox: [
+          fakeMessage({ message_id: 'm1', source_session_id: 'sess-idle', target_session_id: 'sess-active' }),
+        ],
+        grants: [
+          fakeGrant({ grant_id: 'g1', source_session_id: 'sess-idle', target_session_id: 'sess-active', used_messages: 2, max_messages: 5 }),
+        ],
+      }),
+      { width: 160 },
+    );
+
+    assert.equal(view.rail.length, 2);
+    assert.deepEqual(view.rail.map((r) => r.badge), ['ACT', 'IDL']);
+    assert.equal(view.rail[0]!.selected, true);
+    assert.equal(view.rail[1]!.selected, false);
+    assert.equal(view.rail[0]!.queued, 1, 'inbox items targeting the session roll up on its rail row');
+    assert.equal(view.rail[0]!.title, 'worker A');
+    assert.ok(view.main.header.includes('sess-active'));
+    assert.ok(view.main.header.includes('ACT'));
+    assert.ok(view.main.badges.includes('mbx'), 'capability badges use compact codes');
+    assert.ok(view.main.badges.includes('obs'));
+    assert.equal(view.main.empty, null);
+    assert.equal(view.main.events.length, 2);
+    assert.ok(view.main.events[0]!.includes('session_registered'));
+    assert.ok(view.main.events[1]!.includes('message_enqueued'));
+    assert.equal(view.inbox.length, 1);
+    assert.ok(view.inbox[0]!.includes('sess-idle'), 'inbox lines show the source session');
+    assert.equal(view.grants.length, 1);
+    assert.ok(view.grants[0]!.includes('2/5'), 'grant lines show used/max budget');
+    assert.ok(view.status.includes('sessions 2'));
+    assert.ok(view.status.includes('1 act'));
+    assert.ok(view.status.includes('inbox 1'));
+  });
+
+  test('blocked sessions are flagged on the rail and counted in the status strip', () => {
+    const x = fakeSession({ session_id: 'sess-x' });
+    const view = buildCommandCentralView(
+      fakeControl({
+        sessions: [x],
+        selected_session: x,
+        blocked: [
+          fakeEvent({ id: 9, session_id: 'sess-x', event_type: 'message_blocked', payload: { reason: 'grant_required' } }),
+        ],
+      }),
+      { width: 160 },
+    );
+    assert.equal(view.rail[0]!.blocked, true);
+    assert.ok(view.status.includes('blocked 1'));
+  });
+
+  test('narrow terminals flip to the stacked layout', () => {
+    const wide = buildCommandCentralView(fakeControl({}), { width: 160 });
+    const narrow = buildCommandCentralView(fakeControl({}), { width: 60 });
+    assert.equal(wide.narrow, false);
+    assert.equal(narrow.narrow, true);
+  });
+
+  test('event pane is display-capped to the newest lines', () => {
+    const sel = fakeSession({ session_id: 'sess-busy' });
+    const events: ControlEvent[] = [];
+    for (let i = 0; i < 17; i++) {
+      events.push(fakeEvent({ id: i + 1, session_id: 'sess-busy', event_type: 'session_updated', created_at: T0 - (17 - i) * 1000 }));
+    }
+    events.push(fakeEvent({ id: 99, session_id: 'sess-busy', event_type: 'session_ended', created_at: T0 }));
+    const view = buildCommandCentralView(
+      fakeControl({ sessions: [sel], selected_session: sel, events }),
+      { width: 160 },
+    );
+    assert.equal(view.main.events.length, 12, 'event pane caps at PANE_ROWS.events');
+    assert.ok(view.main.events[view.main.events.length - 1]!.includes('session_ended'), 'cap keeps the NEWEST events');
+  });
+
+  test('pending actions render request ids; audit strip is bounded newest first', () => {
+    const sel = fakeSession({ session_id: 'sess-p' });
+    const audit: ControlEvent[] = [];
+    for (let i = 0; i < 6; i++) {
+      audit.push(
+        fakeEvent({
+          id: 50 - i,
+          session_id: 'sess-p',
+          event_type: i === 0 ? 'grant_issued' : 'session_updated',
+          created_at: T0 - i * 1000,
+        }),
+      );
+    }
+    const view = buildCommandCentralView(
+      fakeControl({
+        sessions: [sel],
+        selected_session: sel,
+        pending_actions: [
+          fakeEvent({ id: 70, session_id: 'sess-p', event_type: 'control_requested', payload: { request_id: 'req-9', action: 'send' } }),
+        ],
+        audit,
+      }),
+      { width: 160 },
+    );
+    assert.equal(view.pending.length, 1);
+    assert.ok(view.pending[0]!.includes('req-9'));
+    assert.equal(view.audit.length, 4, 'audit strip caps at PANE_ROWS.audit');
+    assert.ok(view.audit[0]!.includes('grant_issued'), 'audit stays newest first');
   });
 });

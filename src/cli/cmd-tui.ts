@@ -64,6 +64,63 @@ interface Snapshot {
   };
 }
 
+// ─── Command Central view model (pure — render-shape tested without Ink) ────
+
+/** Pane layout flips to stacked below this terminal width. */
+export const NARROW_WIDTH = 110;
+
+/** Display caps per pane — the snapshot is already bounded; these keep the
+ * terminal scannable (Herdr-style rollups instead of scrollback walls). */
+export const PANE_ROWS = Object.freeze({
+  events: 12,
+  inbox: 6,
+  grants: 4,
+  pending: 4,
+  audit: 4,
+});
+
+/** One left-rail row: state badge + provider + queue rollup (D-15). */
+export interface RailRow {
+  readonly session_id: string;
+  readonly badge: 'ACT' | 'IDL' | 'END';
+  readonly blocked: boolean;
+  readonly provider: string;
+  readonly title: string;
+  readonly queued: number;
+  readonly selected: boolean;
+}
+
+/**
+ * Herdr-inspired Command Central view: left session rail, main selected
+ * session pane, right inbox/grants/pending queue, bottom audit/status strip
+ * and command hints. Pure data — the Ink components only map it to Text.
+ */
+export interface CommandCentralView {
+  readonly narrow: boolean;
+  readonly rail: readonly RailRow[];
+  readonly rail_empty: string | null;
+  readonly main: {
+    readonly header: string;
+    readonly badges: string;
+    readonly events: readonly string[];
+    readonly empty: string | null;
+  };
+  readonly inbox: readonly string[];
+  readonly grants: readonly string[];
+  readonly pending: readonly string[];
+  readonly audit: readonly string[];
+  readonly status: string;
+  readonly hints: string;
+}
+
+/** Build the Command Central view model from the shared ControlSnapshot. */
+export function buildCommandCentralView(
+  control: ControlSnapshot,
+  opts: { width: number },
+): CommandCentralView {
+  throw new Error(`not implemented (RED) — buildCommandCentralView(width=${opts.width})`);
+}
+
 /** Resolve the ndjson activity-log path the same way `relay memory tail` does. */
 function resolveLogPath(): string {
   const env = process.env['RELAY_LOG_PATH'];
