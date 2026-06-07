@@ -14,8 +14,8 @@
 | PAUL active command pack | PASS | Restored active commands under `~/.claude/commands/paul/` and framework workflows under `~/.claude/paul-framework/` from the archived PAUL pack. |
 | Worktree isolation | PASS | Implementation worktree exists at `.worktrees/phase-8-control` on branch `phase-8-control`; `.worktrees/` is ignored and committed on main. |
 | Baseline build/tests | PASS | In the implementation worktree, `npm run build` passed and `npm test` passed with 1371 tests, 0 failures. |
-| Baseline doctor | BLOCKED | `node dist/cli.js doctor --json` failed: LM Studio endpoint unreachable and hook-roundtrip failed; anthropic, auto-extract, lmstudio-loaded, and consent-files are missing. Resolve or explicitly accept before subagents. |
-| Grill/Codex plan review | NOT RUN | Run read-only Codex adversarial review over the Phase 8 GSD plan set before implementation. |
+| Baseline doctor | PASS | Re-run 2026-06-07 after LM Studio came online: lmstudio OK (8 models), hook-roundtrip OK. Remaining MISSING are optional and accepted: anthropic key (provider unused), auto-extract log (feature never run), lmstudio-loaded (no model in memory; tests don't require live inference), consent-files. |
+| Grill/Codex plan review | PASS | Codex credits exhausted; user directed Claude-as-reviewer. Adversarial review completed 2026-06-07 against all 12 attack angles, 4 findings fixed inline, VERDICT: APPROVED. Log: `08-CODEX-PLAN-REVIEW-LOG.md`. |
 
 ## Required Preflight Order
 
