@@ -98,6 +98,34 @@ Example: `relay run 'fix the failing test' --provider codex --model gpt-5.3-code
 Dispatch N tasks concurrently from a JSON spec. Flags: `--max-concurrency <N>` (default `4`), `--json`.
 Example: `relay parallel ./batch.json --max-concurrency 8`.
 
+## relay session
+
+Universal control layer (Phase 8): every supported LLM surface registers as a control session with an explicit capability set. Commands refuse unsupported operations (`CONTROL_DELIVERY_UNSUPPORTED`) instead of silently degrading. Exit codes: 0 success, 1 policy/runtime failure (RelayError code on stderr), 2 usage error.
+
+### relay session list
+List registered control sessions with provider, state, and declared capabilities. Flags: `--provider <claude-code|codex|lmstudio|openrouter|anthropic|fake>`, `--state <active|idle|ended>`, `--json`.
+Example: `relay session list --provider lmstudio --json`.
+
+### relay session inspect <session_id>
+Show one session's record, queued mailbox count, and recent audit events. Flags: `--json`.
+Example: `relay session inspect 4f1c... --json | jq .queued_count`.
+
+### relay session tail <session_id>
+Tail a session's audit events in append order. Flags: `--after <event_id>` (monotonic cursor — pass the last seen id to poll), `--limit <N>` (default `100`, max `1000`), `--json`.
+Example: `relay session tail 4f1c... --after 120 --json`.
+
+### relay session send <session_id> <text>
+Send a brokered, redacted, audited message to a session (sender_kind `human`). Delivery is attempted through the target provider's adapter when one is registered; otherwise the message waits honestly in the mailbox (`status: queued`). Flags: `--from <source_id>` (default `human:cli`), `--expires-in <duration>` (e.g. `30s`, `10m`, `2h`), `--no-deliver` (queue only), `--json`.
+Example: `relay session send 4f1c... 'stop after the current test run' --json`.
+
+### relay session grant <source_id> <target_id>
+Authorize LLM-initiated sends from source to target (D-04 — LLM sends are default-deny). TTL and message budget are always bounded. Flags: `--ttl <duration>` (default `15m`), `--max-messages <N>` (default `10`), `--json`.
+Example: `relay session grant lm-sess-a cc-sess-b --ttl 30m --max-messages 5`.
+
+### relay session revoke <grant_id>
+Revoke a grant immediately. Idempotent. Flags: `--json`.
+Example: `relay session revoke 9a2e...`.
+
 ## relay history / diff / compare
 
 ### relay history
