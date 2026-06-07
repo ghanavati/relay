@@ -30,12 +30,15 @@ import {
   ControlGrantSchema,
   ControlMessageSchema,
   ControlMessageStatusSchema,
+  ControlProviderSchema,
   ControlSendInputSchema,
   ControlSessionInputSchema,
   ControlSessionSchema,
+  ControlSessionStateSchema,
   DeliveryAttemptInputSchema,
   DeliveryAttemptSchema,
   type ControlEvent,
+  type ControlEventType,
   type ControlGrant,
   type ControlMessage,
   type ControlMessageStatus,
@@ -146,6 +149,11 @@ function sha256Hex(content: string): string {
   return createHash('sha256').update(content, 'utf8').digest('hex');
 }
 
+/** Clamp a read limit to [1, 1000] — same bound contract as tailEvents. */
+function clampLimit(limit: number): number {
+  return Math.min(Math.max(Math.trunc(limit), 1), 1000);
+}
+
 // ─── Store ──────────────────────────────────────────────────────────────────
 
 export class ControlSessionStore {
@@ -238,7 +246,11 @@ export class ControlSessionStore {
     return row ? this.rowToSession(row) : undefined;
   }
 
-  listSessions(filters?: { provider?: ControlProvider; state?: ControlSessionState }): ControlSession[] {
+  listSessions(filters?: {
+    provider?: ControlProvider;
+    state?: ControlSessionState;
+    limit?: number;
+  }): ControlSession[] {
     const clauses: string[] = [];
     const params: unknown[] = [];
     if (filters?.provider !== undefined) {
@@ -250,10 +262,45 @@ export class ControlSessionStore {
       params.push(filters.state);
     }
     const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+    let sql = `SELECT * FROM control_sessions ${where} ORDER BY last_seen_at DESC, session_id ASC`;
+    if (filters?.limit !== undefined) {
+      sql += ' LIMIT ?';
+      params.push(clampLimit(filters.limit));
+    }
     const rows = this.db
-      .prepare(`SELECT * FROM control_sessions ${where} ORDER BY last_seen_at DESC, session_id ASC`)
+      .prepare(sql)
       .all(...(params as Parameters<Database.Statement['all']>)) as SessionRow[];
     return rows.map((row) => this.rowToSession(row));
+  }
+
+  /**
+   * Bounded aggregate for the Command Central read model: session counts
+   * grouped by provider and state. Output is at most |providers| x |states|
+   * rows, so provider rollups stay correct even when the roster read is
+   * truncated by its limit. Rows are enum-validated like every other read.
+   */
+  countSessionsByProviderState(): Array<{
+    provider: ControlProvider;
+    state: ControlSessionState;
+    count: number;
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT provider, state, COUNT(*) AS count FROM control_sessions
+         GROUP BY provider, state ORDER BY provider ASC, state ASC`,
+      )
+      .all() as Array<{ provider: string; state: string; count: number }>;
+    return rows.map((row) => {
+      const provider = ControlProviderSchema.safeParse(row.provider);
+      const state = ControlSessionStateSchema.safeParse(row.state);
+      if (!provider.success || !state.success) {
+        throw corruptedRow(
+          'control session aggregate',
+          `unknown provider/state "${row.provider}"/"${row.state}"`,
+        );
+      }
+      return { provider: provider.data, state: state.data, count: row.count };
+    });
   }
 
   // ── Events (CONTROL-02, D-05) ─────────────────────────────────────────────
@@ -290,6 +337,37 @@ export class ControlSessionStore {
     const rows = this.db
       .prepare('SELECT * FROM control_events WHERE session_id = ? AND id > ? ORDER BY id ASC LIMIT ?')
       .all(session_id, after, limit) as EventRow[];
+    return rows.map((row) => this.rowToEvent(row));
+  }
+
+  /**
+   * Recent events, NEWEST first (id DESC) — the Command Central read-model
+   * feed for audit, blocked, pending-action, and selected-session panes.
+   * Optional session/event-type filters; the limit is always clamped, so
+   * every call is a bounded read (D-12). An explicitly empty `event_types`
+   * array selects nothing.
+   */
+  listRecentEvents(opts?: {
+    session_id?: string;
+    event_types?: readonly ControlEventType[];
+    limit?: number;
+  }): ControlEvent[] {
+    if (opts?.event_types !== undefined && opts.event_types.length === 0) return [];
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    if (opts?.session_id !== undefined) {
+      clauses.push('session_id = ?');
+      params.push(opts.session_id);
+    }
+    if (opts?.event_types !== undefined) {
+      clauses.push(`event_type IN (${opts.event_types.map(() => '?').join(', ')})`);
+      params.push(...opts.event_types);
+    }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+    params.push(clampLimit(opts?.limit ?? 100));
+    const rows = this.db
+      .prepare(`SELECT * FROM control_events ${where} ORDER BY id DESC LIMIT ?`)
+      .all(...(params as Parameters<Database.Statement['all']>)) as EventRow[];
     return rows.map((row) => this.rowToEvent(row));
   }
 
@@ -355,6 +433,24 @@ export class ControlSessionStore {
     return rows.map((row) => this.rowToMessage(row));
   }
 
+  /**
+   * Global queued backlog: queued, unexpired messages across ALL targets,
+   * oldest first (delivery order) — the Command Central inbox feed. The
+   * limit is always clamped, so this is a bounded read (D-12).
+   */
+  listQueuedMessages(opts?: { now?: number; limit?: number }): ControlMessage[] {
+    const now = opts?.now ?? Date.now();
+    const limit = clampLimit(opts?.limit ?? 100);
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM control_mailbox
+         WHERE status = 'queued' AND (expires_at IS NULL OR expires_at > ?)
+         ORDER BY created_at ASC, rowid ASC LIMIT ?`,
+      )
+      .all(now, limit) as MessageRow[];
+    return rows.map((row) => this.rowToMessage(row));
+  }
+
   markDelivered(message_id: string, now: number = Date.now()): ControlMessage {
     return this.transitionMessage(message_id, 'delivered', now);
   }
@@ -416,6 +512,28 @@ export class ControlSessionStore {
       )
       .get(source_session_id, target_session_id) as GrantRow | undefined;
     return row ? this.rowToGrant(row) : undefined;
+  }
+
+  /**
+   * Grants for the operator console, newest first, bounded (D-12). When
+   * `active_at` is given, only non-revoked grants whose TTL outlives that
+   * instant are returned. Budget exhaustion is NOT filtered — exhausted
+   * grants stay visible so the operator can revoke or re-issue them.
+   */
+  listGrants(opts?: { active_at?: number; limit?: number }): ControlGrant[] {
+    const params: unknown[] = [];
+    let where = '';
+    if (opts?.active_at !== undefined) {
+      where = 'WHERE revoked_at IS NULL AND expires_at > ?';
+      params.push(opts.active_at);
+    }
+    params.push(clampLimit(opts?.limit ?? 100));
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM control_grants ${where} ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+      )
+      .all(...(params as Parameters<Database.Statement['all']>)) as GrantRow[];
+    return rows.map((row) => this.rowToGrant(row));
   }
 
   /** Revoke a grant (idempotent — re-revoking returns the existing record). */
