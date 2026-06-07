@@ -41,6 +41,12 @@ import type {
   ControlSessionState,
 } from '../control/types.js';
 
+// Command Central palette — same shared action functions as `relay session ...`
+// (D-13). Defined next to the session command surface; re-exported here so the
+// TUI module is the single import point for Command Central behavior.
+export { executePaletteCommand, parsePaletteCommand, PALETTE_USAGE } from './cmd-session.js';
+export type { PaletteContext, PaletteResult } from './cmd-session.js';
+
 export interface TuiArgs {
   json: boolean;
   cwd: string;

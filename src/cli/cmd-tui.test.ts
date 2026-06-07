@@ -1,26 +1,45 @@
 /**
- * Smoke tests for `relay tui` — focused on the `--json` snapshot path.
+ * Tests for `relay tui` — the `--json` snapshot path, the pure Command
+ * Central render shape, and the command palette (08-07: palette actions and
+ * the grant approval queue route through the SAME broker/session-command
+ * functions as `relay session ...`, D-13/D-14).
  *
  * The interactive Ink renderer is intentionally not exercised here: spawning
  * a fake TTY in CI is brittle and the value of automated coverage there is
- * marginal versus the cost. We instead verify the data layer (gatherSnapshot)
- * and the `--json` exit path emit a well-formed Snapshot.
+ * marginal versus the cost. We instead verify the data layer (gatherSnapshot),
+ * the `--json` exit path, and the palette executor against the shared
+ * in-memory control store.
  */
+
+process.env['RELAY_DB_PATH'] = ':memory:';
+
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildCommandCentralView, executeTuiCommand, gatherSnapshot } from './cmd-tui.js';
+import {
+  buildCommandCentralView,
+  executePaletteCommand,
+  executeTuiCommand,
+  gatherSnapshot,
+  parsePaletteCommand,
+} from './cmd-tui.js';
 import type { CliIO } from './commands.js';
-import type { ControlSnapshot } from '../control/read-model.js';
+import { gatherControlSnapshot, type ControlSnapshot } from '../control/read-model.js';
 import type {
+  ControlCapability,
   ControlEvent,
   ControlGrant,
   ControlMessage,
   ControlSession,
+  ControlSessionState,
 } from '../control/types.js';
 import { ControlSessionStore } from '../control/session-store.js';
+import { ControlBroker } from '../control/broker.js';
+import { ControlAdapterRegistry } from '../control/adapter-registry.js';
+import { FakeControlAdapter } from '../control/adapters/fake.js';
+import { DEFAULT_HUMAN_SOURCE, executeSessionCommand } from './cmd-session.js';
 import { getDb } from '../runtime/store/db.js';
 
 interface CapturedIO {
@@ -567,5 +586,369 @@ describe('buildCommandCentralView — render shape (pure, no provider calls)', (
     assert.ok(view.pending[0]!.includes('req-9'));
     assert.equal(view.audit.length, 4, 'audit strip caps at PANE_ROWS.audit');
     assert.ok(view.audit[0]!.includes('grant_issued'), 'audit stays newest first');
+  });
+
+  test('hints document the ":" command palette key', () => {
+    const view = buildCommandCentralView(fakeControl({}), { width: 160 });
+    assert.ok(view.hints.includes(':'), 'palette key must be discoverable from the hints line');
+  });
+});
+
+// ─── Command palette actions through the broker (08-07 Task 1, D-13) ────────
+//
+// The palette executor calls the SAME shared action functions as the
+// `relay session ...` CLI: same broker policy, same audit events, same
+// RelayError codes. Fixtures are fake-provider sessions in the shared
+// :memory: control store — no TTY, no Ink, no provider network calls.
+
+let uidCounter = 0;
+function uid(prefix: string): string {
+  uidCounter += 1;
+  return `${prefix}-t${uidCounter}`;
+}
+
+interface PaletteRig {
+  store: ControlSessionStore;
+  broker: ControlBroker;
+  registry: ControlAdapterRegistry;
+  fake: FakeControlAdapter;
+  deps: { store: ControlSessionStore; broker: ControlBroker; registry: ControlAdapterRegistry };
+}
+
+function paletteRig(): PaletteRig {
+  const store = new ControlSessionStore();
+  const broker = new ControlBroker(store);
+  const registry = new ControlAdapterRegistry(store, broker);
+  const fake = new FakeControlAdapter();
+  registry.register(fake);
+  return { store, broker, registry, fake, deps: { store, broker, registry } };
+}
+
+function registerControl(
+  store: ControlSessionStore,
+  session_id: string,
+  capabilities: readonly ControlCapability[],
+  state: ControlSessionState = 'active',
+): void {
+  store.upsertSession({ session_id, provider: 'fake', capabilities, state }, T0);
+}
+
+describe('parsePaletteCommand', () => {
+  test('tokenizes action and args, tolerating extra whitespace', () => {
+    const parsed = parsePaletteCommand('  send  sess-a   hello   world ');
+    assert.deepEqual(parsed, { ok: true, action: 'send', args: ['sess-a', 'hello', 'world'] });
+  });
+
+  test('empty input is rejected with usage guidance', () => {
+    const parsed = parsePaletteCommand('   ');
+    assert.equal(parsed.ok, false);
+    if (!parsed.ok) assert.match(parsed.error, /send|usage/i);
+  });
+
+  test('unknown verbs are rejected and the error names the valid commands', () => {
+    const parsed = parsePaletteCommand('frobnicate x');
+    assert.equal(parsed.ok, false);
+    if (!parsed.ok) {
+      assert.match(parsed.error, /frobnicate/);
+      assert.match(parsed.error, /send/);
+      assert.match(parsed.error, /pause/);
+    }
+  });
+});
+
+describe('executePaletteCommand — broker-routed palette actions (D-13)', () => {
+  test('send queues through the broker and delivers via the adapter', async () => {
+    const rig = paletteRig();
+    const target = uid('pal-send');
+    registerControl(rig.store, target, ['register', 'mailbox']);
+    const result = await executePaletteCommand(`send ${target} hello from palette`, {
+      deps: rig.deps,
+    });
+    assert.equal(result.ok, true, `expected ok, got: ${JSON.stringify(result)}`);
+    const inbox = rig.fake.getInbox(target);
+    assert.equal(inbox.length, 1);
+    assert.equal(inbox[0]!.content, 'hello from palette');
+    assert.equal(inbox[0]!.sender_kind, 'human');
+    assert.equal(inbox[0]!.source_session_id, DEFAULT_HUMAN_SOURCE);
+    const events = rig.store.tailEvents(target);
+    assert.equal(events.filter((e) => e.event_type === 'message_enqueued').length, 1);
+    assert.equal(events.filter((e) => e.event_type === 'message_delivered').length, 1);
+  });
+
+  test('send to a target with no delivery capability fails with CONTROL_DELIVERY_UNSUPPORTED', async () => {
+    const rig = paletteRig();
+    const target = uid('pal-nocap');
+    registerControl(rig.store, target, ['register', 'observe']);
+    const result = await executePaletteCommand(`send ${target} hi`, { deps: rig.deps });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, 'CONTROL_DELIVERY_UNSUPPORTED');
+  });
+
+  test('send to an unregistered session fails with CONTROL_SESSION_NOT_FOUND', async () => {
+    const rig = paletteRig();
+    const result = await executePaletteCommand(`send ${uid('pal-ghost')} hi`, { deps: rig.deps });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, 'CONTROL_SESSION_NOT_FOUND');
+  });
+
+  test('send without content is INVALID_ARGS', async () => {
+    const rig = paletteRig();
+    const target = uid('pal-empty');
+    registerControl(rig.store, target, ['register', 'mailbox']);
+    const result = await executePaletteCommand(`send ${target}`, { deps: rig.deps });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, 'INVALID_ARGS');
+  });
+
+  test('inspect returns a summary and selects the session', async () => {
+    const rig = paletteRig();
+    const id = uid('pal-insp');
+    registerControl(rig.store, id, ['register', 'mailbox']);
+    const result = await executePaletteCommand(`inspect ${id}`, { deps: rig.deps });
+    assert.equal(result.ok, true, `expected ok, got: ${JSON.stringify(result)}`);
+    if (result.ok) {
+      assert.ok(result.message.includes(id));
+      assert.equal(result.select_session_id, id);
+    }
+  });
+
+  test('inspect with no argument falls back to the selected session', async () => {
+    const rig = paletteRig();
+    const id = uid('pal-insp-sel');
+    registerControl(rig.store, id, ['register', 'mailbox']);
+    const result = await executePaletteCommand('inspect', {
+      deps: rig.deps,
+      selected_session_id: id,
+    });
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.select_session_id, id);
+  });
+
+  test('inspect of an unknown session fails with CONTROL_SESSION_NOT_FOUND', async () => {
+    const rig = paletteRig();
+    const result = await executePaletteCommand(`inspect ${uid('pal-missing')}`, { deps: rig.deps });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, 'CONTROL_SESSION_NOT_FOUND');
+  });
+
+  test('tail reports the event count and selects the session', async () => {
+    const rig = paletteRig();
+    const id = uid('pal-tail');
+    registerControl(rig.store, id, ['register', 'mailbox']);
+    rig.store.appendEvent({ session_id: id, event_type: 'session_registered', payload: {} }, T0);
+    rig.store.appendEvent({ session_id: id, event_type: 'session_updated', payload: {} }, T0 + 1);
+    const result = await executePaletteCommand(`tail ${id}`, { deps: rig.deps });
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.match(result.message, /2 event/);
+      assert.equal(result.select_session_id, id);
+    }
+  });
+
+  test('grant issues a TTL-bound budgeted grant with the same audit event as the CLI', async () => {
+    const rig = paletteRig();
+    const source = uid('pal-gs');
+    const target = uid('pal-gt');
+    registerControl(rig.store, source, ['register', 'tool_call', 'mailbox']);
+    registerControl(rig.store, target, ['register', 'mailbox']);
+    const result = await executePaletteCommand(`grant ${source} ${target} 10m 3`, {
+      deps: rig.deps,
+    });
+    assert.equal(result.ok, true, `expected ok, got: ${JSON.stringify(result)}`);
+    const grant = rig.store.getGrant(source, target);
+    assert.ok(grant, 'grant persisted');
+    assert.equal(grant.max_messages, 3);
+    assert.equal(grant.expires_at - grant.created_at, 600_000);
+    const issued = rig.store.tailEvents(source).filter((e) => e.event_type === 'grant_issued');
+    assert.equal(issued.length, 1);
+    assert.equal(issued[0]!.payload['grant_id'], grant.grant_id);
+  });
+
+  test('grant defaults match the CLI defaults (15m TTL, 10 messages)', async () => {
+    const rig = paletteRig();
+    const source = uid('pal-gds');
+    const target = uid('pal-gdt');
+    registerControl(rig.store, source, ['register', 'mailbox']);
+    registerControl(rig.store, target, ['register', 'mailbox']);
+    const result = await executePaletteCommand(`grant ${source} ${target}`, { deps: rig.deps });
+    assert.equal(result.ok, true);
+    const grant = rig.store.getGrant(source, target);
+    assert.ok(grant);
+    assert.equal(grant.max_messages, 10);
+    assert.equal(grant.expires_at - grant.created_at, 900_000);
+  });
+
+  test('grant for an unknown source fails with CONTROL_SESSION_NOT_FOUND', async () => {
+    const rig = paletteRig();
+    const target = uid('pal-gkt');
+    registerControl(rig.store, target, ['register', 'mailbox']);
+    const result = await executePaletteCommand(`grant ${uid('pal-gks')} ${target}`, {
+      deps: rig.deps,
+    });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, 'CONTROL_SESSION_NOT_FOUND');
+  });
+
+  test('revoke revokes the grant and appends grant_revoked', async () => {
+    const rig = paletteRig();
+    const source = uid('pal-rs');
+    const target = uid('pal-rt');
+    registerControl(rig.store, source, ['register', 'mailbox']);
+    registerControl(rig.store, target, ['register', 'mailbox']);
+    const grant = rig.store.grant(
+      { source_session_id: source, target_session_id: target, ttl_ms: 60_000, max_messages: 5 },
+      Date.now(),
+    );
+    const result = await executePaletteCommand(`revoke ${grant.grant_id}`, { deps: rig.deps });
+    assert.equal(result.ok, true);
+    const revoked = rig.store.tailEvents(source).filter((e) => e.event_type === 'grant_revoked');
+    assert.equal(revoked.length, 1);
+    const check = rig.broker.checkGrant(source, target, Date.now());
+    assert.equal(check.allowed, false);
+  });
+
+  test('revoke of an unknown grant fails with RUN_NOT_FOUND', async () => {
+    const rig = paletteRig();
+    const result = await executePaletteCommand(`revoke ${uid('pal-rmiss')}`, { deps: rig.deps });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, 'RUN_NOT_FOUND');
+  });
+
+  test('delegate frames the task and delivers to a tool_call-capable target', async () => {
+    const rig = paletteRig();
+    const target = uid('pal-del');
+    registerControl(rig.store, target, ['register', 'mailbox', 'tool_call']);
+    const result = await executePaletteCommand(`delegate ${target} review the failing build`, {
+      deps: rig.deps,
+    });
+    assert.equal(result.ok, true, `expected ok, got: ${JSON.stringify(result)}`);
+    const inbox = rig.fake.getInbox(target);
+    assert.equal(inbox.length, 1);
+    assert.ok(inbox[0]!.content.includes('review the failing build'));
+    assert.ok(inbox[0]!.content.includes('[delegated task]'), 'delegation is visibly framed');
+    const enqueued = rig.store.tailEvents(target).filter((e) => e.event_type === 'message_enqueued');
+    assert.equal(enqueued.length, 1, 'delegation flows through the brokered audit path');
+  });
+
+  test('delegate to a session without tool_call fails clearly and is audited (D-01)', async () => {
+    const rig = paletteRig();
+    const target = uid('pal-del-nocap');
+    registerControl(rig.store, target, ['register', 'mailbox']);
+    const result = await executePaletteCommand(`delegate ${target} do the thing`, {
+      deps: rig.deps,
+    });
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.code, 'CONTROL_DELIVERY_UNSUPPORTED');
+      assert.match(result.message, /tool_call/);
+    }
+    const blocked = rig.store
+      .tailEvents(DEFAULT_HUMAN_SOURCE)
+      .filter((e) => e.event_type === 'message_blocked' && e.target_session_id === target);
+    assert.equal(blocked.length, 1, 'refused delegation is audited like other denials');
+    assert.equal(rig.fake.getInbox(target).length, 0, 'nothing was delivered');
+  });
+
+  test('pause flips an interrupt-capable active session to idle with an audit event', async () => {
+    const rig = paletteRig();
+    const id = uid('pal-pause');
+    registerControl(rig.store, id, ['register', 'mailbox', 'interrupt']);
+    const result = await executePaletteCommand(`pause ${id}`, { deps: rig.deps });
+    assert.equal(result.ok, true, `expected ok, got: ${JSON.stringify(result)}`);
+    assert.equal(rig.store.getSession(id)?.state, 'idle');
+    const updated = rig.store
+      .tailEvents(id)
+      .filter((e) => e.event_type === 'session_updated' && e.payload['action'] === 'pause');
+    assert.equal(updated.length, 1);
+  });
+
+  test('pause without the interrupt capability fails clearly (D-01)', async () => {
+    const rig = paletteRig();
+    const id = uid('pal-pause-nocap');
+    registerControl(rig.store, id, ['register', 'mailbox']);
+    const result = await executePaletteCommand(`pause ${id}`, { deps: rig.deps });
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.code, 'CONTROL_DELIVERY_UNSUPPORTED');
+      assert.match(result.message, /interrupt/);
+    }
+    assert.equal(rig.store.getSession(id)?.state, 'active', 'state unchanged on refusal');
+  });
+
+  test('pause of an unregistered session fails with CONTROL_SESSION_NOT_FOUND', async () => {
+    const rig = paletteRig();
+    const result = await executePaletteCommand(`pause ${uid('pal-pause-miss')}`, {
+      deps: rig.deps,
+    });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, 'CONTROL_SESSION_NOT_FOUND');
+  });
+
+  test('pause of an already-idle session is INVALID_ARGS', async () => {
+    const rig = paletteRig();
+    const id = uid('pal-pause-idle');
+    registerControl(rig.store, id, ['register', 'mailbox', 'interrupt'], 'idle');
+    const result = await executePaletteCommand(`pause ${id}`, { deps: rig.deps });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, 'INVALID_ARGS');
+  });
+
+  test('pause falls back to the selected session when no argument is given', async () => {
+    const rig = paletteRig();
+    const id = uid('pal-pause-sel');
+    registerControl(rig.store, id, ['register', 'mailbox', 'interrupt']);
+    const result = await executePaletteCommand('pause', {
+      deps: rig.deps,
+      selected_session_id: id,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(rig.store.getSession(id)?.state, 'idle');
+  });
+
+  test('resume flips a resume_send-capable idle session back to active', async () => {
+    const rig = paletteRig();
+    const id = uid('pal-resume');
+    registerControl(rig.store, id, ['register', 'mailbox', 'resume_send'], 'idle');
+    const result = await executePaletteCommand(`resume ${id}`, { deps: rig.deps });
+    assert.equal(result.ok, true, `expected ok, got: ${JSON.stringify(result)}`);
+    assert.equal(rig.store.getSession(id)?.state, 'active');
+    const updated = rig.store
+      .tailEvents(id)
+      .filter((e) => e.event_type === 'session_updated' && e.payload['action'] === 'resume');
+    assert.equal(updated.length, 1);
+  });
+
+  test('resume without the resume_send capability fails clearly (D-01)', async () => {
+    const rig = paletteRig();
+    const id = uid('pal-resume-nocap');
+    registerControl(rig.store, id, ['register', 'mailbox'], 'idle');
+    const result = await executePaletteCommand(`resume ${id}`, { deps: rig.deps });
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.code, 'CONTROL_DELIVERY_UNSUPPORTED');
+      assert.match(result.message, /resume_send/);
+    }
+    assert.equal(rig.store.getSession(id)?.state, 'idle', 'state unchanged on refusal');
+  });
+
+  test('palette failures and CLI failures carry the same RelayError code', async () => {
+    const rig = paletteRig();
+    const target = uid('pal-eq');
+    registerControl(rig.store, target, ['register', 'observe']);
+    const palette = await executePaletteCommand(`send ${target} hi`, { deps: rig.deps });
+    assert.equal(palette.ok, false);
+    const cap = makeIO();
+    const code = await executeSessionCommand(
+      { action: 'send', positionals: [target, 'hi'], json: true },
+      cap.io,
+      rig.deps,
+    );
+    assert.equal(code, 1);
+    if (!palette.ok) {
+      assert.ok(
+        cap.stderr.join('').includes(palette.code),
+        'CLI stderr names the same RelayError code the palette surfaced',
+      );
+    }
   });
 });
