@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-05-18)
 
 ## Current Position
 
-Phase: 1 of 7 (Schema Cleanup)
-Plan: 1 of 1 in current phase (Complete)
-Status: Phase complete — ready for verification
+Phase: 8 (Universal LLM Control + Command Central, v0.3)
+Plan: 5 of 9 complete (08-01, 08-02, 08-03, 08-04, 08-06; 08-07 in flight)
+Status: Executing — optimized 5-round schedule in `.worktrees/phase-8-control`
 Last activity: 2026-06-07
 
-Progress: [███████░░░] 67%
+Progress: [█████░░░░░] 56% (phase 8)
 
 ## Performance Metrics
 
@@ -57,6 +57,10 @@ Progress: [███████░░░] 67%
 *Updated after each plan completion*
 | Phase 01-schema-cleanup P01 | 1h35m | 5 tasks | 14 files |
 | Phase 08 P01 | 18min | 2 tasks | 9 files |
+| Phase 08 P02 | 21min | 2 tasks | 6 files |
+| Phase 08 P03 | 23min | 2 tasks | 8 files |
+| Phase 08 P04 | 44min | 3 tasks | 15 files |
+| Phase 08 P06 | 25min | 3 tasks | 5 files |
 | Phase 08 P02 | 13min | 2 tasks | 6 files |
 
 ## Accumulated Context
@@ -114,6 +118,6 @@ Top blast-radius pitfalls to enforce at gate (research §4):
 
 ## Session Continuity
 
-Last session: 2026-06-07T20:53:30.000Z
-Stopped at: Completed 08-02-PLAN.md
+Last session: 2026-06-07 (orchestrated parallel wave execution)
+Stopped at: Round 3 complete (08-03 ∥ 08-04 ∥ 08-06) — full suite 1670/1670; 08-07 in flight; next {08-05 ∥ 08-08} then 08-09
 Resume file: None
