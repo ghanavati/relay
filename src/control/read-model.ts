@@ -96,12 +96,132 @@ export interface GatherControlSnapshotOptions {
 
 // ─── Read model ─────────────────────────────────────────────────────────────
 
+interface SnapshotParts {
+  generated_at: number;
+  sessions: ControlSession[];
+  selected_session: ControlSession | null;
+  events: ControlEvent[];
+  inbox: ControlMessage[];
+  grants: ControlGrant[];
+  pending_actions: ControlEvent[];
+  blocked: ControlEvent[];
+  audit: ControlEvent[];
+  providers: ProviderStatusSummary[];
+}
+
+/** Freeze the snapshot and every collection. Items are already frozen. */
+function freezeSnapshot(parts: SnapshotParts): ControlSnapshot {
+  return Object.freeze({
+    generated_at: parts.generated_at,
+    sessions: Object.freeze(parts.sessions),
+    selected_session: parts.selected_session,
+    events: Object.freeze(parts.events),
+    inbox: Object.freeze(parts.inbox),
+    grants: Object.freeze(parts.grants),
+    pending_actions: Object.freeze(parts.pending_actions),
+    blocked: Object.freeze(parts.blocked),
+    audit: Object.freeze(parts.audit),
+    providers: Object.freeze(parts.providers),
+  });
+}
+
 /** Well-defined zero state — used when the control store is unreachable. */
 export function emptyControlSnapshot(now: number = Date.now()): ControlSnapshot {
-  throw new Error(`not implemented (RED) — emptyControlSnapshot(${now})`);
+  return freezeSnapshot({
+    generated_at: now,
+    sessions: [],
+    selected_session: null,
+    events: [],
+    inbox: [],
+    grants: [],
+    pending_actions: [],
+    blocked: [],
+    audit: [],
+    providers: [],
+  });
+}
+
+/**
+ * D-14 pending actions: `control_requested` events with no `control_approved`
+ * / `control_denied` / `control_executed` event naming the same
+ * `payload.request_id` inside the bounded scan window. Requested events
+ * WITHOUT a request_id can never be matched — they stay visible for operator
+ * attention until they age out of the scan window.
+ */
+function resolvePendingActions(store: ControlSessionStore, scanLimit: number): ControlEvent[] {
+  const lifecycle = store.listRecentEvents({
+    event_types: ['control_requested', 'control_approved', 'control_denied', 'control_executed'],
+    limit: scanLimit,
+  });
+  const resolved = new Set<string>();
+  for (const event of lifecycle) {
+    if (event.event_type === 'control_requested') continue;
+    const requestId = event.payload['request_id'];
+    if (typeof requestId === 'string') resolved.add(requestId);
+  }
+  return lifecycle.filter((event) => {
+    if (event.event_type !== 'control_requested') return false;
+    const requestId = event.payload['request_id'];
+    return typeof requestId !== 'string' || !resolved.has(requestId);
+  });
+}
+
+/** Fold the bounded provider/state aggregate into per-provider rollups. */
+function summarizeProviders(store: ControlSessionStore): ProviderStatusSummary[] {
+  const byProvider = new Map<
+    ControlProvider,
+    { total: number; active: number; idle: number; ended: number }
+  >();
+  for (const row of store.countSessionsByProviderState()) {
+    const entry = byProvider.get(row.provider) ?? { total: 0, active: 0, idle: 0, ended: 0 };
+    entry.total += row.count;
+    entry[row.state] += row.count;
+    byProvider.set(row.provider, entry);
+  }
+  return [...byProvider.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([provider, counts]) => Object.freeze({ provider, ...counts }));
 }
 
 /** Gather one bounded, immutable ControlSnapshot through store helpers. */
 export function gatherControlSnapshot(opts: GatherControlSnapshotOptions = {}): ControlSnapshot {
-  throw new Error(`not implemented (RED) — gatherControlSnapshot(${Object.keys(opts).join(',')})`);
+  const store = opts.store ?? new ControlSessionStore();
+  const now = opts.now ?? Date.now();
+  const limits: ControlSnapshotLimits = { ...DEFAULT_CONTROL_SNAPSHOT_LIMITS, ...opts.limits };
+
+  const sessions = store.listSessions({ limit: limits.sessions });
+
+  let selected: ControlSession | null;
+  if (opts.selected_session_id !== undefined) {
+    // Resolve outside the bounded roster too — a selected session must not
+    // disappear just because newer sessions pushed it past the roster limit.
+    selected =
+      sessions.find((s) => s.session_id === opts.selected_session_id) ??
+      store.getSession(opts.selected_session_id) ??
+      null;
+  } else {
+    selected = sessions[0] ?? null;
+  }
+
+  // Newest N events fetched DESC, then reversed (fresh array) so the pane
+  // reads chronologically like a terminal transcript.
+  const events =
+    selected === null
+      ? []
+      : store
+          .listRecentEvents({ session_id: selected.session_id, limit: limits.events })
+          .reverse();
+
+  return freezeSnapshot({
+    generated_at: now,
+    sessions,
+    selected_session: selected,
+    events,
+    inbox: store.listQueuedMessages({ now, limit: limits.inbox }),
+    grants: store.listGrants({ active_at: now, limit: limits.grants }),
+    pending_actions: resolvePendingActions(store, limits.pending_scan),
+    blocked: store.listRecentEvents({ event_types: ['message_blocked'], limit: limits.blocked }),
+    audit: store.listRecentEvents({ limit: limits.audit }),
+    providers: summarizeProviders(store),
+  });
 }
