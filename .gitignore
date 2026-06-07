@@ -2,6 +2,7 @@ node_modules/
 dist/
 *.tsbuildinfo
 .relay/
+.worktrees/
 .claude/worktrees/
 .DS_Store
 *.log
