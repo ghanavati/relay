@@ -19,13 +19,64 @@ export class AnthropicRunner implements WorkerRunner {
     messages: readonly ChatTurn[],
     opts: RunMessagesOptions
   ): Promise<WorkerResult> {
-    void messages;
-    void opts;
-    throw new Error("not implemented (08-04 RED)");
+    const apiKey = process.env["ANTHROPIC_API_KEY"];
+    if (!apiKey) {
+      return {
+        status: "error",
+        output: "",
+        duration_ms: 0,
+        exit_code: null,
+        error: makeError("PROVIDER_NOT_CONFIGURED", "ANTHROPIC_API_KEY is not set", false),
+      };
+    }
+    const model = opts.model.trim();
+    if (!model) {
+      return {
+        status: "error",
+        output: "",
+        duration_ms: 0,
+        exit_code: null,
+        error: makeError(
+          "INVALID_ARGS",
+          "model is required for anthropic transcript continuation — no hardcoded fallbacks.",
+          false
+        ),
+      };
+    }
+
+    const systemParts: string[] = [];
+    const turns: Array<{ role: "user" | "assistant"; content: string }> = [];
+    for (const turn of messages) {
+      if (turn.role === "system") systemParts.push(turn.content);
+      else turns.push({ role: turn.role, content: turn.content });
+    }
+    if (turns.length === 0) {
+      return {
+        status: "error",
+        output: "",
+        duration_ms: 0,
+        exit_code: null,
+        error: makeError(
+          "INVALID_ARGS",
+          "anthropic transcript must contain at least one user/assistant turn",
+          false
+        ),
+      };
+    }
+
+    return this.post(
+      apiKey,
+      {
+        model,
+        max_tokens: 4096,
+        ...(systemParts.length > 0 ? { system: systemParts.join("\n\n") } : {}),
+        messages: turns,
+      },
+      opts.timeout_ms
+    );
   }
 
   async run(task: WorkerTask): Promise<WorkerResult> {
-    const startedAt = Date.now();
     const apiKey = process.env["ANTHROPIC_API_KEY"];
 
     if (!apiKey) {
@@ -47,8 +98,30 @@ export class AnthropicRunner implements WorkerRunner {
       };
     }
 
+    return this.post(
+      apiKey,
+      {
+        model: task.model,
+        max_tokens: 4096,
+        // Anthropic Messages API uses a top-level `system` field, not a system
+        // role inside `messages`. When contextPrefix is set, callers MUST pass
+        // the bare task in `task.task` (NOT the concatenated finalTask).
+        ...(task.contextPrefix ? { system: task.contextPrefix } : {}),
+        messages: [{ role: "user", content: task.task }],
+      },
+      task.timeout_ms
+    );
+  }
+
+  /** Shared Messages API POST + parse + timeout handling for run()/runMessages(). */
+  private async post(
+    apiKey: string,
+    body: Record<string, unknown>,
+    timeout_ms: number
+  ): Promise<WorkerResult> {
+    const startedAt = Date.now();
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), task.timeout_ms);
+    const timer = setTimeout(() => controller.abort(), timeout_ms);
 
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -58,15 +131,7 @@ export class AnthropicRunner implements WorkerRunner {
           "anthropic-version": "2023-06-01",
           "content-type": "application/json",
         },
-        body: JSON.stringify({
-          model: task.model,
-          max_tokens: 4096,
-          // Anthropic Messages API uses a top-level `system` field, not a system
-          // role inside `messages`. When contextPrefix is set, callers MUST pass
-          // the bare task in `task.task` (NOT the concatenated finalTask).
-          ...(task.contextPrefix ? { system: task.contextPrefix } : {}),
-          messages: [{ role: "user", content: task.task }],
-        }),
+        body: JSON.stringify(body),
         signal: controller.signal,
       });
       clearTimeout(timer);
@@ -120,7 +185,7 @@ export class AnthropicRunner implements WorkerRunner {
           output: "",
           duration_ms,
           exit_code: null,
-          error: makeError("TIMEOUT", `Anthropic request timed out after ${task.timeout_ms}ms`, true),
+          error: makeError("TIMEOUT", `Anthropic request timed out after ${timeout_ms}ms`, true),
         };
       }
       return {

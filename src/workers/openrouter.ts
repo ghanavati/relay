@@ -1,7 +1,11 @@
 import type { WorkerTask, WorkerResult } from "./types.js";
 import { makeError } from "../errors.js";
 import { getOpenRouterApiKey } from "../config/providers.js";
-import { GenericHttpRunner } from "./generic-http-runner.js";
+import {
+  GenericHttpRunner,
+  type ChatTurn,
+  type RunMessagesOptions,
+} from "./generic-http-runner.js";
 
 function parseOpenRouterMessageContent(content: unknown): string {
   if (Array.isArray(content)) {
@@ -45,13 +49,26 @@ export class OpenRouterRunner extends GenericHttpRunner {
     });
   }
 
+  /** Transcript continuation (Phase 8 / CONTROL-09) — same key gate as run(). */
   override async runMessages(
-    messages: Parameters<GenericHttpRunner["runMessages"]>[0],
-    opts: Parameters<GenericHttpRunner["runMessages"]>[1]
+    messages: readonly ChatTurn[],
+    opts: RunMessagesOptions
   ): Promise<WorkerResult> {
-    void messages;
-    void opts;
-    throw new Error("not implemented (08-04 RED)");
+    const apiKey = getOpenRouterApiKey();
+    if (!apiKey) {
+      return {
+        status: "error",
+        output: "",
+        duration_ms: 0,
+        exit_code: null,
+        error: makeError(
+          "PROVIDER_NOT_CONFIGURED",
+          "OPENROUTER_API_KEY is not set. Add it to your MCP config env.",
+          false
+        ),
+      };
+    }
+    return super.runMessages(messages, opts);
   }
 
   async run(task: WorkerTask): Promise<WorkerResult> {
