@@ -51,13 +51,43 @@ export class GenericHttpRunner implements WorkerRunner {
     messages: readonly ChatTurn[],
     opts: RunMessagesOptions
   ): Promise<WorkerResult> {
-    void messages;
-    void opts;
-    throw new Error("not implemented (08-04 RED)");
+    const model = opts.model.trim();
+    if (!model) {
+      return {
+        status: "error",
+        output: "",
+        duration_ms: 0,
+        exit_code: null,
+        error: makeError(
+          "INVALID_ARGS",
+          `model is required for ${this.config.providerName} transcript continuation — no hardcoded fallbacks.`,
+          false
+        ),
+      };
+    }
+    if (this.config.requestFormat === "responses") {
+      return {
+        status: "error",
+        output: "",
+        duration_ms: 0,
+        exit_code: null,
+        error: makeError(
+          "UNSUPPORTED",
+          `${this.config.providerName} uses the responses request format, which has no multi-turn transcript body in this runner.`,
+          false
+        ),
+      };
+    }
+
+    const body = {
+      model,
+      messages: messages.map((turn) => ({ role: turn.role, content: turn.content })),
+      stream: false,
+    };
+    return this.dispatch(body, model, opts.timeout_ms);
   }
 
   async run(task: WorkerTask): Promise<WorkerResult> {
-    const startedAt = Date.now();
     const model = task.model?.trim();
     if (this.config.requiresModel && !model) {
       return {
@@ -72,9 +102,6 @@ export class GenericHttpRunner implements WorkerRunner {
         ),
       };
     }
-
-    const url = this.config.getUrl();
-    const headers = this.config.getHeaders(model ?? "");
 
     // When contextPrefix is set, callers MUST pass the bare task in `task.task`
     // (NOT the concatenated finalTask) — the prefix is injected here as a
@@ -99,8 +126,21 @@ export class GenericHttpRunner implements WorkerRunner {
             stream: false,
           };
 
+    return this.dispatch(body, model ?? "", task.timeout_ms);
+  }
+
+  /** Shared POST + parse + timeout handling for run() and runMessages(). */
+  private async dispatch(
+    body: Record<string, unknown>,
+    model: string,
+    timeout_ms: number
+  ): Promise<WorkerResult> {
+    const startedAt = Date.now();
+    const url = this.config.getUrl();
+    const headers = this.config.getHeaders(model);
+
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), task.timeout_ms);
+    const timer = setTimeout(() => controller.abort(), timeout_ms);
 
     try {
       const res = await fetch(url, {
@@ -148,7 +188,7 @@ export class GenericHttpRunner implements WorkerRunner {
           output: "",
           duration_ms,
           exit_code: null,
-          error: makeError("TIMEOUT", `${this.config.providerName} timed out after ${task.timeout_ms}ms`, true),
+          error: makeError("TIMEOUT", `${this.config.providerName} timed out after ${timeout_ms}ms`, true),
         };
       }
       const message = this.config.fetchFailureMessage
