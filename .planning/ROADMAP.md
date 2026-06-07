@@ -141,7 +141,7 @@ Phases execute in numeric order within the active milestone. Phase 8 is the firs
 | 5. Conflict Detection | 0/TBD | Not started | - |
 | 6. Delta Extraction | 0/TBD | Not started | - |
 | 7. Figma REST Tools | 0/TBD | Not started | - |
-| 8. Universal LLM Control + Command Central | 5/9 | In Progress (08-07 in flight) |  |
+| 8. Universal LLM Control + Command Central | 6/9 | Paused (user hold before 08-05/08-08) |  |
 
 ---
 
