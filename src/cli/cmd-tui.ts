@@ -1,19 +1,25 @@
 /**
- * `relay tui` — interactive terminal UI dashboard (Ink-based).
+ * `relay tui` — Command Central: terminal-native operator console (Ink).
  *
- * Three-panel layout:
- *   - Top:    last 10 entries from the relay activity log (~/.relay/relay.ndjson)
- *   - Middle: top-5 memory recall preview for the current workdir
- *   - Bottom: status bar (version, db path, hook installed?, providers reachable)
+ * Herdr-inspired layout over the shared ControlSnapshot read model (D-11,
+ * D-12, D-15, CONTROL-11/12/17):
+ *   - Left:   session rail with state badges (ACT/IDL/END), blocked flags,
+ *             and queued-message rollups.
+ *   - Main:   selected session pane — capability badges + bounded event tail.
+ *   - Right:  inbox/grants/pending-actions queue.
+ *   - Bottom: audit strip, control status rollup, legacy health line, hints.
  *
- * Auto-refreshes every 5 seconds. Key bindings:
- *   q | Ctrl-C → quit
- *   r          → manual refresh
+ * Auto-refreshes every 5 seconds (one bounded gather per tick). Key bindings:
+ *   q | Ctrl-C → quit · r → refresh · j/k or ↑/↓ → select session
  *
- * `--json` flag emits ONE snapshot of the same data structure (no Ink, no
- * refresh loop) and exits — useful for scripting or CI smoke tests.
+ * `--json` emits ONE bounded snapshot of the same data (no Ink, no refresh
+ * loop) and exits — the machine-readable Command Central state contract.
+ * Legacy health fields (status, recent_activity, recall_preview) stay
+ * top-level for scripts; the shared control read model lives under `control`.
  *
  * Uses `React.createElement` (no JSX) to avoid adding JSX support to tsconfig.
+ * Layout content is computed by the PURE buildCommandCentralView, so render
+ * shape is testable without a TTY or provider network calls.
  */
 
 import type { CliIO } from './commands.js';
@@ -27,6 +33,13 @@ import {
   gatherControlSnapshot,
   type ControlSnapshot,
 } from '../control/read-model.js';
+import type {
+  ControlCapability,
+  ControlEvent,
+  ControlGrant,
+  ControlMessage,
+  ControlSessionState,
+} from '../control/types.js';
 
 export interface TuiArgs {
   json: boolean;
@@ -113,12 +126,165 @@ export interface CommandCentralView {
   readonly hints: string;
 }
 
+const STATE_BADGES: Record<ControlSessionState, RailRow['badge']> = {
+  active: 'ACT',
+  idle: 'IDL',
+  ended: 'END',
+};
+
+/** Compact per-capability codes — badges over verbose text (D-15). */
+const CAPABILITY_BADGES: Record<ControlCapability, string> = {
+  register: 'reg',
+  observe: 'obs',
+  tail: 'tail',
+  context_inject: 'inj',
+  mailbox: 'mbx',
+  resume_send: 'res',
+  live_stdin: 'stdin',
+  interrupt: 'int',
+  fork: 'fork',
+  spawn: 'spawn',
+  tool_call: 'tool',
+};
+
+/** Compact relative time for a non-negative millisecond delta. */
+function formatAgoMs(delta: number): string {
+  const d = Math.max(0, delta);
+  if (d < 60_000) return `${Math.max(1, Math.round(d / 1000))}s`;
+  if (d < 3_600_000) return `${Math.round(d / 60_000)}m`;
+  if (d < 86_400_000) return `${Math.round(d / 3_600_000)}h`;
+  return `${Math.round(d / 86_400_000)}d`;
+}
+
+function shortId(id: string): string {
+  return id.length > 10 ? id.slice(0, 10) : id;
+}
+
+function truncate(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, Math.max(1, max - 1))}…`;
+}
+
+function formatEventLine(event: ControlEvent, now: number): string {
+  const ago = formatAgoMs(now - event.created_at).padStart(4);
+  const arrow =
+    event.source_session_id !== null && event.target_session_id !== null
+      ? ` ${shortId(event.source_session_id)}→${shortId(event.target_session_id)}`
+      : '';
+  return `${ago} ${event.event_type}${arrow}`;
+}
+
+function formatInboxLine(message: ControlMessage, now: number): string {
+  const kind = message.sender_kind === 'human' ? 'h' : 'l';
+  const preview = truncate(message.content.replace(/\s+/g, ' '), 24);
+  return (
+    `[${kind}] ${shortId(message.source_session_id)}→${shortId(message.target_session_id)}` +
+    ` ${formatAgoMs(now - message.created_at)} "${preview}"`
+  );
+}
+
+function formatGrantLine(grant: ControlGrant, now: number): string {
+  return (
+    `${shortId(grant.source_session_id)}→${shortId(grant.target_session_id)}` +
+    ` ${grant.used_messages}/${grant.max_messages} ttl ${formatAgoMs(grant.expires_at - now)}`
+  );
+}
+
+function formatPendingLine(event: ControlEvent, now: number): string {
+  const requestId =
+    typeof event.payload['request_id'] === 'string' ? event.payload['request_id'] : '(no id)';
+  const action = typeof event.payload['action'] === 'string' ? ` ${event.payload['action']}` : '';
+  return `${formatAgoMs(now - event.created_at)} ${requestId}${action} @${shortId(event.session_id)}`;
+}
+
 /** Build the Command Central view model from the shared ControlSnapshot. */
 export function buildCommandCentralView(
   control: ControlSnapshot,
   opts: { width: number },
 ): CommandCentralView {
-  throw new Error(`not implemented (RED) — buildCommandCentralView(width=${opts.width})`);
+  const now = control.generated_at;
+  const selectedId = control.selected_session?.session_id;
+
+  const queuedByTarget = new Map<string, number>();
+  for (const message of control.inbox) {
+    queuedByTarget.set(
+      message.target_session_id,
+      (queuedByTarget.get(message.target_session_id) ?? 0) + 1,
+    );
+  }
+  // message_blocked events are source-anchored (broker D-05) — the flagged
+  // session is the denied actor.
+  const blockedSessions = new Set(control.blocked.map((event) => event.session_id));
+
+  const rail = control.sessions.map(
+    (session): RailRow =>
+      Object.freeze({
+        session_id: session.session_id,
+        badge: STATE_BADGES[session.state],
+        blocked: blockedSessions.has(session.session_id),
+        provider: session.provider,
+        title: truncate(session.label ?? session.session_id, 20),
+        queued: queuedByTarget.get(session.session_id) ?? 0,
+        selected: session.session_id === selectedId,
+      }),
+  );
+
+  const selected = control.selected_session;
+  // control.events is the chronological newest-N tail; keep the TAIL end
+  // when display-capping so the newest events stay visible.
+  const eventLines =
+    selected === null
+      ? []
+      : control.events.slice(-PANE_ROWS.events).map((event) => formatEventLine(event, now));
+  const main = Object.freeze({
+    header:
+      selected === null
+        ? ''
+        : `${truncate(selected.session_id, 40)} · ${selected.provider} · ` +
+          `${STATE_BADGES[selected.state]}${blockedSessions.has(selected.session_id) ? ' !BLK' : ''}`,
+    badges:
+      selected === null
+        ? ''
+        : selected.capabilities.map((capability) => CAPABILITY_BADGES[capability]).join(' '),
+    events: Object.freeze(eventLines),
+    empty:
+      selected === null
+        ? 'no session selected — sessions appear here once adapters register'
+        : eventLines.length === 0
+          ? 'no events yet for this session'
+          : null,
+  });
+
+  const activeCount = control.sessions.filter((s) => s.state === 'active').length;
+  const budgetUsed = control.grants.reduce((sum, g) => sum + g.used_messages, 0);
+  const budgetMax = control.grants.reduce((sum, g) => sum + g.max_messages, 0);
+  const status =
+    `sessions ${control.sessions.length} (${activeCount} act) · inbox ${control.inbox.length}` +
+    ` · blocked ${control.blocked.length} · pending ${control.pending_actions.length}` +
+    ` · grants ${control.grants.length} (budget ${budgetUsed}/${budgetMax})`;
+
+  return Object.freeze({
+    narrow: opts.width < NARROW_WIDTH,
+    rail: Object.freeze(rail),
+    rail_empty:
+      rail.length === 0 ? 'no sessions registered — waiting for adapters to register' : null,
+    main,
+    inbox: Object.freeze(
+      control.inbox.slice(0, PANE_ROWS.inbox).map((message) => formatInboxLine(message, now)),
+    ),
+    grants: Object.freeze(
+      control.grants.slice(0, PANE_ROWS.grants).map((grant) => formatGrantLine(grant, now)),
+    ),
+    pending: Object.freeze(
+      control.pending_actions
+        .slice(0, PANE_ROWS.pending)
+        .map((event) => formatPendingLine(event, now)),
+    ),
+    audit: Object.freeze(
+      control.audit.slice(0, PANE_ROWS.audit).map((event) => formatEventLine(event, now)),
+    ),
+    status,
+    hints: 'q quit · r refresh · j/k or ↑/↓ select session',
+  });
 }
 
 /** Resolve the ndjson activity-log path the same way `relay memory tail` does. */
@@ -264,8 +430,10 @@ export async function gatherSnapshot(args: {
 }
 
 /**
- * Render the Ink dashboard. Imported lazily so the `--json` path doesn't pay
- * the Ink/React load cost (and so we can avoid Ink entirely under CI).
+ * Render the Command Central Ink layout. Imported lazily so the `--json`
+ * path doesn't pay the Ink/React load cost (and so we can avoid Ink under
+ * CI). All pane CONTENT comes from buildCommandCentralView — components
+ * here only map the view model to Boxes and Texts.
  */
 async function renderInk(args: TuiArgs): Promise<number> {
   // Lazy imports — Ink + React are only loaded when the interactive UI runs.
@@ -274,70 +442,113 @@ async function renderInk(args: TuiArgs): Promise<number> {
   const ce = React.createElement;
   const { useState, useEffect, useCallback } = React;
 
-  function formatAgo(ts: number): string {
-    const delta = Math.max(0, Date.now() - ts);
-    if (delta < 60_000) return `${Math.max(1, Math.round(delta / 1000))}s`;
-    if (delta < 3_600_000) return `${Math.round(delta / 60_000)}m`;
-    if (delta < 86_400_000) return `${Math.round(delta / 3_600_000)}h`;
-    return `${Math.round(delta / 86_400_000)}d`;
+  function badgeColor(badge: RailRow['badge']): string {
+    return badge === 'ACT' ? 'green' : badge === 'IDL' ? 'yellow' : 'gray';
   }
 
-  function ActivityPanel(props: { entries: ActivityEntry[] }): React.ReactElement {
-    const rows = props.entries.length === 0
-      ? [ce(Text, { key: 'empty', dimColor: true }, 'no activity logged yet')]
-      : props.entries.map((e, i) =>
-          ce(
-            Box,
-            { key: i, flexDirection: 'row' },
-            ce(Text, { color: 'gray' }, `${formatAgo(e.ts).padStart(4)} ago  `),
-            ce(Text, { color: 'cyan' }, e.event.padEnd(20)),
+  /** Left rail — session roster with state badges and queue rollups. */
+  function RailPane(props: { view: CommandCentralView }): React.ReactElement {
+    const { rail, rail_empty, narrow } = props.view;
+    const rows =
+      rail.length === 0
+        ? [ce(Text, { key: 'empty', dimColor: true }, rail_empty ?? 'no sessions')]
+        : rail.map((row) =>
             ce(
-              Text,
-              { color: e.ok === false ? 'red' : e.ok === true ? 'green' : 'gray' },
-              e.ok === undefined ? '-' : e.ok ? 'ok' : 'fail',
+              Box,
+              { key: row.session_id, flexDirection: 'row' },
+              ce(Text, { color: 'cyan' }, row.selected ? '▸ ' : '  '),
+              ce(Text, { color: badgeColor(row.badge), bold: row.selected }, row.badge),
+              ce(Text, { color: 'red' }, row.blocked ? '!' : ' '),
+              ce(Text, { color: 'blue' }, ` ${row.provider.padEnd(11)}`),
+              ce(Text, { bold: row.selected }, row.title),
+              row.queued > 0 ? ce(Text, { color: 'magenta' }, ` ✉${row.queued}`) : null,
             ),
-          ),
-        );
+          );
+    return ce(
+      Box,
+      {
+        flexDirection: 'column',
+        borderStyle: 'round',
+        borderColor: 'gray',
+        paddingX: 1,
+        width: narrow ? undefined : 40,
+      },
+      ce(Text, { bold: true }, 'Sessions'),
+      ...rows,
+    );
+  }
+
+  /** Main pane — selected session header, capability badges, event tail. */
+  function MainPane(props: { view: CommandCentralView }): React.ReactElement {
+    const { main } = props.view;
+    const body: React.ReactNode[] = [];
+    if (main.header !== '') {
+      body.push(ce(Text, { key: 'header', bold: true, color: 'cyan' }, main.header));
+      body.push(ce(Text, { key: 'badges', dimColor: true }, main.badges));
+    }
+    if (main.empty !== null) {
+      body.push(ce(Text, { key: 'empty', dimColor: true }, main.empty));
+    }
+    main.events.forEach((line, i) =>
+      body.push(ce(Text, { key: `ev-${i}`, color: 'gray' }, line)),
+    );
+    return ce(
+      Box,
+      { flexDirection: 'column', borderStyle: 'round', borderColor: 'gray', paddingX: 1, flexGrow: 1 },
+      ce(Text, { bold: true }, 'Selected session'),
+      ...body,
+    );
+  }
+
+  /** Right pane — queued inbox, active grants, pending control actions. */
+  function QueuePane(props: { view: CommandCentralView }): React.ReactElement {
+    const { inbox, grants, pending, narrow } = props.view;
+    const section = (
+      title: string,
+      lines: readonly string[],
+      emptyText: string,
+      keyPrefix: string,
+    ): React.ReactNode[] => [
+      ce(Text, { key: `${keyPrefix}-title`, bold: true }, title),
+      ...(lines.length === 0
+        ? [ce(Text, { key: `${keyPrefix}-empty`, dimColor: true }, emptyText)]
+        : lines.map((line, i) => ce(Text, { key: `${keyPrefix}-${i}`, color: 'gray' }, line))),
+    ];
+    return ce(
+      Box,
+      {
+        flexDirection: 'column',
+        borderStyle: 'round',
+        borderColor: 'gray',
+        paddingX: 1,
+        width: narrow ? undefined : 46,
+      },
+      ...section('Inbox (queued)', inbox, 'empty', 'inbox'),
+      ...section('Grants', grants, 'none active', 'grants'),
+      ...section('Pending actions', pending, 'none', 'pending'),
+    );
+  }
+
+  /** Bottom strip — audit tail, control rollup, legacy health, hints. */
+  function BottomStrip(props: {
+    view: CommandCentralView;
+    snapshot: Snapshot;
+    lastRefreshMs: number;
+  }): React.ReactElement {
+    const s = props.snapshot.status;
+    const providers = s.providers.map((p) => `${p.name}=${p.status}`).join('  ');
+    const auditLines =
+      props.view.audit.length === 0
+        ? [ce(Text, { key: 'audit-empty', dimColor: true }, 'no audit events yet')]
+        : props.view.audit.map((line, i) =>
+            ce(Text, { key: `audit-${i}`, color: 'gray' }, line),
+          );
     return ce(
       Box,
       { flexDirection: 'column', borderStyle: 'round', borderColor: 'gray', paddingX: 1 },
-      ce(Text, { bold: true }, 'Recent activity (last 10)'),
-      ...rows,
-    );
-  }
-
-  function RecallPanel(props: { entries: MemoryPreview[]; cwd: string }): React.ReactElement {
-    const rows = props.entries.length === 0
-      ? [ce(Text, { key: 'empty', dimColor: true }, 'no memories scored above threshold for this workdir')]
-      : props.entries.map((m, i) => {
-          const summary = m.content.replace(/\s+/g, ' ').slice(0, 70);
-          return ce(
-            Box,
-            { key: i, flexDirection: 'column' },
-            ce(
-              Box,
-              { flexDirection: 'row' },
-              ce(Text, { color: 'yellow' }, m.score.toFixed(3).padStart(6)),
-              ce(Text, { color: 'blue' }, `  ${m.memory_type.padEnd(8)}`),
-              ce(Text, { color: 'gray' }, `  ${m.memory_id.slice(0, 8)}`),
-            ),
-            ce(Text, null, `  ${summary}`),
-          );
-        });
-    return ce(
-      Box,
-      { flexDirection: 'column', borderStyle: 'round', borderColor: 'gray', paddingX: 1, marginTop: 1 },
-      ce(Text, { bold: true }, `Recall preview (top 5, cwd=${props.cwd})`),
-      ...rows,
-    );
-  }
-
-  function StatusBar(props: { snapshot: Snapshot; lastRefreshMs: number }): React.ReactElement {
-    const s = props.snapshot.status;
-    const providers = s.providers.map(p => `${p.name}=${p.status}`).join('  ');
-    return ce(
-      Box,
-      { flexDirection: 'column', borderStyle: 'round', borderColor: 'gray', paddingX: 1, marginTop: 1 },
+      ce(Text, { bold: true }, 'Audit'),
+      ...auditLines,
+      ce(Text, { color: 'yellow' }, props.view.status),
       ce(
         Box,
         { flexDirection: 'row' },
@@ -346,45 +557,76 @@ async function renderInk(args: TuiArgs): Promise<number> {
         ce(
           Text,
           { color: s.hook_installed ? 'green' : 'gray' },
-          `hook=${s.hook_installed ? 'installed' : 'missing'}`,
+          `hook=${s.hook_installed ? 'installed' : 'missing'}  `,
         ),
+        ce(Text, { color: 'gray' }, providers),
       ),
-      ce(Text, { color: 'gray' }, providers),
-      ce(Text, { dimColor: true }, `last refresh ${formatAgo(props.lastRefreshMs)} ago  -  q quit  -  r refresh`),
+      ce(
+        Text,
+        { dimColor: true },
+        `${props.view.hints} · last refresh ${formatAgoMs(Date.now() - props.lastRefreshMs)} ago`,
+      ),
     );
   }
 
   function App(): React.ReactElement {
     const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
     const [lastRefresh, setLastRefresh] = useState<number>(Date.now());
+    const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
     const { exit } = useApp();
 
-    const refresh = useCallback(async () => {
-      const snap = await gatherSnapshot({ cwd: args.cwd, version: args.version });
+    const refresh = useCallback(async (sel: string | undefined) => {
+      const snap = await gatherSnapshot({
+        cwd: args.cwd,
+        version: args.version,
+        ...(sel !== undefined ? { selected_session_id: sel } : {}),
+      });
       setSnapshot(snap);
       setLastRefresh(Date.now());
     }, []);
 
     useEffect(() => {
-      void refresh();
-      const id = setInterval(() => { void refresh(); }, 5000);
+      void refresh(selectedId);
+      const id = setInterval(() => { void refresh(selectedId); }, 5000);
       return () => clearInterval(id);
-    }, [refresh]);
+    }, [refresh, selectedId]);
 
     useInput((input, key) => {
       if (input === 'q' || (key.ctrl && input === 'c')) exit();
-      if (input === 'r') void refresh();
+      if (input === 'r') void refresh(selectedId);
+      const down = input === 'j' || key.downArrow;
+      const up = input === 'k' || key.upArrow;
+      if (snapshot !== null && (down || up)) {
+        const ids = snapshot.control.sessions.map((s) => s.session_id);
+        if (ids.length === 0) return;
+        const current = snapshot.control.selected_session?.session_id;
+        const idx = current === undefined ? -1 : ids.indexOf(current);
+        const nextIdx = Math.min(
+          Math.max(idx === -1 ? 0 : idx + (down ? 1 : -1), 0),
+          ids.length - 1,
+        );
+        const next = ids[nextIdx];
+        if (next !== undefined && next !== current) setSelectedId(next);
+      }
     });
 
     if (!snapshot) {
-      return ce(Box, { padding: 1 }, ce(Text, null, 'Loading relay snapshot...'));
+      return ce(Box, { padding: 1 }, ce(Text, null, 'Loading Command Central...'));
     }
+
+    const view = buildCommandCentralView(snapshot.control, {
+      width: process.stdout.columns ?? 120,
+    });
+    const panes = [
+      ce(RailPane, { key: 'rail', view }),
+      ce(MainPane, { key: 'main', view }),
+      ce(QueuePane, { key: 'queue', view }),
+    ];
     return ce(
       Box,
       { flexDirection: 'column' },
-      ce(ActivityPanel, { entries: snapshot.recent_activity }),
-      ce(RecallPanel, { entries: snapshot.recall_preview, cwd: args.cwd }),
-      ce(StatusBar, { snapshot, lastRefreshMs: lastRefresh }),
+      ce(Box, { flexDirection: view.narrow ? 'column' : 'row' }, ...panes),
+      ce(BottomStrip, { view, snapshot, lastRefreshMs: lastRefresh }),
     );
   }
 
