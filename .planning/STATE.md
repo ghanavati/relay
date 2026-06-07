@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-05-18)
 ## Current Position
 
 Phase: 8 (Universal LLM Control + Command Central, v0.3)
-Plan: 5 of 9 complete (08-01, 08-02, 08-03, 08-04, 08-06; 08-07 in flight)
-Status: Executing — optimized 5-round schedule in `.worktrees/phase-8-control`
-Last activity: 2026-06-07
+Plan: 6 of 9 complete (08-01..04, 08-06, 08-07)
+Status: PAUSED by user after 08-07 — remaining: {08-05 ∥ 08-08} then 08-09
+Last activity: 2026-06-08
 
-Progress: [█████░░░░░] 56% (phase 8)
+Progress: [███████░░░] 67% (phase 8)
 
 ## Performance Metrics
 
@@ -118,6 +118,6 @@ Top blast-radius pitfalls to enforce at gate (research §4):
 
 ## Session Continuity
 
-Last session: 2026-06-07 (orchestrated parallel wave execution)
-Stopped at: Round 3 complete (08-03 ∥ 08-04 ∥ 08-06) — full suite 1670/1670; 08-07 in flight; next {08-05 ∥ 08-08} then 08-09
+Last session: 2026-06-08 (orchestrated parallel wave execution, paused on user hold)
+Stopped at: 08-07 complete + verified — full suite 1718/1718. PAUSED before round 4. Next: {08-05 ∥ 08-08} parallel (write sets disjoint, build-lock protocol), then 08-09 close-out. Follow-up flagged: cmd-session.ts (970) + broker.ts (985) exceed 800-line cap — split in a refactor plan. User direction pending on terminal-vs-web Command Central emphasis; delegation-first framing (grants/audit are edge-gates, not the product).
 Resume file: None
