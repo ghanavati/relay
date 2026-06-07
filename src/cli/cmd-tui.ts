@@ -200,7 +200,11 @@ function formatPendingLine(event: ControlEvent, now: number): string {
   const requestId =
     typeof event.payload['request_id'] === 'string' ? event.payload['request_id'] : '(no id)';
   const action = typeof event.payload['action'] === 'string' ? ` ${event.payload['action']}` : '';
-  return `${formatAgoMs(now - event.created_at)} ${requestId}${action} @${shortId(event.session_id)}`;
+  // Approval-window expiry (broker requestGrant payload, D-14): mark stale
+  // requests so the operator knows approve will refuse them.
+  const expires = event.payload['expires_at'];
+  const expired = typeof expires === 'number' && expires <= now ? ' exp!' : '';
+  return `${formatAgoMs(now - event.created_at)} ${requestId}${action}${expired} @${shortId(event.session_id)}`;
 }
 
 /** Build the Command Central view model from the shared ControlSnapshot. */

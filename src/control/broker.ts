@@ -35,7 +35,7 @@
  * Synchronous like the store — better-sqlite3 calls are never awaited.
  */
 import type Database from 'better-sqlite3';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
 import { getDb } from '../runtime/store/db.js';
@@ -190,9 +190,11 @@ export const DEFAULT_CONTROL_REQUEST_TTL_MS = 10 * 60_000;
 
 /** Who is approving/denying a control request. The session id of an llm
  * approver must be caller-bound by the tool layer, never model-supplied. */
-export type ControlApprover =
-  | { readonly kind: 'human' }
-  | { readonly kind: 'llm'; readonly session_id: string };
+const ControlApproverSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('human') }).strict(),
+  z.object({ kind: z.literal('llm'), session_id: idField }).strict(),
+]);
+export type ControlApprover = z.infer<typeof ControlApproverSchema>;
 
 export type ControlRequestStatus = 'pending' | 'approved' | 'denied' | 'executed' | 'expired';
 
@@ -202,6 +204,57 @@ export interface ControlRequestState {
   readonly status: ControlRequestStatus;
   readonly resolution: ControlEvent | null;
 }
+
+const RequestGrantInputSchema = z
+  .object({
+    request_id: idField.optional(),
+    source_session_id: idField,
+    target_session_id: idField,
+    ttl_ms: z.number().int().positive(),
+    max_messages: z.number().int().min(1).max(10_000),
+    reason: z.string().min(1).max(500).optional(),
+    expires_in_ms: z.number().int().positive().optional(),
+  })
+  .strict()
+  .readonly();
+export type RequestGrantInput = z.infer<typeof RequestGrantInputSchema>;
+
+const ApproveGrantRequestInputSchema = z
+  .object({
+    request_id: idField,
+    approver: ControlApproverSchema,
+    ttl_ms: z.number().int().positive().optional(),
+    max_messages: z.number().int().min(1).max(10_000).optional(),
+  })
+  .strict()
+  .readonly();
+export type ApproveGrantRequestInput = z.infer<typeof ApproveGrantRequestInputSchema>;
+
+const DenyControlRequestInputSchema = z
+  .object({
+    request_id: idField,
+    denied_by: ControlApproverSchema,
+    reason: z.string().min(1).max(500).optional(),
+  })
+  .strict()
+  .readonly();
+export type DenyControlRequestInput = z.infer<typeof DenyControlRequestInputSchema>;
+
+/**
+ * The payload requestGrant persists in control_requested events. Re-validated
+ * on read (approval time) — hand-edited rows must fail loudly, not issue
+ * grants with garbage TTLs/budgets.
+ */
+const GrantRequestPayloadSchema = z
+  .object({
+    request_id: idField,
+    action: z.literal('grant'),
+    ttl_ms: z.number().int().positive(),
+    max_messages: z.number().int().min(1).max(10_000),
+    expires_at: z.number().int().positive(),
+    reason: z.string().optional(),
+  })
+  .passthrough();
 
 // ─── Results and internals ──────────────────────────────────────────────────
 
@@ -498,31 +551,259 @@ export class ControlBroker {
   /**
    * Record a model's request for a source → target grant as a pending
    * `control_requested` event (requested → approved/denied lifecycle).
+   * Source-anchored: the requester's tail shows what it asked for. The
+   * payload carries everything approval needs — requested TTL, message
+   * budget, and the approval window (`expires_at`).
    */
-  requestGrant(_input: unknown, _now: number = Date.now()): ControlEvent {
-    throw new Error('not implemented: requestGrant (08-07 Task 2)');
-  }
-
-  /** Resolve one request's lifecycle state by request_id. */
-  getControlRequest(_request_id: string, _now: number = Date.now()): ControlRequestState | undefined {
-    throw new Error('not implemented: getControlRequest (08-07 Task 2)');
+  requestGrant(input: unknown, now: number = Date.now()): ControlEvent {
+    const parsed = boundary(RequestGrantInputSchema, input, 'control grant request');
+    if (parsed.source_session_id === parsed.target_session_id) {
+      throw toRelayException(
+        makeError(
+          'CONTROL_SELF_SEND_BLOCKED',
+          `session ${parsed.source_session_id} cannot request a grant to itself ` +
+            '(self-sends are blocked, so a self-grant authorizes nothing)',
+          false,
+        ),
+      );
+    }
+    for (const [role, session_id] of [
+      ['source', parsed.source_session_id],
+      ['target', parsed.target_session_id],
+    ] as const) {
+      if (!this.store.getSession(session_id)) {
+        throw toRelayException(
+          makeError('CONTROL_SESSION_NOT_FOUND', `${role} session ${session_id} is not registered`, false),
+        );
+      }
+    }
+    const request_id = parsed.request_id ?? randomUUID();
+    return this.store.appendEvent(
+      {
+        session_id: parsed.source_session_id,
+        event_type: 'control_requested',
+        source_session_id: parsed.source_session_id,
+        target_session_id: parsed.target_session_id,
+        payload: {
+          request_id,
+          action: 'grant',
+          ttl_ms: parsed.ttl_ms,
+          max_messages: parsed.max_messages,
+          expires_at: now + (parsed.expires_in_ms ?? DEFAULT_CONTROL_REQUEST_TTL_MS),
+          ...(parsed.reason !== undefined ? { reason: parsed.reason } : {}),
+        },
+      },
+      now,
+    );
   }
 
   /**
-   * Approve a pending grant request: issue the grant (TTL + budget), audit
-   * grant_issued + control_approved. D-14: a model can never approve a
-   * request where it is the requesting source.
+   * Resolve one request's lifecycle state by request_id. Unresolved requests
+   * past their approval window read as 'expired'. When multiple resolution
+   * events exist (approved then executed), the LATEST wins.
    */
-  approveGrantRequest(_input: unknown, _now: number = Date.now()): ControlGrant {
-    throw new Error('not implemented: approveGrantRequest (08-07 Task 2)');
+  getControlRequest(request_id: string, now: number = Date.now()): ControlRequestState | undefined {
+    const lifecycle = this.store.listControlRequestEvents(request_id);
+    const request = lifecycle.find((event) => event.event_type === 'control_requested');
+    if (!request) return undefined;
+    const resolution =
+      [...lifecycle]
+        .reverse()
+        .find(
+          (event) =>
+            event.event_type === 'control_approved' ||
+            event.event_type === 'control_denied' ||
+            event.event_type === 'control_executed',
+        ) ?? null;
+    let status: ControlRequestStatus;
+    if (resolution !== null) {
+      status =
+        resolution.event_type === 'control_approved'
+          ? 'approved'
+          : resolution.event_type === 'control_denied'
+            ? 'denied'
+            : 'executed';
+    } else {
+      const expires = request.payload['expires_at'];
+      status = typeof expires === 'number' && expires <= now ? 'expired' : 'pending';
+    }
+    return Object.freeze({ request, status, resolution });
+  }
+
+  /**
+   * Approve a pending grant request: issue the grant (requested TTL + budget,
+   * human-overridable) and audit grant_issued + control_approved in ONE
+   * transaction.
+   *
+   * D-14 — a model can NEVER approve a request where it is the requesting
+   * source. The blocked attempt is audited (source-anchored message_blocked —
+   * the closed event-type set has no dedicated type, and the blocked pane is
+   * exactly where a self-escalation attempt belongs) and the request STAYS
+   * pending for the human. Approving an expired request auto-denies it so the
+   * queue self-cleans.
+   */
+  approveGrantRequest(input: unknown, now: number = Date.now()): ControlGrant {
+    const parsed = boundary(ApproveGrantRequestInputSchema, input, 'control approve');
+    const state = this.requireUnresolvedRequest(parsed.request_id, now);
+    const source = state.request.source_session_id;
+    const target = state.request.target_session_id;
+    if (source === null || target === null) {
+      throw toRelayException(
+        makeError(
+          'CONFIG_ERROR',
+          `control request ${parsed.request_id} is corrupted: missing source/target session`,
+          false,
+        ),
+      );
+    }
+
+    if (parsed.approver.kind === 'llm' && parsed.approver.session_id === source) {
+      this.store.appendEvent(
+        {
+          session_id: source,
+          event_type: 'message_blocked',
+          source_session_id: source,
+          target_session_id: target,
+          payload: { reason: 'self_approval_blocked', request_id: parsed.request_id },
+        },
+        now,
+      );
+      throw toRelayException(
+        makeError(
+          'CONTROL_SELF_SEND_BLOCKED',
+          `session ${source} cannot approve its own control request ${parsed.request_id} — ` +
+            'models must not approve their own grants (D-14)',
+          false,
+        ),
+      );
+    }
+
+    const payload = GrantRequestPayloadSchema.safeParse(state.request.payload);
+    if (!payload.success) {
+      throw toRelayException(
+        makeError(
+          'CONFIG_ERROR',
+          `control request ${parsed.request_id} payload is corrupted: ` +
+            `${payload.error.issues[0]?.message ?? 'schema mismatch'}`,
+          false,
+        ),
+      );
+    }
+
+    if (state.status === 'expired') {
+      this.store.appendEvent(
+        {
+          session_id: source,
+          event_type: 'control_denied',
+          source_session_id: source,
+          target_session_id: target,
+          payload: { request_id: parsed.request_id, reason: 'expired', denied_by: 'system' },
+        },
+        now,
+      );
+      throw toRelayException(
+        makeError(
+          'CONTROL_GRANT_EXPIRED',
+          `control request ${parsed.request_id} expired at ${payload.data.expires_at} ` +
+            'and can no longer be approved',
+          false,
+        ),
+      );
+    }
+
+    for (const [role, session_id] of [
+      ['source', source],
+      ['target', target],
+    ] as const) {
+      if (!this.store.getSession(session_id)) {
+        throw toRelayException(
+          makeError('CONTROL_SESSION_NOT_FOUND', `${role} session ${session_id} is not registered`, false),
+        );
+      }
+    }
+
+    const approved_by = parsed.approver.kind === 'human' ? 'human' : parsed.approver.session_id;
+    const txn = this.db.transaction((): ControlGrant => {
+      const grant = this.store.grant(
+        {
+          source_session_id: source,
+          target_session_id: target,
+          ttl_ms: parsed.ttl_ms ?? payload.data.ttl_ms,
+          max_messages: parsed.max_messages ?? payload.data.max_messages,
+        },
+        now,
+      );
+      this.store.appendEvent(
+        {
+          session_id: source,
+          event_type: 'grant_issued',
+          source_session_id: source,
+          target_session_id: target,
+          payload: {
+            grant_id: grant.grant_id,
+            max_messages: grant.max_messages,
+            expires_at: grant.expires_at,
+          },
+        },
+        now,
+      );
+      this.store.appendEvent(
+        {
+          session_id: source,
+          event_type: 'control_approved',
+          source_session_id: source,
+          target_session_id: target,
+          payload: {
+            request_id: parsed.request_id,
+            grant_id: grant.grant_id,
+            approved_by,
+            approved_by_kind: parsed.approver.kind,
+          },
+        },
+        now,
+      );
+      return grant;
+    });
+    return txn();
   }
 
   /** Deny a pending control request with a visible control_denied event. */
-  denyControlRequest(_input: unknown, _now: number = Date.now()): ControlEvent {
-    throw new Error('not implemented: denyControlRequest (08-07 Task 2)');
+  denyControlRequest(input: unknown, now: number = Date.now()): ControlEvent {
+    const parsed = boundary(DenyControlRequestInputSchema, input, 'control deny');
+    const state = this.requireUnresolvedRequest(parsed.request_id, now);
+    const denied_by = parsed.denied_by.kind === 'human' ? 'human' : parsed.denied_by.session_id;
+    return this.store.appendEvent(
+      {
+        session_id: state.request.session_id,
+        event_type: 'control_denied',
+        source_session_id: state.request.source_session_id,
+        target_session_id: state.request.target_session_id,
+        payload: {
+          request_id: parsed.request_id,
+          reason: parsed.reason ?? 'denied',
+          denied_by,
+          denied_by_kind: parsed.denied_by.kind,
+        },
+      },
+      now,
+    );
   }
 
   // ── Internals ─────────────────────────────────────────────────────────────
+
+  /** Approve/deny share this gate: the request must exist and be unresolved. */
+  private requireUnresolvedRequest(request_id: string, now: number): ControlRequestState {
+    const state = this.getControlRequest(request_id, now);
+    if (!state) {
+      throw toRelayException(
+        makeError('RUN_NOT_FOUND', `control request ${request_id} not found`, false),
+      );
+    }
+    if (state.resolution !== null) {
+      throw invalidArgs(`control request ${request_id} is already resolved (${state.status})`);
+    }
+    return state;
+  }
 
   /**
    * D-01 lifecycle rules for human session-control actions: each action

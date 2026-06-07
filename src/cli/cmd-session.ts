@@ -75,7 +75,7 @@ export const DEFAULT_HUMAN_SOURCE = 'human:cli';
 export const DEFAULT_GRANT_TTL_MS = 15 * 60_000;
 export const DEFAULT_GRANT_MAX_MESSAGES = 10;
 
-const VALID_ACTIONS = 'list, inspect, tail, send, delegate, grant, revoke, pause, resume';
+const VALID_ACTIONS = 'list, inspect, tail, send, delegate, grant, revoke, pause, resume, approve, deny';
 
 // ─── Duration parsing ───────────────────────────────────────────────────────
 
@@ -157,6 +157,21 @@ const GrantArgsSchema = z
   .strict();
 
 const RevokeArgsSchema = z.object({ grant_id: idField }).strict();
+
+const ApproveArgsSchema = z
+  .object({
+    request_id: idField,
+    ttl_ms: durationField.optional(),
+    max_messages: z.coerce.number().int().min(1).max(10_000).optional(),
+  })
+  .strict();
+
+const DenyArgsSchema = z
+  .object({
+    request_id: idField,
+    reason: z.string().max(500).optional(),
+  })
+  .strict();
 
 /** Zod gate for CLI args: failure prints the issue list and exits 2. */
 function parseArgs<S extends z.ZodTypeAny>(schema: S, input: unknown, io: CliIO): z.output<S> | undefined {
@@ -410,6 +425,60 @@ function runRevoke(options: SessionCommandOptions, deps: SessionActionDeps, io: 
   return 0;
 }
 
+function runApprove(options: SessionCommandOptions, deps: SessionActionDeps, io: CliIO): number {
+  const args = parseArgs(
+    ApproveArgsSchema,
+    {
+      request_id: options.positionals[0],
+      ttl_ms: options.ttl,
+      max_messages: options.maxMessages,
+    },
+    io,
+  );
+  if (!args) return 2;
+  // CLI approvals are always the HUMAN (D-14) — model approvals only enter
+  // through caller-bound tools, never through argv.
+  const grant = deps.broker.approveGrantRequest({
+    request_id: args.request_id,
+    approver: { kind: 'human' },
+    ...(args.ttl_ms !== undefined ? { ttl_ms: args.ttl_ms } : {}),
+    ...(args.max_messages !== undefined ? { max_messages: args.max_messages } : {}),
+  });
+  if (options.json) {
+    io.stdout(JSON.stringify(grant) + '\n');
+  } else {
+    io.stdout(
+      `approved ${args.request_id}: grant ${grant.grant_id} ` +
+        `(${grant.max_messages} messages, expires ${iso(grant.expires_at)})\n`,
+    );
+  }
+  return 0;
+}
+
+function runDeny(options: SessionCommandOptions, deps: SessionActionDeps, io: CliIO): number {
+  const reasonRaw = options.positionals.slice(1).join(' ').trim();
+  const args = parseArgs(
+    DenyArgsSchema,
+    {
+      request_id: options.positionals[0],
+      ...(reasonRaw !== '' ? { reason: reasonRaw } : {}),
+    },
+    io,
+  );
+  if (!args) return 2;
+  const event = deps.broker.denyControlRequest({
+    request_id: args.request_id,
+    denied_by: { kind: 'human' },
+    ...(args.reason !== undefined ? { reason: args.reason } : {}),
+  });
+  if (options.json) {
+    io.stdout(JSON.stringify(event) + '\n');
+  } else {
+    io.stdout(`denied ${args.request_id}${args.reason !== undefined ? `: ${args.reason}` : ''}\n`);
+  }
+  return 0;
+}
+
 // ─── Shared session actions (08-07 Task 1, D-13) ────────────────────────────
 //
 // One implementation per operator action, used by BOTH the `relay session ...`
@@ -647,6 +716,8 @@ const PALETTE_ACTIONS = [
   'revoke',
   'pause',
   'resume',
+  'approve',
+  'deny',
 ] as const;
 
 /** Usage lines for the palette commands (hints + error guidance). */
@@ -659,6 +730,8 @@ export const PALETTE_USAGE: readonly string[] = Object.freeze([
   'revoke <grant_id>',
   'pause [session]',
   'resume [session]',
+  'approve <request_id>',
+  'deny <request_id> [reason…]',
 ]);
 
 /** Tokenize one palette line into action + args. Unknown verbs are rejected. */
@@ -788,6 +861,30 @@ async function dispatchPaletteAction(
       const session = deps.broker.resumeSession(id, now);
       return paletteOk(`resumed ${id} (state: ${session.state})`, id);
     }
+    case 'approve': {
+      const request_id = args[0];
+      if (request_id === undefined) paletteInvalid('usage: approve <request_id>');
+      // The palette is the HUMAN surface — approvals from here are always
+      // kind:'human'. Model approvals only enter through caller-bound tools.
+      const grant = deps.broker.approveGrantRequest(
+        { request_id, approver: { kind: 'human' } },
+        now,
+      );
+      return paletteOk(
+        `approved ${request_id}: grant ${grant.grant_id} ` +
+          `(${grant.max_messages} msgs, expires ${new Date(grant.expires_at).toISOString()})`,
+      );
+    }
+    case 'deny': {
+      const request_id = args[0];
+      if (request_id === undefined) paletteInvalid('usage: deny <request_id> [reason…]');
+      const reason = args.slice(1).join(' ').trim();
+      deps.broker.denyControlRequest(
+        { request_id, denied_by: { kind: 'human' }, ...(reason !== '' ? { reason } : {}) },
+        now,
+      );
+      return paletteOk(`denied ${request_id}${reason !== '' ? `: ${reason}` : ''}`);
+    }
     default:
       paletteInvalid(`unknown command "${action}" — try: ${PALETTE_ACTIONS.join(', ')}`);
   }
@@ -854,6 +951,10 @@ export async function executeSessionCommand(
       case 'pause':
       case 'resume':
         return runPauseResume(options.action, options, actionDeps, io);
+      case 'approve':
+        return runApprove(options, actionDeps, io);
+      case 'deny':
+        return runDeny(options, actionDeps, io);
       default:
         io.stderr(`relay session: unknown action '${options.action}'. Try: ${VALID_ACTIONS}\n`);
         return 2;
