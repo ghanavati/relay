@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v0.2
 milestone_name: milestone
-status: planning
-stopped_at: Completed 01-01-PLAN.md (Phase 1 Schema Cleanup)
-last_updated: "2026-05-19T19:37:02.634Z"
-last_activity: 2026-05-19 — ROADMAP.md created via gsd-roadmapper for v0.2 milestone
+status: verifying
+stopped_at: Completed 08-01-PLAN.md
+last_updated: "2026-06-07T20:31:34.919Z"
+last_activity: 2026-06-07
 progress:
-  total_phases: 7
+  total_phases: 8
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 1
+  total_plans: 9
+  completed_plans: 5
   percent: 0
 ---
 
@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-05-18)
 
 Phase: 1 of 7 (Schema Cleanup)
 Plan: 1 of 1 in current phase (Complete)
-Status: Phase 1 complete — ready to start Phase 2
-Last activity: 2026-05-19 — Phase 1 plan 01 executed (7 commits, 1126 tests passing)
+Status: Phase complete — ready for verification
+Last activity: 2026-06-07
 
-Progress: [█░░░░░░░░░] 14%
+Progress: [██████░░░░] 56%
 
 ## Performance Metrics
 
@@ -56,6 +56,7 @@ Progress: [█░░░░░░░░░] 14%
 
 *Updated after each plan completion*
 | Phase 01-schema-cleanup P01 | 1h35m | 5 tasks | 14 files |
+| Phase 08 P01 | 18min | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -70,6 +71,8 @@ Recent decisions affecting v0.2 work (full log in PROJECT.md):
 - **Local models as runtime targets**: qwen3-coder-next + nomic-embed-text-v1.5 are RUNTIME targets, not code writers
 - [Phase 01-schema-cleanup]: Used sync copyFileSync for production .v1-backup (getDb is sync). Async db.backup() retained for tests + future async callers via prepareDatabase.
 - [Phase 01-schema-cleanup]: Fixed pre-existing npm test glob (sh/macOS bash 3.2 lacks globstar); test baseline went 1003 → 1107 from discovery alone before phase work added 19 more.
+- [Phase 08]: 08-01: Closed ControlProvider enum (6 surfaces) and closed 16-type control event set; extensions are explicit schema changes
+- [Phase 08]: 08-01: getGrant returns latest non-revoked grant without policy filtering; incrementGrantUsage is the atomic D-04 budget gate for the broker
 
 ### Partial v0.2 work already shipped (verified via git log)
 
@@ -107,6 +110,6 @@ Top blast-radius pitfalls to enforce at gate (research §4):
 
 ## Session Continuity
 
-Last session: 2026-05-19T19:37:02.633Z
-Stopped at: Completed 01-01-PLAN.md (Phase 1 Schema Cleanup)
+Last session: 2026-06-07T20:31:15.314Z
+Stopped at: Completed 08-01-PLAN.md
 Resume file: None
