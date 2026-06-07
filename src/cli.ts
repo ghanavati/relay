@@ -190,6 +190,34 @@ ${c.cyan('DELEGATION COMMANDS')}
     [--max-concurrency <N>]                (default: 4)
     [--json]
 
+${c.cyan('SESSION COMMANDS')} (universal control layer)
+  relay session list                       List registered control sessions
+    [--provider claude-code|codex|lmstudio|openrouter|anthropic|fake]
+    [--state active|idle|ended]
+    [--json]
+
+  relay session inspect <session_id>       Session record + queued count + recent events
+    [--json]
+
+  relay session tail <session_id>          Tail a session's audit events
+    [--after <event_id>]                   cursor: only events with id > N
+    [--limit <N>]                          (default: 100, max: 1000)
+    [--json]
+
+  relay session send <session_id> <text>   Send a brokered message to a session
+    [--from <source_id>]                   (default: human:cli)
+    [--expires-in <duration>]              e.g. 30s, 10m, 2h
+    [--no-deliver]                         queue only; skip adapter delivery
+    [--json]
+
+  relay session grant <source> <target>    Allow LLM source -> target sends (D-04)
+    [--ttl <duration>]                     (default: 15m)
+    [--max-messages <N>]                   (default: 10)
+    [--json]
+
+  relay session revoke <grant_id>          Revoke a grant
+    [--json]
+
   relay doctor [--json]                    Probe provider + DB health
   relay doctor --figma                     Phase 7: Probe FIGMA_API_TOKEN + Figma REST + deferred-tools (v0.3)
   relay verify [--json]                    End-to-end smoke (memory + context + hook + db)
@@ -638,6 +666,26 @@ async function dispatchVerify(rest: readonly string[]): Promise<number> {
   return executeVerifyCommand({ json: isBool(flags, 'json') }, io);
 }
 
+async function dispatchSession(rest: readonly string[]): Promise<number> {
+  const flags = parseFlags(rest);
+  const action = flags.positionals[0] ?? '';
+  const { executeSessionCommand } = await import('./cli/cmd-session.js');
+  return executeSessionCommand({
+    action,
+    positionals: flags.positionals.slice(1),
+    provider: lastOption(flags, 'provider'),
+    state: lastOption(flags, 'state'),
+    after: lastOption(flags, 'after'),
+    limit: lastOption(flags, 'limit'),
+    from: lastOption(flags, 'from'),
+    ttl: lastOption(flags, 'ttl'),
+    maxMessages: lastOption(flags, 'max-messages'),
+    expiresIn: lastOption(flags, 'expires-in'),
+    noDeliver: isBool(flags, 'no-deliver'),
+    json: isBool(flags, 'json'),
+  }, io);
+}
+
 // `dispatchBudget` removed in v0.2 (budget feature stripped — local-first pivot).
 
 const VALID_COLOR_MODES = new Set<ColorMode>(['auto', 'always', 'never']);
@@ -696,6 +744,7 @@ async function main(): Promise<number> {
   }
 
   if (cmd === 'run') return dispatchRun(rest);
+  if (cmd === 'session') return dispatchSession(rest);
   if (cmd === 'verify') return dispatchVerify(rest);
   if (cmd === 'doctor') {
     const flags = parseFlags(rest);
