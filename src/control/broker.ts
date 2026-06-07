@@ -159,6 +159,26 @@ const BrokerSendInputSchema = z
   .readonly();
 export type BrokerSendInput = z.infer<typeof BrokerSendInputSchema>;
 
+/** Prefix marking brokered task delegations so recipients see the intent. */
+export const DELEGATED_TASK_PREFIX = '[delegated task] ';
+
+/**
+ * Broker delegate input (08-07 Task 1). The task is framed with
+ * DELEGATED_TASK_PREFIX and then follows the exact sendMessage policy path;
+ * the max length leaves room for the frame.
+ */
+const BrokerDelegateInputSchema = z
+  .object({
+    source_session_id: idField,
+    target_session_id: idField,
+    sender_kind: ControlSenderKindSchema,
+    task: z.string().min(1).max(MAX_CONTROL_CONTENT_CHARS - DELEGATED_TASK_PREFIX.length),
+    expires_at: z.number().int().positive().nullable().optional(),
+  })
+  .strict()
+  .readonly();
+export type BrokerDelegateInput = z.infer<typeof BrokerDelegateInputSchema>;
+
 // ─── Results and internals ──────────────────────────────────────────────────
 
 /** Result of a grant policy check (D-04). */
@@ -387,31 +407,135 @@ export class ControlBroker {
   // ── Session control actions (08-07 Task 1, D-01/D-13) ────────────────────
 
   /**
-   * Pause an active session. D-01: requires the session to DECLARE the
+   * Pause an active session: state active → idle plus a `session_updated`
+   * audit event, atomically. D-01: requires the session to DECLARE the
    * `interrupt` capability — commands refuse unsupported operations instead
    * of silently degrading.
    */
-  pauseSession(_session_id: string, _now: number = Date.now()): ControlSession {
-    throw new Error('not implemented: pauseSession (08-07 Task 1)');
+  pauseSession(session_id: string, now: number = Date.now()): ControlSession {
+    return this.transitionSessionState(session_id, 'pause', now);
   }
 
   /**
-   * Resume an idle session. D-01: requires the session to DECLARE the
+   * Resume an idle session: state idle → active plus a `session_updated`
+   * audit event, atomically. D-01: requires the session to DECLARE the
    * `resume_send` capability.
    */
-  resumeSession(_session_id: string, _now: number = Date.now()): ControlSession {
-    throw new Error('not implemented: resumeSession (08-07 Task 1)');
+  resumeSession(session_id: string, now: number = Date.now()): ControlSession {
+    return this.transitionSessionState(session_id, 'resume', now);
   }
 
   /**
-   * Delegate a task to another session through the brokered send path.
-   * The target must declare `tool_call` (it can act on delegated tasks).
+   * Delegate a task to another session. The task is framed with
+   * DELEGATED_TASK_PREFIX and routed through the EXACT sendMessage policy
+   * path (D-13) with one extra honesty gate: the target must declare
+   * `tool_call` — a session that cannot call tools cannot act on a delegated
+   * task (D-01). Missing targets fall through to sendMessage for the
+   * canonical session_not_found denial.
    */
-  delegateTask(_input: unknown, _now: number = Date.now()): ControlMessage {
-    throw new Error('not implemented: delegateTask (08-07 Task 1)');
+  delegateTask(input: unknown, now: number = Date.now()): ControlMessage {
+    const parsed = boundary(BrokerDelegateInputSchema, input, 'control delegate');
+    const content = `${DELEGATED_TASK_PREFIX}${parsed.task}`;
+
+    const target = this.store.getSession(parsed.target_session_id);
+    if (target && !target.capabilities.includes('tool_call')) {
+      const { content: redacted } = redactControlContent(content);
+      this.blockSend(
+        {
+          source_session_id: parsed.source_session_id,
+          target_session_id: parsed.target_session_id,
+          sender_kind: parsed.sender_kind,
+          content_hash: normalizedContentHash(redacted),
+          now,
+        },
+        'delivery_unsupported',
+        'CONTROL_DELIVERY_UNSUPPORTED',
+        `target session ${parsed.target_session_id} does not declare the tool_call capability — ` +
+          'it cannot act on delegated tasks (D-01)',
+      );
+    }
+
+    return this.sendMessage(
+      {
+        source_session_id: parsed.source_session_id,
+        target_session_id: parsed.target_session_id,
+        sender_kind: parsed.sender_kind,
+        content,
+        ...(parsed.expires_at !== undefined && parsed.expires_at !== null
+          ? { expires_at: parsed.expires_at }
+          : {}),
+      },
+      now,
+    );
   }
 
   // ── Internals ─────────────────────────────────────────────────────────────
+
+  /**
+   * D-01 lifecycle rules for human session-control actions: each action
+   * names the capability the session must DECLARE and the only legal
+   * from → to state edge.
+   */
+  private static readonly SESSION_TRANSITIONS: Readonly<
+    Record<
+      'pause' | 'resume',
+      { capability: ControlCapability; from: 'active' | 'idle'; to: 'active' | 'idle' }
+    >
+  > = {
+    pause: { capability: 'interrupt', from: 'active', to: 'idle' },
+    resume: { capability: 'resume_send', from: 'idle', to: 'active' },
+  };
+
+  /** Shared pause/resume body: capability gate, state gate, update + audit in one txn. */
+  private transitionSessionState(
+    session_id: string,
+    action: 'pause' | 'resume',
+    now: number,
+  ): ControlSession {
+    const rule = ControlBroker.SESSION_TRANSITIONS[action];
+    const session = this.store.getSession(session_id);
+    if (!session) {
+      throw toRelayException(
+        makeError('CONTROL_SESSION_NOT_FOUND', `session ${session_id} is not registered`, false),
+      );
+    }
+    if (!session.capabilities.includes(rule.capability)) {
+      throw toRelayException(
+        makeError(
+          'CONTROL_DELIVERY_UNSUPPORTED',
+          `session ${session_id} does not declare the ${rule.capability} capability — ` +
+            `${action} unsupported (D-01)`,
+          false,
+        ),
+      );
+    }
+    if (session.state !== rule.from) {
+      throw invalidArgs(
+        `session ${session_id} is ${session.state} — ${action} requires a ${rule.from} session`,
+      );
+    }
+    const txn = this.db.transaction((): ControlSession => {
+      const updated = this.store.upsertSession(
+        {
+          session_id: session.session_id,
+          provider: session.provider,
+          capabilities: session.capabilities,
+          state: rule.to,
+          label: session.label,
+          workdir: session.workdir,
+          pid: session.pid,
+          metadata: session.metadata,
+        },
+        now,
+      );
+      this.store.appendEvent(
+        { session_id: session.session_id, event_type: 'session_updated', payload: { action } },
+        now,
+      );
+      return updated;
+    });
+    return txn();
+  }
 
   private static readonly GRANT_DENIALS: Readonly<
     Record<

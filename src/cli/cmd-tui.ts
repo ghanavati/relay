@@ -44,6 +44,7 @@ import type {
 // Command Central palette — same shared action functions as `relay session ...`
 // (D-13). Defined next to the session command surface; re-exported here so the
 // TUI module is the single import point for Command Central behavior.
+import { executePaletteCommand, type PaletteResult } from './cmd-session.js';
 export { executePaletteCommand, parsePaletteCommand, PALETTE_USAGE } from './cmd-session.js';
 export type { PaletteContext, PaletteResult } from './cmd-session.js';
 
@@ -289,7 +290,7 @@ export function buildCommandCentralView(
       control.audit.slice(0, PANE_ROWS.audit).map((event) => formatEventLine(event, now)),
     ),
     status,
-    hints: 'q quit · r refresh · j/k or ↑/↓ select session',
+    hints: 'q quit · r refresh · j/k or ↑/↓ select session · : command palette',
   });
 }
 
@@ -579,6 +580,11 @@ async function renderInk(args: TuiArgs): Promise<number> {
     const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
     const [lastRefresh, setLastRefresh] = useState<number>(Date.now());
     const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
+    const [palette, setPaletteState] = useState<{ open: boolean; input: string }>({
+      open: false,
+      input: '',
+    });
+    const [paletteResult, setPaletteResult] = useState<PaletteResult | null>(null);
     const { exit } = useApp();
 
     const refresh = useCallback(async (sel: string | undefined) => {
@@ -597,7 +603,56 @@ async function renderInk(args: TuiArgs): Promise<number> {
       return () => clearInterval(id);
     }, [refresh, selectedId]);
 
+    // Palette commands mutate ONLY through the shared broker/session-command
+    // path (D-13); the store stays the source of truth — after every command
+    // we re-gather the snapshot instead of patching UI state.
+    const runPaletteLine = useCallback(
+      async (line: string, sel: string | undefined) => {
+        const result = await executePaletteCommand(line, {
+          ...(sel !== undefined ? { selected_session_id: sel } : {}),
+        });
+        setPaletteResult(result);
+        const nextSel =
+          result.ok && result.select_session_id !== undefined ? result.select_session_id : sel;
+        if (result.ok && result.select_session_id !== undefined) {
+          setSelectedId(result.select_session_id);
+        }
+        await refresh(nextSel);
+      },
+      [refresh],
+    );
+
     useInput((input, key) => {
+      if (palette.open) {
+        if (key.return) {
+          const line = palette.input;
+          setPaletteState({ open: false, input: '' });
+          if (line.trim() !== '') {
+            void runPaletteLine(
+              line,
+              selectedId ?? snapshot?.control.selected_session?.session_id,
+            );
+          }
+          return;
+        }
+        if (key.escape) {
+          setPaletteState({ open: false, input: '' });
+          return;
+        }
+        if (key.backspace || key.delete) {
+          setPaletteState((p) => ({ open: true, input: p.input.slice(0, -1) }));
+          return;
+        }
+        if (input !== '' && !key.ctrl && !key.meta) {
+          setPaletteState((p) => ({ open: true, input: p.input + input }));
+        }
+        return;
+      }
+      if (input === ':') {
+        setPaletteState({ open: true, input: '' });
+        setPaletteResult(null);
+        return;
+      }
       if (input === 'q' || (key.ctrl && input === 'c')) exit();
       if (input === 'r') void refresh(selectedId);
       const down = input === 'j' || key.downArrow;
@@ -628,11 +683,23 @@ async function renderInk(args: TuiArgs): Promise<number> {
       ce(MainPane, { key: 'main', view }),
       ce(QueuePane, { key: 'queue', view }),
     ];
+    const paletteLine = palette.open
+      ? ce(Text, { key: 'palette', color: 'cyan' }, `: ${palette.input}▌`)
+      : paletteResult !== null
+        ? ce(
+            Text,
+            { key: 'palette-result', color: paletteResult.ok ? 'green' : 'red' },
+            paletteResult.ok
+              ? `ok · ${paletteResult.message}`
+              : `${paletteResult.code}: ${paletteResult.message}`,
+          )
+        : null;
     return ce(
       Box,
       { flexDirection: 'column' },
       ce(Box, { flexDirection: view.narrow ? 'column' : 'row' }, ...panes),
       ce(BottomStrip, { view, snapshot, lastRefreshMs: lastRefresh }),
+      paletteLine,
     );
   }
 
