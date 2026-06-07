@@ -45,6 +45,15 @@ export class OpenRouterRunner extends GenericHttpRunner {
     });
   }
 
+  override async runMessages(
+    messages: Parameters<GenericHttpRunner["runMessages"]>[0],
+    opts: Parameters<GenericHttpRunner["runMessages"]>[1]
+  ): Promise<WorkerResult> {
+    void messages;
+    void opts;
+    throw new Error("not implemented (08-04 RED)");
+  }
+
   async run(task: WorkerTask): Promise<WorkerResult> {
     const apiKey = getOpenRouterApiKey();
     if (!apiKey) {

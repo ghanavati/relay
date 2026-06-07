@@ -21,10 +21,40 @@ export interface GenericHttpProviderConfig {
   fetchFailureMessage?: (err: unknown, url: string) => string;
 }
 
+/**
+ * One transcript turn for multi-turn continuation (Phase 8 / CONTROL-09).
+ * Matches the OpenAI chat-completions message shape; the Anthropic runner
+ * maps system turns to its top-level `system` field.
+ */
+export interface ChatTurn {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export interface RunMessagesOptions {
+  model: string;
+  timeout_ms: number;
+}
+
 export class GenericHttpRunner implements WorkerRunner {
   readonly capabilities = { agentic: false } as const;
 
   constructor(private readonly config: GenericHttpProviderConfig) {}
+
+  /**
+   * Post a full message transcript (Relay-stored session continuation,
+   * Phase 8 / CONTROL-09). Chat-completions only — the `responses` request
+   * format has no multi-turn transcript body in this slim runner and is
+   * refused with UNSUPPORTED instead of silently degrading.
+   */
+  async runMessages(
+    messages: readonly ChatTurn[],
+    opts: RunMessagesOptions
+  ): Promise<WorkerResult> {
+    void messages;
+    void opts;
+    throw new Error("not implemented (08-04 RED)");
+  }
 
   async run(task: WorkerTask): Promise<WorkerResult> {
     const startedAt = Date.now();
