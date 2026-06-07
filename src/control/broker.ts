@@ -46,6 +46,7 @@ import {
   ControlSenderKindSchema,
   MAX_CONTROL_CONTENT_CHARS,
   type ControlCapability,
+  type ControlEvent,
   type ControlGrant,
   type ControlMessage,
   type ControlRedaction,
@@ -178,6 +179,29 @@ const BrokerDelegateInputSchema = z
   .strict()
   .readonly();
 export type BrokerDelegateInput = z.infer<typeof BrokerDelegateInputSchema>;
+
+// ─── Grant approval queue shapes (08-07 Task 2, D-14) ───────────────────────
+
+/**
+ * Approval window for a pending control request: how long the human (or a
+ * permitted non-self model) has to approve/deny before it reads as expired.
+ */
+export const DEFAULT_CONTROL_REQUEST_TTL_MS = 10 * 60_000;
+
+/** Who is approving/denying a control request. The session id of an llm
+ * approver must be caller-bound by the tool layer, never model-supplied. */
+export type ControlApprover =
+  | { readonly kind: 'human' }
+  | { readonly kind: 'llm'; readonly session_id: string };
+
+export type ControlRequestStatus = 'pending' | 'approved' | 'denied' | 'executed' | 'expired';
+
+/** One control request's lifecycle: the request event plus its resolution. */
+export interface ControlRequestState {
+  readonly request: ControlEvent;
+  readonly status: ControlRequestStatus;
+  readonly resolution: ControlEvent | null;
+}
 
 // ─── Results and internals ──────────────────────────────────────────────────
 
@@ -467,6 +491,35 @@ export class ControlBroker {
       },
       now,
     );
+  }
+
+  // ── Grant approval queue (08-07 Task 2, D-14) ─────────────────────────────
+
+  /**
+   * Record a model's request for a source → target grant as a pending
+   * `control_requested` event (requested → approved/denied lifecycle).
+   */
+  requestGrant(_input: unknown, _now: number = Date.now()): ControlEvent {
+    throw new Error('not implemented: requestGrant (08-07 Task 2)');
+  }
+
+  /** Resolve one request's lifecycle state by request_id. */
+  getControlRequest(_request_id: string, _now: number = Date.now()): ControlRequestState | undefined {
+    throw new Error('not implemented: getControlRequest (08-07 Task 2)');
+  }
+
+  /**
+   * Approve a pending grant request: issue the grant (TTL + budget), audit
+   * grant_issued + control_approved. D-14: a model can never approve a
+   * request where it is the requesting source.
+   */
+  approveGrantRequest(_input: unknown, _now: number = Date.now()): ControlGrant {
+    throw new Error('not implemented: approveGrantRequest (08-07 Task 2)');
+  }
+
+  /** Deny a pending control request with a visible control_denied event. */
+  denyControlRequest(_input: unknown, _now: number = Date.now()): ControlEvent {
+    throw new Error('not implemented: denyControlRequest (08-07 Task 2)');
   }
 
   // ── Internals ─────────────────────────────────────────────────────────────
