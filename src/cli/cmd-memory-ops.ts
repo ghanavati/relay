@@ -189,6 +189,15 @@ export const HOOK_SCRIPT_SESSION_END =
   'mkdir -p "$HOME/.relay" && relay memory auto-extract --from-stdin 2>>"$HOME/.relay/relay.ndjson" || true';
 const HOOK_ID_SESSION_END = 'relay-memory-session-end';
 
+// UserPromptSubmit hook (Phase 8 / CONTROL-06): delivers queued Relay
+// cross-session messages as additionalContext on each prompt. The COMMAND is
+// identical to the SessionStart script — `relay context emit --target cc`
+// reads the hook payload from stdin and differentiates on
+// `hook_event_name` (UserPromptSubmit skips memory re-injection and only
+// drains the control mailbox), so one pipeline serves both boundaries.
+export const HOOK_SCRIPT_USER_PROMPT = HOOK_SCRIPT;
+const HOOK_ID_USER_PROMPT = 'relay-memory-user-prompt';
+
 // Stable marker we attach to every Relay-managed hook entry so install/uninstall
 // can identify our own entries without ever matching foreign hooks by command
 // substring. CC ignores extra fields on hook entries, so this is schema-safe.
@@ -197,6 +206,7 @@ const HOOK_ID_SESSION_END = 'relay-memory-session-end';
 export const HOOK_MARKER_FIELD = '_relay_id';
 export const HOOK_MARKER_SESSION_START = 'relay-context-emit-v1';
 export const HOOK_MARKER_SESSION_END = 'relay-session-end-v1';
+export const HOOK_MARKER_USER_PROMPT = 'relay-user-prompt-v1';
 
 /** Resolve the settings.json path. `global=true` targets the user-wide
  *  `~/.claude/settings.json` so the hook fires in every project; otherwise
@@ -248,7 +258,13 @@ function isRelayManagedHookEntry(
  * hook that happens to look like ours.
  */
 export async function executeMemoryHookCommand(
-  command: { install: boolean; json: boolean; global?: boolean; sessionEnd?: boolean },
+  command: {
+    install: boolean;
+    json: boolean;
+    global?: boolean;
+    sessionEnd?: boolean;
+    userPrompt?: boolean;
+  },
   io: CliIO,
   cwd: string
 ): Promise<number> {

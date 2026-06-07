@@ -108,6 +108,17 @@ export interface ContextEmitCommand {
   minTrust?: 'unverified' | 'provisional' | 'trusted';
 }
 
+/**
+ * Injectable dependencies for `executeContextEmitCommand`.
+ *
+ * `readStdin` overrides the default hook-payload reader. In production the
+ * default reads the CC hook payload that Claude Code pipes to every hook
+ * command's stdin; tests inject a stub so no real stdin is touched.
+ */
+export interface ContextEmitDeps {
+  readStdin?: () => Promise<string>;
+}
+
 export function parseEmitTypes(raw: readonly string[]): EmitMemoryType[] {
   if (raw.length === 0) {
     return ['lesson', 'fact', 'decision', 'context'];
@@ -127,8 +138,10 @@ function encodeForLmsCli(markdown: string): string {
 
 export async function executeContextEmitCommand(
   command: ContextEmitCommand,
-  io: CliIO
+  io: CliIO,
+  deps: ContextEmitDeps = {}
 ): Promise<number> {
+  void deps;
   if (!(VALID_EMIT_TARGETS as readonly string[]).includes(command.target)) {
     io.stderr(
       `--target must be one of: ${VALID_EMIT_TARGETS.join(', ')} (got: ${command.target})\n`
