@@ -10,6 +10,8 @@
  *   - 1  → bootstrap row written the first time v0.2 code touches a v0.1.x DB.
  *   - 2  → v0.2 orphan cleanup migration has run (drops 11 tables).
  *   - 3  → budget feature removed (drops cost_events + budget_limits + budget_alerts).
+ *   - 4  → universal control tables added (control_sessions, control_events,
+ *          control_mailbox, control_grants, control_delivery_attempts) — Phase 8.
  *
  * `readSchemaVersion` is read-only and tolerant of a missing table; it never
  * throws. `writeSchemaVersion` uses INSERT OR IGNORE so callers may invoke it
@@ -19,7 +21,7 @@
 import type Database from 'better-sqlite3';
 
 /** Schema version the running binary expects to find applied. */
-export const EXPECTED_SCHEMA_VERSION = 3 as const;
+export const EXPECTED_SCHEMA_VERSION = 4 as const;
 
 /** Description recorded for the baseline (v0.1.x) bootstrap row. */
 export const BASELINE_SCHEMA_DESCRIPTION = 'baseline v0.1.x schema';
