@@ -89,16 +89,27 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
       const { homedir } = await import('node:os');
       const figmaHandlers = registerFigmaTools(process.env, homedir());
       const figmaPat = loadPat(process.env, homedir()) ?? '';
-      const extraToolHandlers = figmaHandlers
+      const figmaNamed = figmaHandlers
         ? figmaHandlers.map((h) => ({
             name: h.def.function.name,
             pat: figmaPat,
             handle: h.handle as (a: unknown, c: { workdir: string; pat: string }) => Promise<unknown>,
           }))
-        : undefined;
-      runner = new LmStudioAgenticRunner(
-        extraToolHandlers ? { extraToolHandlers } : {},
-      );
+        : [];
+      // Phase 8 — every Relay-owned lmstudio-agentic run IS a control session
+      // (D-08, CONTROL-07): register it, then expose the relay_* control tools
+      // through the same extraToolHandlers path Figma uses (CONTROL-05). The
+      // caller session id is bound here — the model cannot spoof its source.
+      const { createControlSessionForRun, registerControlTools, toNamedToolHandlers } =
+        await import('../control/tools.js');
+      createControlSessionForRun({
+        run_id,
+        workdir: args.workdir,
+        model: args.model,
+        label: task_excerpt,
+      });
+      const controlNamed = toNamedToolHandlers(registerControlTools(run_id));
+      runner = new LmStudioAgenticRunner({ extraToolHandlers: [...figmaNamed, ...controlNamed] });
     } else {
       const exhaustive: never = args.provider;
       void exhaustive;
@@ -136,11 +147,16 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
   if (args.provider === 'lmstudio-agentic') {
     const { DEFAULT_AGENTIC_TOOLS } = await import('../workers/lmstudio-agentic.js');
     const { registerFigmaTools } = await import('../tools/figma/index.js');
+    const { CONTROL_TOOL_DEFS } = await import('../control/tools.js');
     const { homedir } = await import('node:os');
     const figmaHandlers = registerFigmaTools(process.env, homedir());
-    tools = figmaHandlers
-      ? [...DEFAULT_AGENTIC_TOOLS, ...figmaHandlers.map((h) => h.def)]
-      : DEFAULT_AGENTIC_TOOLS;
+    // Phase 8 — relay_* control tool defs are always offered to Relay-owned
+    // agentic sessions; Figma defs stay env-gated. Additive — preserves shell_exec.
+    tools = [
+      ...DEFAULT_AGENTIC_TOOLS,
+      ...(figmaHandlers ? figmaHandlers.map((h) => h.def) : []),
+      ...CONTROL_TOOL_DEFS,
+    ];
   }
   let result;
   try {
@@ -162,6 +178,11 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
       error_message: message,
       finished_at: Date.now(),
     });
+    // Phase 8 — close the run's control session on the throw path too.
+    if (args.provider === 'lmstudio-agentic') {
+      const { endControlSessionForRun } = await import('../control/tools.js');
+      endControlSessionForRun(run_id);
+    }
     if (args.json) {
       io.stdout(JSON.stringify({ run_id, status: 'error', error: message }) + '\n');
     } else {
@@ -192,6 +213,12 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
       exit_code: result.exit_code,
       token_usage: result.token_usage ?? null,
     });
+  }
+
+  // Phase 8 — the run is over: mark its control session ended (audited).
+  if (args.provider === 'lmstudio-agentic') {
+    const { endControlSessionForRun } = await import('../control/tools.js');
+    endControlSessionForRun(run_id);
   }
 
   // 6. Output
