@@ -397,4 +397,42 @@ describe('executeSetupLlmCommand', () => {
     assert.match(out, /ANTHROPIC_API_KEY not set/);
     assert.match(out, /console\.anthropic\.com/);
   });
+
+  // ---------------- codex control capability discovery (Phase 8 / CONTROL-08) ----------------
+
+  test('codex --json reports discovered control capabilities and never claims live control', async () => {
+    const cap = makeIO(tmp);
+    const code = await executeSetupLlmCommand({ target: 'codex', write: false, json: true }, cap.io);
+    assert.strictEqual(code, 0);
+    const parsed = JSON.parse(findJsonLine(cap.stdout)!) as SetupLlmResult;
+
+    const caps = parsed.details['control_capabilities'];
+    assert.ok(Array.isArray(caps), 'control_capabilities must be an array');
+    assert.ok((caps as string[]).includes('register'), 'register is always discoverable');
+    assert.ok(!(caps as string[]).includes('live_stdin'), 'live_stdin must never be claimed');
+    assert.ok(!(caps as string[]).includes('resume_send'), 'resume_send must never be claimed');
+    assert.strictEqual(typeof parsed.details['control_instructions_present'], 'boolean');
+    assert.strictEqual(typeof parsed.details['control_mcp_configured'], 'boolean');
+  });
+
+  test('codex output explains the conservative control posture', async () => {
+    const cap = makeIO(tmp);
+    await executeSetupLlmCommand({ target: 'codex', write: false, json: true }, cap.io);
+    const parsed = JSON.parse(findJsonLine(cap.stdout)!) as SetupLlmResult;
+    assert.ok(
+      parsed.actions.some(a => a.includes('live_stdin/resume_send are never claimed')),
+      `expected conservative-control explanation in actions. Got: ${parsed.actions.join(' | ')}`
+    );
+  });
+
+  test('codex --write makes context_inject discoverable (instructions block present)', async () => {
+    const cap = makeIO(tmp);
+    await executeSetupLlmCommand({ target: 'codex', write: true, json: true }, cap.io);
+    const parsed = JSON.parse(findJsonLine(cap.stdout)!) as SetupLlmResult;
+    assert.strictEqual(parsed.details['control_instructions_present'], true);
+    const caps = parsed.details['control_capabilities'] as string[];
+    assert.ok(caps.includes('context_inject'), 'instructions block enables context_inject');
+    assert.ok(caps.includes('mailbox'), 'instructions block enables mailbox delivery');
+    assert.ok(!caps.includes('live_stdin') && !caps.includes('resume_send'), 'still no live control');
+  });
 });
