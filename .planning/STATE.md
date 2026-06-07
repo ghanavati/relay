@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.2
 milestone_name: milestone
 status: verifying
-stopped_at: Completed 08-01-PLAN.md
-last_updated: "2026-06-07T20:31:34.919Z"
+stopped_at: Completed 08-02-PLAN.md
+last_updated: "2026-06-07T20:53:30.000Z"
 last_activity: 2026-06-07
 progress:
   total_phases: 8
   completed_phases: 0
   total_plans: 9
-  completed_plans: 5
+  completed_plans: 6
   percent: 0
 ---
 
@@ -30,7 +30,7 @@ Plan: 1 of 1 in current phase (Complete)
 Status: Phase complete — ready for verification
 Last activity: 2026-06-07
 
-Progress: [██████░░░░] 56%
+Progress: [███████░░░] 67%
 
 ## Performance Metrics
 
@@ -57,6 +57,7 @@ Progress: [██████░░░░] 56%
 *Updated after each plan completion*
 | Phase 01-schema-cleanup P01 | 1h35m | 5 tasks | 14 files |
 | Phase 08 P01 | 18min | 2 tasks | 9 files |
+| Phase 08 P02 | 13min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -73,6 +74,9 @@ Recent decisions affecting v0.2 work (full log in PROJECT.md):
 - [Phase 01-schema-cleanup]: Fixed pre-existing npm test glob (sh/macOS bash 3.2 lacks globstar); test baseline went 1003 → 1107 from discovery alone before phase work added 19 more.
 - [Phase 08]: 08-01: Closed ControlProvider enum (6 surfaces) and closed 16-type control event set; extensions are explicit schema changes
 - [Phase 08]: 08-01: getGrant returns latest non-revoked grant without policy filtering; incrementGrantUsage is the atomic D-04 budget gate for the broker
+- [Phase 08]: 08-02: Loop detection is llm-send-only (D-04), counts persisted pair messages bidirectionally over the normalized content hash (threshold 3, 10-min window)
+- [Phase 08]: 08-02: Broker rejects caller-supplied content_hash/redaction — redaction runs before hashing/persistence, blocked sends persist content hashes only (D-06)
+- [Phase 08]: 08-02: Delivery capability preference (live_stdin > resume_send > context_inject > mailbox) shared by broker policy, registry routing, and adapters
 
 ### Partial v0.2 work already shipped (verified via git log)
 
@@ -110,6 +114,6 @@ Top blast-radius pitfalls to enforce at gate (research §4):
 
 ## Session Continuity
 
-Last session: 2026-06-07T20:31:15.314Z
-Stopped at: Completed 08-01-PLAN.md
+Last session: 2026-06-07T20:53:30.000Z
+Stopped at: Completed 08-02-PLAN.md
 Resume file: None

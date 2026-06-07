@@ -55,14 +55,14 @@ Active requirements scoped to this milestone. REQ-IDs use category prefix + numb
 - Universal LLM control / session bus (CONTROL):
   - [x] **CONTROL-01**: Relay can register and list LLM sessions across Claude Code, Codex, LM Studio, OpenRouter, Anthropic, and fake test adapters with explicit capability reporting.
   - [x] **CONTROL-02**: Relay can inspect and tail session events from the central SQLite event store.
-  - [ ] **CONTROL-03**: Relay can send a human-authored message to any registered target session when that target adapter reports a delivery capability.
-  - [ ] **CONTROL-04**: LLM-initiated cross-session sends are denied by default and require explicit grants with TTL and message budget.
+  - [x] **CONTROL-03**: Relay can send a human-authored message to any registered target session when that target adapter reports a delivery capability.
+  - [x] **CONTROL-04**: LLM-initiated cross-session sends are denied by default and require explicit grants with TTL and message budget.
   - [ ] **CONTROL-05**: Relay exposes LLM-facing control tools (`relay_session_list`, `relay_session_send`, `relay_inbox_read`, `relay_inbox_ack`) to agentic workers and MCP-capable frontends.
   - [ ] **CONTROL-06**: Claude Code sessions register through hooks and receive queued messages through SessionStart/UserPromptSubmit context injection without breaking existing memory hooks.
   - [ ] **CONTROL-07**: LM Studio agentic sessions are Relay-native control sessions and can perform bidirectional send/receive through in-process tool handlers.
   - [ ] **CONTROL-08**: Codex integration is capability-discovered and conservative; it must not claim live control unless Relay owns the process or a verified resume/send path exists.
   - [ ] **CONTROL-09**: OpenRouter and Anthropic direct API sessions are transcript-backed Relay sessions with explicit non-live semantics.
-  - [ ] **CONTROL-10**: Cross-session loops are bounded by repeated-content detection, grant budgets, TTLs, and audit-visible blocked events.
+  - [x] **CONTROL-10**: Cross-session loops are bounded by repeated-content detection, grant budgets, TTLs, and audit-visible blocked events.
   - [ ] **CONTROL-11**: Relay exposes a shared `ControlSnapshot` read model consumed by `relay tui`, `relay tui --json`, and tests; the TUI must not add independent SQL paths.
   - [ ] **CONTROL-12**: `relay tui` becomes Command Central: terminal-native session roster, state rollups, capability badges, live event pane, inbox, grants queue, audit rail, and status/cost strip.
   - [ ] **CONTROL-13**: Every Command Central action (`send`, `tail`, `inspect`, `grant`, `revoke`, `pause`, `resume`, `delegate`) routes through the same control broker path as CLI and LLM tools.
