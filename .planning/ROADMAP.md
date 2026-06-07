@@ -10,6 +10,7 @@ Milestone v0.2 layers agentic capability and memory upgrades onto Relay's v0.1.2
 - [x] **v0.1.1** — Wave 4a patch (shipped 2026-05-10)
 - [x] **v0.1.2** — Codex wave-4 audit fixes (shipped 2026-05-11)
 - [ ] **v0.2** — Agentic capability + memory upgrades (Phases 1-7, in progress)
+- [ ] **v0.3** — Universal LLM control layer + Command Central (Phase 8, planned)
 
 ## Phases
 
@@ -26,6 +27,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 5: Conflict Detection** - Write-time conflict detection with annotation at recall, cosine gate against false positives
 - [ ] **Phase 6: Delta Extraction** - Auto-extract diffs against existing memories, surfacing contradictions instead of re-extracting
 - [ ] **Phase 7: Figma REST Tools** - Local agentic runner can list Figma layers and update tokens via REST API
+- [ ] **Phase 8: Universal LLM Control + Command Central** - Bidirectional session bus plus a terminal-native operator console so humans and permitted models can inspect, message, grant, revoke, and coordinate supported LLM sessions through the same Relay policy path
 
 ## Phase Details
 
@@ -110,10 +112,25 @@ Decimal phases appear between their surrounding integers in numeric order.
   5. User can confirm via `--help` or `relay doctor` that `figma_get_selection` and `figma_create_component` are explicitly deferred to v0.3 (require Plugin API WebSocket bridge — declaratively absent, not silently broken)
 **Plans**: TBD
 
+### Phase 8: Universal LLM Control + Command Central
+**Goal**: Relay becomes a bidirectional control fabric with a real command center: every supported LLM surface can register as a session, expose truthful capabilities, exchange messages through Relay, and be operated by humans or permitted models through one audited broker-backed surface.
+**Depends on**: Phase 3 (Relay-native tool-loop worker), Phase 6 (transcript/memory distillation patterns)
+**Requirements**: CONTROL-01, CONTROL-02, CONTROL-03, CONTROL-04, CONTROL-05, CONTROL-06, CONTROL-07, CONTROL-08, CONTROL-09, CONTROL-10, CONTROL-11, CONTROL-12, CONTROL-13, CONTROL-14, CONTROL-15, CONTROL-16, CONTROL-17
+**Success Criteria** (what must be TRUE):
+  1. User can run `relay session list / inspect / tail / send` against registered Claude Code, Codex, LM Studio, OpenRouter, Anthropic, and fake test sessions, with adapter capabilities shown explicitly.
+  2. A Relay-owned LM Studio agentic session can use `relay_session_send` to message another session, and that target can reply through the same broker path.
+  3. Claude Code ambient sessions register via hooks and receive queued messages at supported hook boundaries without regressing SessionStart memory injection or SessionEnd auto-extract.
+  4. Codex integration reports conservative capabilities and never claims live control unless a Relay-owned process or verified resume/send path is active.
+  5. Unauthorized or looping LLM-to-LLM sends are blocked by grants, TTLs, budgets, and repeated-content detection, with every decision visible in SQLite audit events.
+  6. `relay tui` is Command Central: session rail, capability/state badges, live event pane, inbox, approval queue, audit rail, and command palette backed by the same broker as CLI/tools.
+  7. A permitted model can request Command Central-equivalent operations through Relay tools, and the UI shows requested, approved, denied, and executed model actions without allowing self-escalation.
+  8. Command Central stays fast under active sessions: bounded reads, cancellable refreshes, and no unbounded work on the Ink render path.
+**Plans**: `.planning/phases/08-universal-llm-control/08-01-PLAN.md`, `.planning/phases/08-universal-llm-control/08-02-PLAN.md`, `.planning/phases/08-universal-llm-control/08-03-PLAN.md`, `.planning/phases/08-universal-llm-control/08-04-PLAN.md`, `.planning/phases/08-universal-llm-control/08-05-PLAN.md`, `.planning/phases/08-universal-llm-control/08-06-PLAN.md`, `.planning/phases/08-universal-llm-control/08-07-PLAN.md`, `.planning/phases/08-universal-llm-control/08-08-PLAN.md`, `.planning/phases/08-universal-llm-control/08-09-PLAN.md`
+
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
+Phases execute in numeric order within the active milestone. Phase 8 is the first planned v0.3 phase and starts after the v0.2 Phase 1-7 chain closes.
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -124,7 +141,8 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 5. Conflict Detection | 0/TBD | Not started | - |
 | 6. Delta Extraction | 0/TBD | Not started | - |
 | 7. Figma REST Tools | 0/TBD | Not started | - |
+| 8. Universal LLM Control + Command Central | 9/9 | Planned | - |
 
 ---
 
-Last updated: 2026-05-19 (initial v0.2 roadmap)
+Last updated: 2026-06-07 (split v0.3 Phase 8 into subagent-ready broker, adapter, CLI, and Command Central work packets)
