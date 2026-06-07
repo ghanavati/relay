@@ -85,5 +85,6 @@ Phase 8 plans must be executable by both Claude Code and Codex. Do not encode Cl
 - Letting one LLM bypass Relay policy to execute another LLM's tools directly.
 - Letting models grant themselves new authority, approve destructive actions, or bypass budgets/loop detection through UI automation.
 - Hardcoded model IDs or provider-specific defaults.
+- Control-event retention/summarization — deferred until `control_events` growth is measured in real use; revisit in a later phase.
 
 </non_goals>
