@@ -11,7 +11,7 @@
 | GSD coverage | PASS | Gap analysis covers CONTROL-01 through CONTROL-17 and D-01 through D-15. |
 | Executor portability | PASS | `EXECUTOR-COMPATIBILITY.md` maps Claude Code and Codex execution mechanisms. |
 | Codex CLI version | PASS | Local `codex --version` reports `codex-cli 0.137.0`, which satisfies grill-me-codex's >=0.130 prerequisite. |
-| PAUL active command pack | BLOCKED | Active `~/.claude/commands/paul/*.md` is missing. Archived PAUL files exist under `~/.claude/_archive/pre-cleanup-2026-05-19/`. Restore or explicitly use archived PAUL semantics before claiming PAUL gates are active. |
+| PAUL active command pack | PASS | Restored active commands under `~/.claude/commands/paul/` and framework workflows under `~/.claude/paul-framework/` from the archived PAUL pack. |
 | Worktree isolation | PASS | Implementation worktree exists at `.worktrees/phase-8-control` on branch `phase-8-control`; `.worktrees/` is ignored and committed on main. |
 | Baseline build/tests | PASS | In the implementation worktree, `npm run build` passed and `npm test` passed with 1371 tests, 0 failures. |
 | Baseline doctor | BLOCKED | `node dist/cli.js doctor --json` failed: LM Studio endpoint unreachable and hook-roundtrip failed; anthropic, auto-extract, lmstudio-loaded, and consent-files are missing. Resolve or explicitly accept before subagents. |
@@ -23,9 +23,9 @@
    - Commit the Phase 8 GSD plan split and gate file before implementation work begins.
    - Leave unrelated `.claude/tsc-cache/...` changes untouched.
 
-2. **Repair or explicitly bypass active PAUL shims.**
-   - Preferred: restore active PAUL command shims from the archived command pack, or reinstall PAUL.
-   - If not repaired, use the archived PAUL Plan/Apply/Unify semantics only as a documented manual gate and say PAUL is not actively installed.
+2. **Confirm PAUL shims.**
+   - Active PAUL commands and workflows are restored.
+   - If a future session cannot resolve `/paul:plan`, `/paul:apply`, or `/paul:unify`, reinstall PAUL or restore from `~/.claude/_archive/pre-cleanup-2026-05-19/`.
 
 3. **Confirm isolated worktree.**
    - Use `.worktrees/phase-8-control`.
@@ -87,5 +87,5 @@ For Phase 8, the correct fit is `codex-review` because the plan already exists. 
 - Do not run two implementation subagents against overlapping write sets.
 - Do not let Codex/grill review write files.
 - Do not proceed past a failed RED/GREEN test gate.
-- Do not claim PAUL gates are active until the active PAUL command pack is restored or the manual archived semantics are explicitly accepted.
+- Do not claim PAUL gates are active in a future session unless `~/.claude/commands/paul/*.md` and `~/.claude/paul-framework/workflows/*.md` still exist.
 - Do not skip SUMMARY.md for any executed GSD plan.

@@ -37,7 +37,7 @@ The plan is intentionally executable by both Claude Code and Codex. Do not assum
 
 ## Current Blockers Before Implementation
 
-- Active PAUL command shims are missing at `~/.claude/commands/paul/*.md`; archived PAUL files exist under `~/.claude/_archive/pre-cleanup-2026-05-19/`.
+- PAUL command shims are restored at `~/.claude/commands/paul/*.md`, and workflows are restored at `~/.claude/paul-framework/`.
 - Worktree isolation is ready: `.worktrees/phase-8-control` exists on branch `phase-8-control`, and `.worktrees/` is ignored.
 - Baseline build/tests passed in the implementation worktree: `npm run build` passed and `npm test` passed with 1371 tests, 0 failures.
 - Baseline doctor is blocked: `node dist/cli.js doctor --json` reports failed checks for LM Studio reachability and hook roundtrip, plus missing Anthropic key, auto-extract log, loaded LM Studio model, and consent files.
