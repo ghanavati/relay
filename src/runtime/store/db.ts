@@ -273,6 +273,100 @@ export function applySchema(db: Database.Database): void {
   migrateDropOrphansV02(db);
   // 5) v0.2 cleanup phase 2 — drop budget feature (cost_events + budget_*).
   migrateDropBudgetV03(db);
+  // 6) Phase 8 — universal control tables (sessions/events/mailbox/grants/attempts).
+  migrateControlTablesV04(db);
+}
+
+/**
+ * Phase 8 (CONTROL-01/02) — v4 migration: add the five universal control
+ * tables backing the session registry, audit events, cross-session mailbox,
+ * grants, and delivery attempts (see src/control/types.ts for the shapes).
+ *
+ * Additive only — no DROPs, so no backup interplay beyond the standard
+ * pre-migration `.v1-backup` pass in getDb. Idempotent via the
+ * schema_version gate; atomic via a single transaction.
+ */
+function migrateControlTablesV04(db: Database.Database): void {
+  const V4_TARGET = 4;
+  if (readSchemaVersion(db) >= V4_TARGET) {
+    return;
+  }
+
+  const statements: readonly string[] = [
+    `CREATE TABLE IF NOT EXISTS control_sessions (
+      session_id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      capabilities_json TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'active',
+      label TEXT,
+      workdir TEXT,
+      pid INTEGER,
+      metadata_json TEXT,
+      registered_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_control_sessions_provider ON control_sessions(provider)`,
+    `CREATE INDEX IF NOT EXISTS idx_control_sessions_state ON control_sessions(state)`,
+    `CREATE TABLE IF NOT EXISTS control_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      source_session_id TEXT,
+      target_session_id TEXT,
+      payload_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_control_events_session ON control_events(session_id, id)`,
+    `CREATE TABLE IF NOT EXISTS control_mailbox (
+      message_id TEXT PRIMARY KEY,
+      source_session_id TEXT NOT NULL,
+      target_session_id TEXT NOT NULL,
+      sender_kind TEXT NOT NULL,
+      content TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued',
+      redaction_json TEXT NOT NULL,
+      fail_reason TEXT,
+      expires_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_control_mailbox_target_status ON control_mailbox(target_session_id, status)`,
+    `CREATE TABLE IF NOT EXISTS control_grants (
+      grant_id TEXT PRIMARY KEY,
+      source_session_id TEXT NOT NULL,
+      target_session_id TEXT NOT NULL,
+      max_messages INTEGER NOT NULL,
+      used_messages INTEGER NOT NULL DEFAULT 0,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      revoked_at INTEGER
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_control_grants_pair ON control_grants(source_session_id, target_session_id)`,
+    `CREATE TABLE IF NOT EXISTS control_delivery_attempts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      message_id TEXT NOT NULL,
+      attempt_number INTEGER NOT NULL,
+      capability TEXT NOT NULL,
+      status TEXT NOT NULL,
+      detail TEXT,
+      created_at INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_control_delivery_attempts_message ON control_delivery_attempts(message_id)`,
+  ];
+
+  const txn = db.transaction(() => {
+    for (const stmt of statements) {
+      db.prepare(stmt).run();
+    }
+    writeSchemaVersion(
+      db,
+      V4_TARGET,
+      'add universal control tables (control_sessions, control_events, control_mailbox, control_grants, control_delivery_attempts)',
+    );
+  });
+
+  txn();
 }
 
 /**

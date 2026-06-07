@@ -20,6 +20,7 @@ import {
   checkSchemaVersion,
 } from './cmd-doctor.js';
 import { applySchema } from '../runtime/store/db.js';
+import { EXPECTED_SCHEMA_VERSION } from '../runtime/store/schema-version.js';
 import type { CliIO } from './commands.js';
 
 interface CapturedIO {
@@ -900,7 +901,7 @@ describe('checkSchemaVersion', () => {
     const probe = checkSchemaVersion(tmpDir);
     assert.strictEqual(probe.name, 'schema_version');
     assert.strictEqual(probe.status, 'ok');
-    assert.match(probe.detail, /applied=3.*matches expected=3/);
+    assert.match(probe.detail, new RegExp(`applied=${EXPECTED_SCHEMA_VERSION}.*matches expected=${EXPECTED_SCHEMA_VERSION}`));
   });
 
   test('T2: storeDir with schema_version=1 only (pre-v2) → status missing', () => {
@@ -914,7 +915,7 @@ describe('checkSchemaVersion', () => {
     }
     const probe = checkSchemaVersion(tmpDir);
     assert.strictEqual(probe.status, 'missing');
-    assert.match(probe.detail, /applied=1.*expected=3/);
+    assert.match(probe.detail, new RegExp(`applied=1.*expected=${EXPECTED_SCHEMA_VERSION}`));
   });
 
   test('T3: storeDir with no relay.db → status missing, no throw', () => {
@@ -934,7 +935,7 @@ describe('checkSchemaVersion', () => {
     }
     const probe = checkSchemaVersion(tmpDir);
     assert.strictEqual(probe.status, 'failed');
-    assert.match(probe.detail, /applied=99.*exceeds expected=3/);
+    assert.match(probe.detail, new RegExp(`applied=99.*exceeds expected=${EXPECTED_SCHEMA_VERSION}`));
     assert.match(probe.detail, /downgrade/);
   });
 
