@@ -377,8 +377,16 @@ export class ControlSessionStore {
    * the broker's approval queue; mechanical read — resolution POLICY stays in
    * the broker. Naturally tiny per request; bounded for safety.
    */
-  listControlRequestEvents(_request_id: string): ControlEvent[] {
-    throw new Error('not implemented: listControlRequestEvents (08-07 Task 2)');
+  listControlRequestEvents(request_id: string): ControlEvent[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM control_events
+         WHERE event_type IN ('control_requested', 'control_approved', 'control_denied', 'control_executed')
+           AND json_extract(payload_json, '$.request_id') = ?
+         ORDER BY id ASC LIMIT 1000`,
+      )
+      .all(request_id) as EventRow[];
+    return rows.map((row) => this.rowToEvent(row));
   }
 
   // ── Mailbox (D-04/D-05/D-06) ──────────────────────────────────────────────
