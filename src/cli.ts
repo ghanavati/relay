@@ -415,8 +415,13 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     const install = isBool(flags, 'install') || !isBool(flags, 'uninstall');
     const global = isBool(flags, 'global');
     const sessionEnd = isBool(flags, 'session-end');
+    const userPrompt = isBool(flags, 'user-prompt');
     const { executeMemoryHookCommand } = await import('./cli/cmd-memory-ops.js');
-    return executeMemoryHookCommand({ install, global, sessionEnd, json: isBool(flags, 'json') }, io, io.cwd);
+    return executeMemoryHookCommand(
+      { install, global, sessionEnd, userPrompt, json: isBool(flags, 'json') },
+      io,
+      io.cwd,
+    );
   }
 
   if (action === 'to-rules') {
