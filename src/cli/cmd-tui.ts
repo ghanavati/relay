@@ -22,6 +22,11 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { parseLogLines } from './cmd-memory-tail.js';
 import { probeCodex, probeLmStudio, probeEnvKey } from './probes.js';
+import {
+  emptyControlSnapshot,
+  gatherControlSnapshot,
+  type ControlSnapshot,
+} from '../control/read-model.js';
 
 export interface TuiArgs {
   json: boolean;
@@ -48,6 +53,8 @@ interface Snapshot {
   generated_at: number;
   recent_activity: ActivityEntry[];
   recall_preview: MemoryPreview[];
+  /** Shared Command Central read model (D-12) — same shape as `relay tui --json` emits. */
+  control: ControlSnapshot;
   status: {
     binary_version: string;
     db_path: string;
@@ -142,12 +149,31 @@ async function readHookInstalled(): Promise<boolean> {
 }
 
 /**
+ * Bounded Command Central read model (D-12) — reads through the shared
+ * gatherControlSnapshot, never its own SQL. Falls back to the empty snapshot
+ * when the control store is unreachable so the legacy panes stay usable.
+ */
+function readControlSnapshot(selected_session_id?: string): ControlSnapshot {
+  try {
+    return gatherControlSnapshot(
+      selected_session_id === undefined ? {} : { selected_session_id },
+    );
+  } catch {
+    return emptyControlSnapshot();
+  }
+}
+
+/**
  * Gather one full snapshot — pure data, no rendering. Used by both `--json` mode
  * and the Ink renderer (which polls this every 5s).
  *
  * Exported for tests.
  */
-export async function gatherSnapshot(args: { cwd: string; version: string }): Promise<Snapshot> {
+export async function gatherSnapshot(args: {
+  cwd: string;
+  version: string;
+  selected_session_id?: string;
+}): Promise<Snapshot> {
   const [activity, preview, dbEntries, hookInstalled, codex, lmstudio] = await Promise.all([
     readRecentActivity(10),
     readRecallPreview(args.cwd, 5),
@@ -164,6 +190,7 @@ export async function gatherSnapshot(args: { cwd: string; version: string }): Pr
     generated_at: Date.now(),
     recent_activity: activity,
     recall_preview: preview,
+    control: readControlSnapshot(args.selected_session_id),
     status: {
       binary_version: args.version,
       db_path: resolveDbPath(),
