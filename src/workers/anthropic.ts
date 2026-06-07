@@ -1,6 +1,7 @@
 import type { WorkerTask, WorkerResult } from "./types.js";
 import { makeError } from "../errors.js";
 import type { WorkerRunner } from "./runner.js";
+import type { ChatTurn, RunMessagesOptions } from "./generic-http-runner.js";
 
 /**
  * Slim Anthropic Messages API runner. Text-only (no agentic tool-loop in v0.2).
@@ -8,6 +9,20 @@ import type { WorkerRunner } from "./runner.js";
  */
 export class AnthropicRunner implements WorkerRunner {
   readonly capabilities = { agentic: false } as const;
+
+  /**
+   * Post a full message transcript (Phase 8 / CONTROL-09). System turns map
+   * to Anthropic's top-level `system` field; user/assistant turns keep their
+   * order in `messages`.
+   */
+  async runMessages(
+    messages: readonly ChatTurn[],
+    opts: RunMessagesOptions
+  ): Promise<WorkerResult> {
+    void messages;
+    void opts;
+    throw new Error("not implemented (08-04 RED)");
+  }
 
   async run(task: WorkerTask): Promise<WorkerResult> {
     const startedAt = Date.now();
