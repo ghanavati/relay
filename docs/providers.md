@@ -50,6 +50,24 @@ Dispatch:
 relay run 'analyze this codebase for SQL injection risk' --provider openrouter --model anthropic/claude-opus-4-5
 ```
 
+## Session control capabilities
+
+Relay's control layer (Phase 8) reports per-provider session capabilities explicitly. The command surface is universal; delivery semantics are adapter-specific and never overclaimed — commands refuse unsupported operations instead of silently degrading.
+
+| Provider | Capabilities | Delivery semantics |
+|---|---|---|
+| claude-code | register, observe, context_inject, mailbox | Ambient sessions register via CC hooks (SessionStart/UserPromptSubmit/SessionEnd). Queued messages render as `additionalContext` at the next hook boundary. No live stdin — hooks are not an input channel. |
+| codex | register (+context_inject, mailbox with instructions block; +tool_call, mailbox with Relay MCP entry) | Conservative, discovery-based. `relay setup-llm codex` reports what is currently discoverable. Messages ride along with instructions renders or wait for MCP tool pull. |
+| lmstudio | Relay-native tool loop | Relay owns the process — strong in-process control through agentic tool handlers. |
+| openrouter | register, observe, tail, resume_send | Transcript-backed Relay session. `resume_send` = append to the stored transcript and make a new provider request. The provider API is stateless; the session state lives in Relay. |
+| anthropic | register, observe, tail, resume_send | Same transcript-backed semantics as openrouter, against the Anthropic Messages API. |
+
+What Relay never claims:
+
+- `live_stdin` into Claude Code or Codex sessions Relay did not launch. Full-TTY CLIs are out of live-injection scope in v1; the capability is reported truthfully absent.
+- Provider-native session resume for OpenRouter/Anthropic — `resume_send` there means Relay-transcript continuation, not provider-side live state.
+- Any hardcoded model fallback: transcript sessions refuse to send when no model is configured rather than guessing.
+
 ## Routing rules (when to use which)
 
 | Task | Provider |

@@ -21,9 +21,15 @@
  * feeding `-c model_instructions_file=`). MCP tool pull reads QUEUED messages
  * from the store directly — do not push-drain mcp-only sessions.
  */
+import { readFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { z } from 'zod';
 
 import { makeError, toRelayException, type RelayException } from '../../errors.js';
+import { pickDeliveryCapability } from '../broker.js';
+import { renderMailboxContext } from './claude-code.js';
 import type {
   ControlAdapter,
   ControlCapability,
@@ -41,6 +47,14 @@ import { ControlSessionStore } from '../session-store.js';
  */
 export const RELAY_MANAGED_START = '<!-- relay-managed-start -->';
 export const RELAY_MANAGED_END = '<!-- relay-managed-end -->';
+
+/**
+ * Relay MCP server entry in ~/.codex/config.toml. Matches
+ * `[mcp_servers.relay]`, `[mcp_servers."relay"]`, and the `relay-mcp`
+ * variants — nothing else. A foreign server whose name merely contains
+ * "relay" must not count (never overclaim).
+ */
+const RELAY_MCP_ENTRY = /^\s*\[mcp_servers\.["']?relay(?:-mcp)?["']?\]/m;
 
 /** Result of probing the local Codex integration surfaces. */
 export interface CodexControlProbe {
@@ -60,8 +74,13 @@ function invalidArgs(message: string): RelayException {
   return toRelayException(makeError('INVALID_ARGS', message, false));
 }
 
-function notImplemented(): never {
-  throw new Error('not implemented (08-04 RED)');
+/** Read a file; missing or unreadable → undefined (conservative probe). */
+async function readProbeFile(path: string): Promise<string | undefined> {
+  try {
+    return await readFile(path, 'utf-8');
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -69,8 +88,18 @@ function notImplemented(): never {
  * files are treated as "not configured" — discovery must never overclaim.
  */
 export async function probeCodexControlSetup(paths?: CodexProbePaths): Promise<CodexControlProbe> {
-  void paths;
-  notImplemented();
+  const agentsPath = paths?.agentsPath ?? join(homedir(), '.codex', 'AGENTS.md');
+  const configPath = paths?.configPath ?? join(homedir(), '.codex', 'config.toml');
+
+  const [agents, config] = await Promise.all([readProbeFile(agentsPath), readProbeFile(configPath)]);
+
+  return Object.freeze({
+    instructions_present:
+      agents !== undefined &&
+      agents.includes(RELAY_MANAGED_START) &&
+      agents.includes(RELAY_MANAGED_END),
+    mcp_configured: config !== undefined && RELAY_MCP_ENTRY.test(config),
+  });
 }
 
 /**
@@ -78,8 +107,11 @@ export async function probeCodexControlSetup(paths?: CodexProbePaths): Promise<C
  * Never returns live_stdin or resume_send.
  */
 export function deriveCodexCapabilities(probe: CodexControlProbe): readonly ControlCapability[] {
-  void probe;
-  notImplemented();
+  const caps: ControlCapability[] = ['register'];
+  if (probe.instructions_present) caps.push('context_inject');
+  if (probe.instructions_present || probe.mcp_configured) caps.push('mailbox');
+  if (probe.mcp_configured) caps.push('tool_call');
+  return Object.freeze(caps);
 }
 
 const CodexSessionInputSchema = z
@@ -105,9 +137,6 @@ export class CodexControlAdapter implements ControlAdapter {
   ) {
     this.capabilities = Object.freeze([...capabilities]);
     this.store = store;
-    void this.pending;
-    void CodexSessionInputSchema;
-    void invalidArgs;
   }
 
   /** Probe the local Codex setup and build an adapter with discovered capabilities. */
@@ -115,32 +144,74 @@ export class CodexControlAdapter implements ControlAdapter {
     paths?: CodexProbePaths,
     store?: ControlSessionStore,
   ): Promise<CodexControlAdapter> {
-    void paths;
-    void store;
-    notImplemented();
+    const probe = await probeCodexControlSetup(paths);
+    return new CodexControlAdapter(deriveCodexCapabilities(probe), store);
   }
 
   describeCapabilities(): readonly ControlCapability[] {
-    notImplemented();
+    return this.capabilities;
   }
 
   supports(capability: ControlCapability): boolean {
-    void capability;
-    notImplemented();
+    return this.capabilities.includes(capability);
   }
 
   /** Register/refresh a codex session carrying this adapter's discovered capabilities. */
   registerSession(input: CodexSessionInput = {}, now: number = Date.now()): ControlSession {
-    void input;
-    void now;
-    void this.store;
-    notImplemented();
+    const parsed = CodexSessionInputSchema.safeParse(input);
+    if (!parsed.success) {
+      const detail = parsed.error.issues
+        .map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
+        .join('; ');
+      throw invalidArgs(`invalid codex session input: ${detail}`);
+    }
+    const session_id = parsed.data.session_id ?? randomUUID();
+    const existing = this.store.getSession(session_id);
+
+    const session = this.store.upsertSession(
+      {
+        session_id,
+        provider: this.provider,
+        capabilities: this.capabilities,
+        state: 'active',
+        label: parsed.data.label ?? existing?.label ?? null,
+        workdir: parsed.data.workdir ?? existing?.workdir ?? null,
+        metadata: { capability_source: 'discovered' },
+      },
+      now,
+    );
+
+    this.store.appendEvent(
+      {
+        session_id,
+        event_type: existing ? 'session_updated' : 'session_registered',
+        payload: { provider: 'codex' },
+      },
+      now,
+    );
+    return session;
   }
 
+  /**
+   * Buffer the message for the next instructions-render boundary. Names the
+   * strongest delivery capability shared with the session. Defensive: with no
+   * shared delivery capability the registry refuses before calling this, but
+   * a direct call still gets a truthful refusal instead of a silent drop.
+   */
   async deliver(message: ControlMessage, session: ControlSession): Promise<DeliveryOutcome> {
-    void message;
-    void session;
-    notImplemented();
+    const capability = pickDeliveryCapability(session.capabilities, this.capabilities);
+    if (capability === undefined) {
+      return {
+        ok: false,
+        capability: 'mailbox',
+        detail:
+          'codex session has no delivery path (requires the Relay instructions block or a Relay MCP entry)',
+      };
+    }
+    const inbox = this.pending.get(session.session_id) ?? [];
+    inbox.push(message);
+    this.pending.set(session.session_id, inbox);
+    return { ok: true, capability };
   }
 
   /**
@@ -148,7 +219,9 @@ export class CodexControlAdapter implements ControlAdapter {
    * during the current instructions-render drain. Undefined when empty.
    */
   takePendingInstructions(session_id: string): string | undefined {
-    void session_id;
-    notImplemented();
+    const inbox = this.pending.get(session_id);
+    if (!inbox || inbox.length === 0) return undefined;
+    this.pending.delete(session_id);
+    return renderMailboxContext(inbox);
   }
 }
