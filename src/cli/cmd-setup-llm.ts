@@ -24,6 +24,12 @@ import { homedir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { probeLmStudio, probeEnvKey } from './probes.js';
 import { c, statusBadge } from './colors.js';
+import {
+  RELAY_MANAGED_START,
+  RELAY_MANAGED_END,
+  probeCodexControlSetup,
+  deriveCodexCapabilities,
+} from '../control/adapters/codex.js';
 
 export type SetupLlmTarget = 'codex' | 'lmstudio' | 'openrouter' | 'anthropic';
 
@@ -41,9 +47,6 @@ export interface SetupLlmResult {
   warnings: string[];
   details: Record<string, unknown>;
 }
-
-const RELAY_MANAGED_START = '<!-- relay-managed-start -->';
-const RELAY_MANAGED_END = '<!-- relay-managed-end -->';
 
 const CODEX_AGENTS_BLOCK = `${RELAY_MANAGED_START}
 ## Relay Memory Integration
@@ -173,6 +176,19 @@ export async function setupCodex(args: SetupLlmArgs): Promise<SetupLlmResult> {
     actions.push(`relay-managed block already present in ${agentsPath}`);
   }
 
+  // 3. Phase 8 / CONTROL-08 — discover the conservative control capability
+  // set for codex sessions. Probed AFTER the write step so --write reports
+  // the post-install truth. Discovery never claims live control: full-TTY
+  // CLIs Relay does not own are out of live_stdin/resume_send scope in v1.
+  const controlProbe = await probeCodexControlSetup({ agentsPath });
+  const controlCapabilities = deriveCodexCapabilities(controlProbe);
+  actions.push(
+    `control: conservative capability discovery — context_inject/mailbox require the ` +
+      `Relay instructions block, tool_call requires a Relay MCP server entry; ` +
+      `live_stdin/resume_send are never claimed for sessions Relay does not own.`
+  );
+  actions.push(`control capabilities now discoverable: ${controlCapabilities.join(', ')}`);
+
   return {
     ok: true,
     target: 'codex',
@@ -184,6 +200,9 @@ export async function setupCodex(args: SetupLlmArgs): Promise<SetupLlmResult> {
       codex_auth_ok: auth.ok,
       codex_auth_detail: auth.detail,
       block_changed: wouldChange,
+      control_capabilities: [...controlCapabilities],
+      control_instructions_present: controlProbe.instructions_present,
+      control_mcp_configured: controlProbe.mcp_configured,
     },
   };
 }
