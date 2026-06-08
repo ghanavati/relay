@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-05-18)
 
 Phase: 8 (Universal LLM Control + Command Central, v0.3)
 Plan: 9 of 9 complete (08-01 through 08-09)
-Status: IMPLEMENTED on branch phase-8-control, full suite 1775/1775, all 17 CONTROL reqs met. Pending: Codex adversarial review of the diff, then merge to main.
+Status: IMPLEMENTED + security-hardened on branch phase-8-control, full suite 1804/1804, all 17 CONTROL reqs met. Codex review: HIGH (shell_exec control bypass) mitigated + confirmed; 3 secret-leak edges fixed across re-review rounds (delimited env names, spawn_error, DSN-value credentials). Pending: maintainer merge decision (Codex loop stopped at diminishing returns — denylist secret detection is asymptotic; residuals documented in SECURITY.md).
 Last activity: 2026-06-08
 
-Progress: [██████████] 100% (phase 8 plans) — verification gate = Codex review + merge
+Progress: [██████████] 100% (phase 8 plans) — security gate cleared; merge is maintainer's call
 
 ## Performance Metrics
 
