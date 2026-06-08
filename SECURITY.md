@@ -82,7 +82,9 @@ This is mitigation, not a security boundary. A determined or prompt-injected loc
 `relay session spawn` launches a child process Relay owns, tails its output as control events, and can write its stdin. Two safeguards keep that child's secrets out of the stored audit trail:
 
 - The child gets a sanitized env: secret-shaped variables (provider API keys) and the `RELAY_*` control namespace are removed before spawn. A child that prints `env` cannot echo a provider key into a control event. A spawned CLI that needs an API key must read it from its own config file, not inherit it from Relay's environment.
-- Output (stdout/stderr), injected stdin, and the command/args text are run through the same redactor as the broker (`REDACTION_PATTERNS`) before they are written to control events or session metadata. The live terminal mirror still shows you the child's real output.
+- Output (stdout/stderr), injected stdin, the command/args text, and any spawn error are run through the same redactor as the broker (`REDACTION_PATTERNS`) before they are written to control events or session metadata. The live terminal mirror still shows you the child's real output.
+
+The env-name sanitizer is delimiter-aware: it strips `_`-delimited credential names such as `AWS_ACCESS_KEY_ID`, `GOOGLE_APPLICATION_CREDENTIALS`, `SSH_AUTH_SOCK`, and `MYSQL_PWD`, not only names with a trailing keyword. Connection-string credentials live in the value rather than the name (a `DATABASE_URL` whose value embeds a user and password inside the URL userinfo), so a child can still inherit such a var to function; the redactor strips the userinfo credentials before any value reaches a stored event. Name-based stripping is necessarily incomplete — treat a secret printed by an owned child as redacted-in-storage, not as never-having-existed in the child's memory.
 
 ## Workdir isolation
 
