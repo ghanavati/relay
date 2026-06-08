@@ -130,3 +130,34 @@ describe('redactSecrets — figma_pat pattern (Phase 7)', () => {
     assert.ok(names.includes('figma_pat'), 'figma_pat must be a registered pattern');
   });
 });
+
+describe('redactSecrets — dsn_credentials pattern (Phase 8 fix)', () => {
+  test('connection-string credentials are redacted, scheme + host preserved', () => {
+    const out = redactSecrets('DATABASE_URL=postgres://user:pass@db.host:5432/app');
+    assert.doesNotMatch(out, /user:pass/);
+    assert.match(out, /postgres:\/\/\[REDACTED:DSN\]@db\.host/);
+  });
+
+  test('redis/mongodb/amqp DSNs and https userinfo are all redacted', () => {
+    for (const dsn of [
+      'redis://h:secretpw@cache:6379',
+      'mongodb+srv://admin:topsecret@cluster0.x.net',
+      'amqp://guest:guestpw@broker',
+      'https://u:p@api.example.com/x',
+    ]) {
+      const out = redactSecrets(dsn);
+      assert.match(out, /\[REDACTED:DSN\]/, dsn);
+    }
+  });
+
+  test('plain URLs without credentials are NOT touched', () => {
+    const url = 'https://api.example.com/v1/resource?x=1';
+    assert.equal(redactSecrets(url), url);
+    const local = 'http://localhost:5432/db';
+    assert.equal(redactSecrets(local), local);
+  });
+
+  test('dsn_credentials pattern is registered', () => {
+    assert.ok(REDACTION_PATTERNS.map((p) => p.name).includes('dsn_credentials'));
+  });
+});
