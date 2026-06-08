@@ -452,7 +452,29 @@ export async function checkControlLayer(): Promise<ProviderProbe> {
  * built (control schema missing/unreadable); `ok` otherwise.
  */
 export async function checkCommandCentral(): Promise<ProviderProbe> {
-  throw new Error('not implemented: checkCommandCentral');
+  try {
+    const { gatherControlSnapshot, DEFAULT_CONTROL_SNAPSHOT_LIMITS } = await import('../control/read-model.js');
+    const started = Date.now();
+    const snapshot = gatherControlSnapshot();
+    const elapsed = Date.now() - started;
+    const lim = DEFAULT_CONTROL_SNAPSHOT_LIMITS;
+    const overflow =
+      snapshot.sessions.length > lim.sessions ||
+      snapshot.events.length > lim.events ||
+      snapshot.inbox.length > lim.inbox ||
+      snapshot.grants.length > lim.grants;
+    if (overflow) {
+      return { name: 'command-central', status: 'failed', detail: 'snapshot exceeded declared pane bounds' };
+    }
+    const pending = snapshot.pending_actions.length;
+    return {
+      name: 'command-central',
+      status: 'ok',
+      detail: `snapshot bounded (${elapsed}ms), ${pending} pending grant request(s), ${snapshot.sessions.length} session(s)`,
+    };
+  } catch (err) {
+    return { name: 'command-central', status: 'failed', detail: `snapshot unreadable: ${(err as Error).message}` };
+  }
 }
 
 export async function executeDoctorCommand(args: DoctorArgs, io: CliIO): Promise<number> {
@@ -523,6 +545,10 @@ export async function executeDoctorCommand(args: DoctorArgs, io: CliIO): Promise
 
   // 14. Control layer health — session/queued/blocked counts (Phase 8)
   record(await checkControlLayer());
+
+  // 15. Command Central read-model health — bounded snapshot + pending grant
+  //     queue depth, the data source behind `relay tui` (Phase 8 / D-12, D-14)
+  record(await checkCommandCentral());
 
   // Output
   if (args.json) {
