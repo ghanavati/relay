@@ -327,4 +327,21 @@ describe('ProcessSession — sanitized child env + redacted persistence', () => 
     const meta = JSON.stringify(store.getSession(id)?.metadata ?? {});
     assert.equal(meta.includes(secret), false, 'command metadata MUST be redacted before persistence');
   });
+
+  test('a failed spawn redacts a secret in the binary path before persistence', async () => {
+    const store = new ControlSessionStore();
+    const id = uid('redact-spawnerr');
+    const secret = 'AKIAABCDEFGHIJKLMNOP'; // AKIA + 16 → aws_key redaction pattern
+    // Nonexistent binary whose path carries a secret → ENOENT spawn error.
+    const command = [`/nonexistent/${secret}/relay`, 'session', 'list'];
+    const session = new ProcessSession({ sessionId: id, provider: 'fake', command, store });
+    session.start();
+    await session.waitForExit(5000);
+    const meta = JSON.stringify(store.getSession(id)?.metadata ?? {});
+    const ended = JSON.stringify(
+      store.tailEvents(id, { limit: 1000 }).filter((e) => e.event_type === 'session_ended'),
+    );
+    assert.equal(meta.includes(secret), false, 'spawn_error in metadata MUST be redacted');
+    assert.equal(ended.includes(secret), false, 'spawn_error in session_ended event MUST be redacted');
+  });
 });

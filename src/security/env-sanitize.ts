@@ -15,14 +15,43 @@
 export const AGENTIC_SANDBOX_ENV = 'RELAY_AGENTIC_SANDBOX';
 
 /**
- * Secret-shaped env name matcher: any var whose name carries a credential
- * keyword on a word boundary (KEY, TOKEN, SECRET, PASSWORD, ...). Case-insensitive.
+ * Credential keywords. A `\b`-anchored regex is NOT enough: `_` is a regex
+ * word char, so `KEY\b` never fires in `AWS_ACCESS_KEY_ID` and `CREDENTIAL\b`
+ * misses `..._CREDENTIALS`. We instead split the name on non-alphanumerics and
+ * match per segment (plus glued prefix/suffix for names like `PGPASSWORD`).
  */
-export const SECRET_NAME_PATTERN = /(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE|AUTH)\b/i;
+const SECRET_KEYWORDS: readonly string[] = [
+  'KEY',
+  'TOKEN',
+  'SECRET',
+  'PASSWORD',
+  'PASSWD',
+  'PWD',
+  'CREDENTIAL',
+  'CREDENTIALS',
+  'PRIVATE',
+  'AUTH',
+];
 
-/** True when the env name looks like a secret. */
+/**
+ * True when the env name looks like it carries a secret. Delimiter-aware:
+ * `AWS_ACCESS_KEY_ID`, `GOOGLE_APPLICATION_CREDENTIALS`, `SSH_AUTH_SOCK`,
+ * `MYSQL_PWD`, `PGPASSWORD` all match. Over-stripping a benign var from a child
+ * env is safe; leaking a credential is not, so this errs toward stripping.
+ *
+ * Exception: a bare `PWD` is the POSIX working-directory var, not a secret, so
+ * it is kept when it is the whole name (but `MYSQL_PWD` and friends still match).
+ */
 export function isSecretEnvName(name: string): boolean {
-  return SECRET_NAME_PATTERN.test(name);
+  const upper = name.toUpperCase();
+  const segments = upper.split(/[^A-Z0-9]+/).filter(Boolean);
+  if (segments.length === 1 && segments[0] === 'PWD') return false;
+  for (const seg of segments) {
+    for (const kw of SECRET_KEYWORDS) {
+      if (seg === kw || seg.endsWith(kw) || seg.startsWith(kw)) return true;
+    }
+  }
+  return false;
 }
 
 /** True when this process is an agentic shell_exec sandbox child. */
