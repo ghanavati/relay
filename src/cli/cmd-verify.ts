@@ -49,6 +49,7 @@ export interface VerifyDeps {
   runHookCheck?: () => Promise<VerifyCheck>;
   runDbRoundtripCheck?: (workdir: string) => Promise<VerifyCheck>;
   runControlCheck?: (token: string) => Promise<VerifyCheck>;
+  runCommandCentralCheck?: (now?: number) => Promise<VerifyCheck>;
 }
 
 export async function runRememberCheck(token: string, workdir: string): Promise<VerifyCheck> {
@@ -225,8 +226,36 @@ export async function runControlCheck(token: string): Promise<VerifyCheck> {
  * requests (D-14) waiting on a human approve/deny. Read-only: no writes, so
  * unlike the broker smoke there is nothing to roll back.
  */
-export async function runCommandCentralCheck(_now: number = Date.now()): Promise<VerifyCheck> {
-  throw new Error('not implemented: runCommandCentralCheck');
+export async function runCommandCentralCheck(now: number = Date.now()): Promise<VerifyCheck> {
+  try {
+    const { gatherControlSnapshot, DEFAULT_CONTROL_SNAPSHOT_LIMITS } = await import('../control/read-model.js');
+    const started = Date.now();
+    const snapshot = gatherControlSnapshot({ now });
+    const elapsed = Date.now() - started;
+    const lim = DEFAULT_CONTROL_SNAPSHOT_LIMITS;
+    // Every pane is read through a bounded store helper (D-12). If any collection
+    // came back over its declared limit, an unbounded SELECT slipped in and the
+    // operator console could stall on a hot DB — fail loudly.
+    const overflow =
+      snapshot.sessions.length > lim.sessions ||
+      snapshot.events.length > lim.events ||
+      snapshot.inbox.length > lim.inbox ||
+      snapshot.grants.length > lim.grants ||
+      snapshot.blocked.length > lim.blocked ||
+      snapshot.audit.length > lim.audit;
+    if (overflow) {
+      return { name: 'command-central', status: 'fail', message: 'snapshot exceeded declared pane bounds', critical: true };
+    }
+    const pending = snapshot.pending_actions.length;
+    return {
+      name: 'command-central',
+      status: 'pass',
+      message: `snapshot ok in ${elapsed}ms (${snapshot.sessions.length} session(s), ${pending} pending grant request(s))`,
+      critical: true,
+    };
+  } catch (err) {
+    return { name: 'command-central', status: 'fail', message: (err as Error).message, critical: true };
+  }
 }
 
 export async function executeVerifyCommand(args: VerifyArgs, io: CliIO, _deps?: VerifyDeps): Promise<number> {
@@ -240,6 +269,7 @@ export async function executeVerifyCommand(args: VerifyArgs, io: CliIO, _deps?: 
   const hookFn = _deps?.runHookCheck ?? runHookCheck;
   const dbRoundtripFn = _deps?.runDbRoundtripCheck ?? runDbRoundtripCheck;
   const controlFn = _deps?.runControlCheck ?? runControlCheck;
+  const commandCentralFn = _deps?.runCommandCentralCheck ?? runCommandCentralCheck;
 
   // 1. write a memory
   checks.push(await rememberFn(token, io.cwd));
@@ -253,6 +283,8 @@ export async function executeVerifyCommand(args: VerifyArgs, io: CliIO, _deps?: 
   checks.push(await dbRoundtripFn(io.cwd));
   // 6. control fabric smoke (broker send → delivered, rolled back)
   checks.push(await controlFn(token));
+  // 7. Command Central read-model health (bounded snapshot + pending grant depth)
+  checks.push(await commandCentralFn());
 
   const summary: VerifySummary = checks.reduce(
     (acc, ch) => {
