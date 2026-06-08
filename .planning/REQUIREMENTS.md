@@ -68,7 +68,7 @@ Active requirements scoped to this milestone. REQ-IDs use category prefix + numb
   - [x] **CONTROL-13**: Every Command Central action (`send`, `tail`, `inspect`, `grant`, `revoke`, `pause`, `resume`, `delegate`) routes through the same control broker path as CLI and LLM tools.
   - [x] **CONTROL-14**: LLM-driven Command Central operations are visible as first-class control events with caller session, requested action, approval state, outcome, and denial reason.
   - [x] **CONTROL-15**: Models can request Command Central-equivalent actions through Relay tools, but cannot grant themselves new capabilities, raise budgets, bypass loop detection, or approve destructive actions without policy/human approval.
-  - [ ] **CONTROL-16**: Command Central remains fast under active sessions: bounded reads, cancellable refreshes, no unbounded operations on the Ink render path, and graceful degradation when providers are offline.
+  - [x] **CONTROL-16**: Command Central remains fast under active sessions: bounded reads, cancellable refreshes, no unbounded operations on the Ink render path, and graceful degradation when providers are offline.
   - [x] **CONTROL-17**: Command Central follows a Herdr-inspired terminal control-surface shape: compact panes, workspace/session rail, agent state rollups, keyboard-first commands, and real operational controls rather than a marketing dashboard.
 - Skill packs (slim), `relay run --pipe`, `relay queue cron`, `relay watch <dir>`, brew formula
 - Figma Plugin API bridge (get_selection, create_component) — WebSocket on port 9223
