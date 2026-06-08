@@ -29,6 +29,7 @@ import type { CliIO } from './commands.js';
 import { c } from './colors.js';
 import { getDb } from '../runtime/store/db.js';
 import { makeError, toRelayException } from '../errors.js';
+import { isAgenticSandbox } from '../security/env-sanitize.js';
 import { ControlSessionStore } from '../control/session-store.js';
 import { ControlBroker } from '../control/broker.js';
 import { ControlAdapterRegistry } from '../control/adapter-registry.js';
@@ -85,6 +86,15 @@ export const DEFAULT_GRANT_TTL_MS = 15 * 60_000;
 export const DEFAULT_GRANT_MAX_MESSAGES = 10;
 
 const VALID_ACTIONS = 'list, inspect, tail, send, delegate, spawn, grant, revoke, pause, resume, approve, deny';
+
+/**
+ * Subcommands that only READ control state — safe even when this process is an
+ * agentic shell_exec sandbox child (08-fix HIGH). Everything else mutates state
+ * or mints authority and is refused under the sandbox marker; the guard is
+ * fail-closed (allow-list, not deny-list), so any future mutating subcommand is
+ * blocked by default.
+ */
+const READ_ONLY_SESSION_ACTIONS: ReadonlySet<string> = new Set(['list', 'inspect', 'tail']);
 
 // ─── Duration parsing ───────────────────────────────────────────────────────
 
@@ -1006,6 +1016,23 @@ export async function executeSessionCommand(
   const actionDeps: SessionActionDeps = { store, broker, registry };
 
   try {
+    // 08-fix HIGH — agentic-sandbox guard. A model that shelled out to the human
+    // `relay` CLI (bypassing the in-process default-deny) is refused for any
+    // mutating subcommand. Read-only inspection stays allowed. This is the deeper
+    // layer behind the shell_exec relay-binary block: it fires even when a `relay`
+    // binary does execute (alias, copied binary, `sh -c "relay ..."`), as long as
+    // the RELAY_AGENTIC_SANDBOX marker is inherited.
+    if (isAgenticSandbox() && !READ_ONLY_SESSION_ACTIONS.has(options.action)) {
+      throw toRelayException(
+        makeError(
+          'CONTROL_SANDBOX_DENIED',
+          `relay session ${options.action} is refused inside an agentic sandbox ` +
+            `(RELAY_AGENTIC_SANDBOX). Models must use the in-process relay_session_* tools, ` +
+            `which are caller-bound and default-deny; the human CLI cannot mint its own authority.`,
+          false,
+        ),
+      );
+    }
     switch (options.action) {
       case 'list':
         return runList(options, store, io);
