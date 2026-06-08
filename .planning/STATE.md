@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-05-18)
 ## Current Position
 
 Phase: 8 (Universal LLM Control + Command Central, v0.3)
-Plan: 8 of 9 complete (08-01..08, 08-06 incl.) — only 08-09 left
-Status: Executing — round 4 done (08-05 ∥ 08-08), full suite 1763/1763. 08-09 next.
+Plan: 9 of 9 complete (08-01 through 08-09)
+Status: IMPLEMENTED on branch phase-8-control, full suite 1775/1775, all 17 CONTROL reqs met. Pending: Codex adversarial review of the diff, then merge to main.
 Last activity: 2026-06-08
 
-Progress: [█████████░] 89% (phase 8) — all 17 CONTROL reqs checked
+Progress: [██████████] 100% (phase 8 plans) — verification gate = Codex review + merge
 
 ## Performance Metrics
 
