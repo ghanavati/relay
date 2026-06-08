@@ -217,6 +217,18 @@ export async function runControlCheck(token: string): Promise<VerifyCheck> {
   }
 }
 
+/**
+ * Command Central read-model health (Phase 8 / D-12, D-14): build the bounded
+ * `ControlSnapshot` that the terminal Command Central and `relay tui --json`
+ * consume, confirm it returns well-formed and within its declared pane bounds,
+ * and report the pending grant-request queue depth — model-driven grant
+ * requests (D-14) waiting on a human approve/deny. Read-only: no writes, so
+ * unlike the broker smoke there is nothing to roll back.
+ */
+export async function runCommandCentralCheck(_now: number = Date.now()): Promise<VerifyCheck> {
+  throw new Error('not implemented: runCommandCentralCheck');
+}
+
 export async function executeVerifyCommand(args: VerifyArgs, io: CliIO, _deps?: VerifyDeps): Promise<number> {
   const token = randomUUID().slice(0, 8);
   const checks: VerifyCheck[] = [];

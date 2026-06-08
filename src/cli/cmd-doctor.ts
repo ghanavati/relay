@@ -444,6 +444,17 @@ export async function checkControlLayer(): Promise<ProviderProbe> {
   }
 }
 
+/**
+ * Command Central read-model health (Phase 8 / D-12, D-14). Builds the bounded
+ * `ControlSnapshot` that `relay tui` and `relay tui --json` consume and reports
+ * the pending grant-request queue depth — model-driven grant requests (D-14)
+ * waiting on a human approve/deny. `failed` only when the snapshot cannot be
+ * built (control schema missing/unreadable); `ok` otherwise.
+ */
+export async function checkCommandCentral(): Promise<ProviderProbe> {
+  throw new Error('not implemented: checkCommandCentral');
+}
+
 export async function executeDoctorCommand(args: DoctorArgs, io: CliIO): Promise<number> {
   const checks: ProviderProbe[] = [];
   let summary = { ok: 0, missing: 0, failed: 0 };
