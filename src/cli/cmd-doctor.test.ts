@@ -18,6 +18,7 @@ import {
   checkLmStudioModelLoaded,
   checkConsentFiles,
   checkSchemaVersion,
+  checkCommandCentral,
 } from './cmd-doctor.js';
 import { applySchema } from '../runtime/store/db.js';
 import { EXPECTED_SCHEMA_VERSION } from '../runtime/store/schema-version.js';
@@ -118,6 +119,20 @@ describe('executeDoctorCommand', () => {
     assert.ok(parsed.checks.some(c => c.name === 'last-recall'));
     // Code is 0 only when no failures
     if (parsed.summary.failed === 0) assert.strictEqual(code, 0);
+  });
+
+  test('includes the command-central snapshot probe (pending grant queue depth)', async () => {
+    applyEnv({ openrouter: 'sk-test', anthropic: 'sk-ant', lmstudioOk: true, lmstudioModelCount: 1 });
+    const cap = makeIO();
+    await executeDoctorCommand({ json: true }, cap.io);
+    const parsed = JSON.parse(cap.stdout.join('').trim()) as {
+      checks: Array<{ name: string; status: string; detail: string }>;
+    };
+    const cc = parsed.checks.find(c => c.name === 'command-central');
+    assert.ok(cc, 'command-central probe wired into doctor output');
+    assert.strictEqual(cc.status, 'ok');
+    assert.match(cc.detail, /pending grant/i, 'detail reports pending grant-request queue depth');
+    assert.match(cc.detail, /snapshot|bounded/i, 'detail reports snapshot health');
   });
 
   test('failed checks → output contains "N check(s) failed"', async () => {
@@ -964,5 +979,57 @@ describe('checkSchemaVersion', () => {
         process.env['RELAY_DB_PATH'] = savedPath;
       }
     }
+  });
+});
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * 08-09 — checkCommandCentral: bounded ControlSnapshot health + pending
+ * grant-request queue depth (the data source behind `relay tui`).
+ * ────────────────────────────────────────────────────────────────────────── */
+describe('checkCommandCentral', () => {
+  beforeEach(async () => {
+    const { getDb } = await import('../runtime/store/db.js');
+    const db = getDb();
+    for (const table of [
+      'control_delivery_attempts',
+      'control_mailbox',
+      'control_grants',
+      'control_events',
+      'control_sessions',
+    ]) {
+      try { db.prepare(`DELETE FROM ${table}`).run(); } catch { /* older schema */ }
+    }
+  });
+
+  test('healthy control store → status ok, reports bounded snapshot + pending grant depth', async () => {
+    const probe = await checkCommandCentral();
+    assert.strictEqual(probe.name, 'command-central');
+    assert.strictEqual(probe.status, 'ok');
+    assert.match(probe.detail, /0 pending grant request/i);
+    assert.match(probe.detail, /snapshot|bounded/i);
+  });
+
+  test('pending model-driven grant request raises the reported queue depth', async () => {
+    const { ControlSessionStore } = await import('../control/session-store.js');
+    const { ControlBroker } = await import('../control/broker.js');
+    const store = new ControlSessionStore();
+    const broker = new ControlBroker(store);
+    const now = Date.now();
+    store.upsertSession({ session_id: 'doc-src', provider: 'fake', capabilities: ['register', 'tool_call'], state: 'active' });
+    store.upsertSession({ session_id: 'doc-tgt', provider: 'fake', capabilities: ['register', 'mailbox'], state: 'active' });
+    broker.requestGrant(
+      {
+        source_session_id: 'doc-src',
+        target_session_id: 'doc-tgt',
+        ttl_ms: 15 * 60_000,
+        max_messages: 5,
+        actor_kind: 'llm',
+        reason: 'doctor pending depth',
+      },
+      now,
+    );
+    const probe = await checkCommandCentral();
+    assert.strictEqual(probe.status, 'ok');
+    assert.match(probe.detail, /1 pending grant request/i, `pending request must be counted: ${probe.detail}`);
   });
 });

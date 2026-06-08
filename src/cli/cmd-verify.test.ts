@@ -5,7 +5,7 @@ import * as assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { executeVerifyCommand, type VerifyCheck, type VerifyDeps } from './cmd-verify.js';
+import { executeVerifyCommand, runCommandCentralCheck, type VerifyCheck, type VerifyDeps } from './cmd-verify.js';
 import { getDb } from '../runtime/store/db.js';
 import { MemoryStore } from '../memory/memory-store.js';
 import type { CliIO } from './commands.js';
@@ -97,6 +97,24 @@ describe('executeVerifyCommand', () => {
     assert.strictEqual(parsed.summary.fail, 0, `expected 0 failures, got ${parsed.summary.fail}: ${JSON.stringify(parsed.checks.filter(c => c.status === 'fail'))}`);
     assert.strictEqual(parsed.ok, true);
     assert.strictEqual(code, 0);
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 08-09 — Command Central snapshot health wired as a verify check
+  // ---------------------------------------------------------------------------
+  // The terminal Command Central (and `relay tui --json`) consume the bounded
+  // ControlSnapshot read model. `relay verify` proves that read model builds
+  // and reports the pending grant-request queue depth (D-14) so a broken
+  // operator console surfaces in the smoke, not only when the TUI is opened.
+  test('includes the command-central snapshot check (snapshot + pending grant depth)', async () => {
+    const cap = makeIO(tmp);
+    await executeVerifyCommand({ json: true }, cap.io);
+    const parsed = JSON.parse(cap.stdout.join('').trim()) as { checks: VerifyCheck[] };
+    const cc = parsed.checks.find(c => c.name === 'command-central');
+    assert.ok(cc, 'command-central check present in verify report');
+    assert.strictEqual(cc.status, 'pass', `expected pass on clean DB, got ${cc.status}: ${cc.message}`);
+    assert.match(cc.message, /pending|grant/i, 'message reports pending grant-request depth');
     await rm(tmp, { recursive: true, force: true });
   });
 
@@ -383,5 +401,59 @@ describe('executeVerifyCommand', () => {
       else process.env[ALLOW_LIST_ENV] = savedAllowList;
       await rm(ALLOWED_WORKDIR, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 08-09 — runCommandCentralCheck unit coverage
+// ---------------------------------------------------------------------------
+describe('runCommandCentralCheck', () => {
+  beforeEach(() => {
+    // Clean control tables so the snapshot is deterministic on the shared
+    // :memory: DB (other test files may have left sessions/events behind).
+    const db = getDb();
+    for (const table of [
+      'control_delivery_attempts',
+      'control_mailbox',
+      'control_grants',
+      'control_events',
+      'control_sessions',
+    ]) {
+      try { db.prepare(`DELETE FROM ${table}`).run(); } catch { /* table may not exist in older schema */ }
+    }
+  });
+
+  test('healthy control store → pass, reports a bounded snapshot + pending grant depth', async () => {
+    const check = await runCommandCentralCheck();
+    assert.strictEqual(check.name, 'command-central');
+    assert.strictEqual(check.status, 'pass', `expected pass, got ${check.status}: ${check.message}`);
+    assert.strictEqual(check.critical, true);
+    // Clean store → zero pending grant requests, and the message must say so.
+    assert.match(check.message, /0 pending grant request/i);
+  });
+
+  test('surfaces pending model-driven grant requests in the depth count', async () => {
+    const { ControlSessionStore } = await import('../control/session-store.js');
+    const { ControlBroker } = await import('../control/broker.js');
+    const store = new ControlSessionStore();
+    const broker = new ControlBroker(store);
+    const now = Date.now();
+    store.upsertSession({ session_id: 'cc-src', provider: 'fake', capabilities: ['register', 'tool_call'], state: 'active' });
+    store.upsertSession({ session_id: 'cc-tgt', provider: 'fake', capabilities: ['register', 'mailbox'], state: 'active' });
+    // A model opens a visible grant request (D-14): stays pending until a human resolves it.
+    broker.requestGrant(
+      {
+        source_session_id: 'cc-src',
+        target_session_id: 'cc-tgt',
+        ttl_ms: 15 * 60_000,
+        max_messages: 5,
+        actor_kind: 'llm',
+        reason: 'verify pending depth',
+      },
+      now,
+    );
+    const check = await runCommandCentralCheck(now);
+    assert.strictEqual(check.status, 'pass');
+    assert.match(check.message, /1 pending grant request/i, `pending request must be counted: ${check.message}`);
   });
 });
