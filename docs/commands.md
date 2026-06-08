@@ -152,6 +152,35 @@ Example: `relay session approve 7b3d... --ttl 20m --json`.
 Deny a pending model-initiated grant request. Flags: `--json`.
 Example: `relay session deny 7b3d... 'not now' --json`.
 
+## relay tui
+
+### relay tui
+Command Central is the terminal-native operator console over the control layer. It is an Ink terminal UI that runs entirely in your terminal — no hosted service, no graphical client. The layout is a split rail on the left (a Sessions roster plus a merged Queue of inbox, grants, and pending requests), a live event stream on the right with `human` / `llm` source badges and pending/approved/denied/executed dispositions, and one status strip along the bottom. The control snapshot refreshes on a fast cadence so the stream stays live; provider probes refresh on a slower cadence and are timeout-bounded so an offline backend never stalls the UI. Flags: `--json` (emit the underlying bounded `ControlSnapshot` once instead of rendering — the same read model the TUI consumes, D-12). Keys: `q` quit, `j` / `k` move the rail selection, `:` open the command palette.
+Example: `relay tui`.
+Example: `relay tui --json | jq .control.pending_actions`.
+
+The `:` palette runs the same broker-backed actions as `relay session ...`, defaulting to the selected session when the argument is omitted:
+
+- `send <session> <message…>` — brokered, redacted, audited message to a session.
+- `delegate <session> <task…>` — delegate a task to a session that declares `tool_call`.
+- `inspect [session]` — record, queued count, and recent events for a session.
+- `tail [session]` — recent audit events for a session.
+- `grant <source> <target> [ttl] [max]` — authorize LLM-initiated sends (default-deny without a grant).
+- `revoke <grant_id>` — revoke a grant immediately.
+- `pause [session]` / `resume [session]` — move a session idle or active (capability-gated).
+- `approve <request_id>` — approve a pending model-initiated grant request and issue the grant.
+- `deny <request_id> [reason…]` — deny a pending model-initiated grant request.
+
+Relay-owned process sessions enter the rail through `relay session spawn` (see `relay session`). Once spawned, the palette observes, tails, sends to, pauses, and resumes them like any other session.
+
+#### Verifying Command Central
+
+Two paths share one broker, so both are worth a pass.
+
+Human-driven control: spawn or register a session, open `relay tui`, select it in the rail, then drive it from the `:` palette — `send` or `delegate` a message, watch the result land in the live stream with a `human` badge, then `pause` and `resume` it. `relay session list --json` and `relay tui --json` report the same state the rail shows.
+
+Model-requested control: a running model has no cross-session authority by default. When it needs to reach a peer it calls the `relay_control_request_grant` tool, which records a visible `control_requested` event — it appears in the Queue and the stream with an `llm` badge and a `pending` disposition. A human resolves it from the palette: `approve <request_id>` issues the grant, after which the model's next brokered `send` is delivered to the target; `deny <request_id>` closes it with no grant. A model cannot approve its own request — self-approval is rejected at the broker (`self_approval_blocked`), so authority only ever moves through a human. The control snapshot health and the pending grant-request queue depth are reported by `relay verify` and `relay doctor` as well (see below).
+
 ## relay history / diff / compare
 
 ### relay history
@@ -162,6 +191,12 @@ Show files_changed + diffs for a run. Flags: `--json`.
 
 ### relay compare <run_a> <run_b>
 Side-by-side diff of two runs. Flags: `--json`.
+
+## relay verify
+
+### relay verify
+End-to-end smoke test of the live surface. Runs memory remember, recall, context emit, the SessionStart hook script roundtrip, a direct DB roundtrip, a rolled-back control broker send (broker send → delivered, zero residue), and a Command Central read-model check that builds the bounded `ControlSnapshot` and reports the pending grant-request queue depth. Exit 1 if any critical check fails. Flags: `--json` (structured `{checks, summary, ok}`). Implementation in `src/cli/cmd-verify.ts`.
+Example: `relay verify --json | jq '.checks[] | select(.name=="command-central")'`.
 
 ## relay info
 
@@ -218,7 +253,7 @@ Example: `relay init --auto`.
 ## relay doctor
 
 ### relay doctor
-Probe provider + DB health. Includes the auto-extract status check (`~/.relay/auto-extract.log` 24h ok/skipped/error counts). Flags: `--json`. Implementation in `src/cli/cmd-doctor.ts`.
+Probe provider + DB health. Includes the auto-extract status check (`~/.relay/auto-extract.log` 24h ok/skipped/error counts), the control-layer check (session / active / queued / blocked counts), and a Command Central check that reports the read-model snapshot health (built within its declared bounds) and the pending grant-request queue depth. Flags: `--json`. Implementation in `src/cli/cmd-doctor.ts`.
 Example: `relay doctor --json`.
 
 ## relay completion

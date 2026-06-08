@@ -169,6 +169,14 @@ The control layer turns Relay from memory-plus-dispatch into an agent-control bu
 
 Diagnostics surface this layer: `relay verify` runs a rolled-back control smoke (broker send → delivered, zero residue), `relay doctor` reports session/queued/blocked counts, and `relay info` shows the session rollup plus the truthful adapter capability catalog.
 
+### 12.1 Command Central — the terminal operator console
+
+`relay tui` is Command Central: a terminal-native Ink console over the same control broker, not a separate hosted dashboard or a second control implementation (D-11). It reads the shared bounded `ControlSnapshot` — the same read model `relay tui --json` emits (D-12) — and renders a split rail (sessions plus a merged inbox/grants/pending queue), a live event stream with human/llm source badges and pending → approved/denied → executed dispositions, and a single status strip.
+
+Human palette actions and model tool calls run through the same broker, the same policy checks, the same grants, loop detection, and audit events (D-13); there is no UI-only fast path. Model-driven control is allowed only as broker-mediated, visible requests: a model opens a `control_requested` event through `relay_control_request_grant`, a human approves or denies it, and the model cannot approve its own request or otherwise raise its own authority (D-14). The interaction model is keyboard-first and operator-focused (D-15) — a `:` command palette, `j`/`k` rail selection, and operational verbs rather than a passive status page.
+
+`relay verify` and `relay doctor` extend their control checks with a Command Central read-model probe: it builds the snapshot, confirms every pane stayed within its declared bound, and reports the pending grant-request queue depth, so a stalled console or a backlog of unresolved model requests shows up without opening the TUI.
+
 ## See also
 
 - [AGENTS.md](../AGENTS.md) — contributor operating manual (code rules, recurrent failure patterns)
