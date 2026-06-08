@@ -20,10 +20,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   buildCommandCentralView,
+  createRefreshSequencer,
   executePaletteCommand,
   executeTuiCommand,
   gatherSnapshot,
   parsePaletteCommand,
+  withTimeout,
 } from './cmd-tui.js';
 import type { CliIO } from './commands.js';
 import { gatherControlSnapshot, type ControlSnapshot } from '../control/read-model.js';
@@ -365,6 +367,49 @@ describe('executeTuiCommand --json', () => {
     assert.strictEqual(parsed.version, '2.0.0');
     assert.strictEqual(parsed.status.binary_version, '2.0.0');
     assert.strictEqual(parsed.status.providers.length, 4);
+  });
+});
+
+// ─── Async resilience — bounded, cancellable refresh (CONTROL-16) ───────────
+//
+// Command Central must stay responsive under load: provider probes are bounded
+// so a hung backend cannot freeze the render path, and stale refreshes are
+// dropped so a slow gather never clobbers a newer snapshot.
+
+describe('withTimeout — provider probes degrade without blocking', () => {
+  test('resolves with the value when the promise settles before the timeout', async () => {
+    const v = await withTimeout(Promise.resolve('live'), 1000, 'offline');
+    assert.strictEqual(v, 'live');
+  });
+
+  test('falls back when the promise does not settle within the timeout', async () => {
+    const start = Date.now();
+    const hung = new Promise<string>(() => {}); // never settles
+    const v = await withTimeout(hung, 20, 'offline');
+    assert.strictEqual(v, 'offline');
+    assert.ok(Date.now() - start < 1000, 'returns promptly via the timeout, not by waiting on the hung probe');
+  });
+
+  test('falls back (never rejects) when the wrapped promise rejects', async () => {
+    const v = await withTimeout(Promise.reject(new Error('boom')), 1000, 'offline');
+    assert.strictEqual(v, 'offline');
+  });
+});
+
+describe('createRefreshSequencer — stale refreshes are dropped', () => {
+  test('begin returns monotonically increasing tokens', () => {
+    const seq = createRefreshSequencer();
+    const a = seq.begin();
+    const b = seq.begin();
+    assert.ok(b > a, 'each refresh gets a newer token');
+  });
+
+  test('only the most recently started refresh is current', () => {
+    const seq = createRefreshSequencer();
+    const stale = seq.begin();
+    const fresh = seq.begin();
+    assert.equal(seq.isCurrent(fresh), true, 'the latest refresh result is accepted');
+    assert.equal(seq.isCurrent(stale), false, 'an older (slower) refresh result is dropped');
   });
 });
 
