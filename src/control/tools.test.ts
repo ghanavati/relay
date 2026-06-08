@@ -46,6 +46,7 @@ const EXPECTED_TOOL_NAMES = [
   'relay_session_list',
   'relay_session_inspect',
   'relay_session_send',
+  'relay_control_request_grant',
   'relay_inbox_read',
   'relay_inbox_ack',
 ] as const;
@@ -82,8 +83,8 @@ async function readSourceFile(relpath: string): Promise<string> {
 // ─── Tool declarations ──────────────────────────────────────────────────────
 
 describe('control tool definitions', () => {
-  test('CONTROL_TOOL_DEFS declares the five OpenAI-compatible tools', () => {
-    assert.equal(CONTROL_TOOL_DEFS.length, 5);
+  test('CONTROL_TOOL_DEFS declares the six OpenAI-compatible tools', () => {
+    assert.equal(CONTROL_TOOL_DEFS.length, 6);
     const names = CONTROL_TOOL_DEFS.map((d) => d.function.name);
     assert.deepEqual(names, [...EXPECTED_TOOL_NAMES]);
     for (const def of CONTROL_TOOL_DEFS) {
@@ -101,7 +102,7 @@ describe('control tool definitions', () => {
   test('registerControlTools returns one handler per def, names aligned', () => {
     const { store, broker } = makeRig();
     const handlers = registerControlTools(uid('caller'), { store, broker });
-    assert.equal(handlers.length, 5);
+    assert.equal(handlers.length, 6);
     assert.deepEqual(
       handlers.map((h) => h.def.function.name),
       [...EXPECTED_TOOL_NAMES],
@@ -289,6 +290,100 @@ describe('relay_session_send', () => {
   });
 });
 
+// ─── relay_control_request_grant (D-14 — model escalation is visible) ───────
+
+describe('relay_control_request_grant', () => {
+  test('opens a first-class control_requested event sourced from the caller', async () => {
+    const { store, broker } = makeRig();
+    const caller = uid('rg-caller');
+    const target = uid('rg-target');
+    registerSession(store, caller, ['mailbox', 'tool_call']);
+    registerSession(store, target, ['mailbox']);
+    const handlers = registerControlTools(caller, { store, broker });
+    const result = (await handlerByName(handlers, 'relay_control_request_grant').handle({
+      target_session_id: target,
+      max_messages: 3,
+      reason: 'need to coordinate the failing build',
+    })) as { ok: boolean; request_id: string; status: string; target_session_id: string };
+    assert.equal(result.ok, true);
+    assert.equal(result.status, 'pending');
+    assert.equal(result.target_session_id, target);
+    assert.ok(result.request_id, 'a request id is returned for the operator queue');
+
+    // The request must be visible in the audit trail with caller + action +
+    // the llm source badge (D-14 — model-driven Command Central is visible).
+    const requested = store
+      .tailEvents(caller)
+      .filter((e) => e.event_type === 'control_requested');
+    assert.equal(requested.length, 1, 'exactly one control_requested event is appended');
+    const event = requested[0]!;
+    assert.equal(event.source_session_id, caller, 'request is sourced from the caller session');
+    assert.equal(event.target_session_id, target);
+    assert.equal(event.payload['action'], 'grant');
+    assert.equal(event.payload['actor_kind'], 'llm', 'model-driven request carries the llm source badge');
+    assert.equal(event.payload['max_messages'], 3, 'requested budget is recorded');
+    assert.equal(event.payload['reason'], 'need to coordinate the failing build');
+    assert.equal(event.payload['request_id'], result.request_id);
+  });
+
+  test('the request stays pending until a human resolves it (no self-grant)', async () => {
+    const { store, broker } = makeRig();
+    const caller = uid('rg-pending');
+    const target = uid('rg-pending-t');
+    registerSession(store, caller, ['mailbox', 'tool_call']);
+    registerSession(store, target, ['mailbox']);
+    const handlers = registerControlTools(caller, { store, broker });
+    const result = (await handlerByName(handlers, 'relay_control_request_grant').handle({
+      target_session_id: target,
+    })) as { ok: boolean; request_id: string };
+    assert.equal(result.ok, true);
+    const state = broker.getControlRequest(result.request_id);
+    assert.ok(state);
+    assert.equal(state.status, 'pending', 'a model cannot auto-approve — it stays pending for the human');
+    // No grant exists yet: a default-deny send still fails.
+    assert.equal(broker.checkGrant(caller, target).allowed, false);
+  });
+
+  test('requesting a grant to an unregistered target returns ok:false', async () => {
+    const { store, broker } = makeRig();
+    const caller = uid('rg-c2');
+    registerSession(store, caller, ['mailbox', 'tool_call']);
+    const handlers = registerControlTools(caller, { store, broker });
+    const result = (await handlerByName(handlers, 'relay_control_request_grant').handle({
+      target_session_id: uid('rg-ghost'),
+    })) as { ok: boolean; code: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'CONTROL_SESSION_NOT_FOUND');
+  });
+
+  test('requesting a self-grant returns ok:false CONTROL_SELF_SEND_BLOCKED', async () => {
+    const { store, broker } = makeRig();
+    const caller = uid('rg-self');
+    registerSession(store, caller, ['mailbox', 'tool_call']);
+    const handlers = registerControlTools(caller, { store, broker });
+    const result = (await handlerByName(handlers, 'relay_control_request_grant').handle({
+      target_session_id: caller,
+    })) as { ok: boolean; code: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'CONTROL_SELF_SEND_BLOCKED');
+  });
+
+  test('source spoofing is rejected: an extra source_session_id key → INVALID_ARGS', async () => {
+    const { store, broker } = makeRig();
+    const caller = uid('rg-spoof');
+    const target = uid('rg-spoof-t');
+    registerSession(store, caller, ['mailbox', 'tool_call']);
+    registerSession(store, target, ['mailbox']);
+    const handlers = registerControlTools(caller, { store, broker });
+    const result = (await handlerByName(handlers, 'relay_control_request_grant').handle({
+      target_session_id: target,
+      source_session_id: uid('rg-spoofed-source'),
+    })) as { ok: boolean; code: string };
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'INVALID_ARGS');
+  });
+});
+
 // ─── relay_inbox_read ───────────────────────────────────────────────────────
 
 describe('relay_inbox_read', () => {
@@ -319,6 +414,32 @@ describe('relay_inbox_read', () => {
     assert.equal(attempts.length, 1);
     assert.equal(attempts[0]?.capability, 'mailbox');
     assert.equal(attempts[0]?.status, 'success');
+  });
+
+  test('the delivery is recorded as an llm-driven operation for Command Central visibility', async () => {
+    const { store, broker } = makeRig();
+    const caller = uid('read-actor');
+    registerSession(store, caller, ['mailbox', 'tool_call']);
+    broker.sendMessage(
+      {
+        source_session_id: 'human:cli',
+        target_session_id: caller,
+        sender_kind: 'human',
+        content: 'visible delivery',
+      },
+      Date.now(),
+    );
+    const handlers = registerControlTools(caller, { store, broker });
+    await handlerByName(handlers, 'relay_inbox_read').handle({});
+    const delivered = store
+      .tailEvents(caller)
+      .filter((e) => e.event_type === 'message_delivered');
+    assert.equal(delivered.length, 1);
+    assert.equal(
+      delivered[0]!.payload['actor_kind'],
+      'llm',
+      'inbox_read pull is stamped llm so the event stream shows who acted',
+    );
   });
 
   test('scoping: messages for other sessions are not visible', async () => {
@@ -396,6 +517,11 @@ describe('relay_inbox_ack', () => {
       .tailEvents(caller)
       .filter((e) => e.event_type === 'message_acknowledged');
     assert.equal(events.length, 1);
+    assert.equal(
+      events[0]!.payload['actor_kind'],
+      'llm',
+      'ack is stamped llm so the event stream shows the model acknowledged it',
+    );
   });
 
   test('scoping: cannot ack a message targeted at another session', async () => {

@@ -94,6 +94,35 @@ export interface GatherControlSnapshotOptions {
   readonly limits?: Partial<ControlSnapshotLimits>;
 }
 
+// ─── Event source / disposition classification (D-14, D-15) ─────────────────
+
+/** Who triggered a control event, for the Command Central source badge. */
+export type ControlEventSource = 'human' | 'llm' | 'system';
+
+/**
+ * Lifecycle disposition of a control/escalation event, for the operator-visible
+ * pending → approved/denied → executed states (D-14). `null` for plain events
+ * that carry no escalation lifecycle.
+ */
+export type ControlEventDisposition = 'pending' | 'approved' | 'denied' | 'executed' | null;
+
+/**
+ * Classify the actor behind an event from its payload: model-driven operations
+ * stamp `actor_kind`/`sender_kind` ('llm'|'human'); approvals/denials stamp
+ * `approved_by_kind`/`denied_by_kind`. Relay-internal lifecycle events (session
+ * registered/updated/ended, grant issued) have no actor marker → 'system'.
+ */
+export function classifyEventSource(_event: ControlEvent): ControlEventSource {
+  // STUB (08-08 RED) — GREEN reads the payload actor markers.
+  throw new Error('classifyEventSource not implemented (08-08)');
+}
+
+/** Map an event type to its operator-visible escalation disposition (D-14). */
+export function classifyEventDisposition(_event: ControlEvent): ControlEventDisposition {
+  // STUB (08-08 RED) — GREEN maps control_* and message_blocked event types.
+  throw new Error('classifyEventDisposition not implemented (08-08)');
+}
+
 // ─── Read model ─────────────────────────────────────────────────────────────
 
 interface SnapshotParts {
