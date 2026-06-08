@@ -271,3 +271,51 @@ describe('control diagnostics', () => {
     assert.ok(parsed.control && typeof parsed.control === 'object', 'control section wired into info');
   });
 });
+
+// ─── Docs contract (Task 3) ─────────────────────────────────────────────────
+
+async function readRepoFile(rel: string): Promise<string> {
+  const fs = await import('node:fs/promises');
+  const path = await import('node:path');
+  // dist/control/control-e2e.test.js → repo root is ../../
+  const here = new URL('.', import.meta.url).pathname;
+  const root = path.resolve(here, '..', '..');
+  return fs.readFile(path.join(root, rel), 'utf-8');
+}
+
+describe('control docs contract', () => {
+  test('README frames live control truthfully — not every adapter', async () => {
+    const readme = await readRepoFile('README.md');
+    assert.doesNotMatch(
+      readme,
+      /(all|every)\s+(adapters?|providers?|tools?)[^.\n]*\blive\b/i,
+      'README must not claim every adapter supports live control',
+    );
+    assert.match(
+      readme,
+      /(live[\s\S]{0,90}(Relay-owned|Relay-launched|relay session spawn))|((Relay-owned|Relay-launched|relay session spawn)[\s\S]{0,90}live)/i,
+      'README ties live (stdin) control to Relay-owned processes',
+    );
+  });
+
+  test('commands.md documents every relay session subcommand', async () => {
+    const docs = await readRepoFile('docs/commands.md');
+    for (const sub of [
+      'list', 'inspect', 'tail', 'send', 'delegate', 'spawn',
+      'grant', 'revoke', 'pause', 'resume', 'approve', 'deny',
+    ]) {
+      assert.match(docs, new RegExp(`relay session ${sub}\\b`), `commands.md documents 'relay session ${sub}'`);
+    }
+  });
+
+  test('providers.md documents capability levels + the Relay-owned live mode', async () => {
+    const docs = await readRepoFile('docs/providers.md');
+    for (const cap of ['register', 'observe', 'mailbox', 'context_inject', 'resume_send', 'live_stdin']) {
+      assert.match(docs, new RegExp(cap), `providers.md names the ${cap} capability`);
+    }
+    for (const provider of ['claude-code', 'codex', 'lmstudio', 'openrouter', 'anthropic']) {
+      assert.match(docs, new RegExp(provider), `providers.md covers ${provider}`);
+    }
+    assert.match(docs, /relay session spawn/i, 'providers.md documents the Relay-owned process strong mode');
+  });
+});
