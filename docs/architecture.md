@@ -156,6 +156,19 @@ Tests are colocated next to source (`memory-store.ts` + `memory-remember.test.ts
 
 `better-sqlite3` is a native module: requires Node >=20, a working C++ toolchain (Xcode CLT on macOS, `build-essential python3` on Linux), and is rebuilt on `npm install`. All DB operations are **synchronous** by design — never use `async`/`await` on `db.prepare(...)` chains.
 
+## 12. Control fabric (Phase 8)
+
+The control layer turns Relay from memory-plus-dispatch into an agent-control bus. Any supported LLM surface registers as a *control session*; one command surface (`relay session ...` for humans, Relay tools for models) drives them all.
+
+- **Sessions + store** (`src/control/session-store.ts`) — synchronous better-sqlite3 over five v4 tables: `control_sessions`, `control_events`, `control_mailbox`, `control_grants`, `control_delivery_attempts`. Every boundary is Zod-validated; rows read back are re-validated so corrupted JSON fails loudly.
+- **Broker** (`src/control/broker.ts`) — the single policy path. Human sends route straight through; model (`llm`) sends are default-deny and require a human-issued grant with a TTL and a message budget, plus content redaction and loop detection on repeated identical messages. These are guardrails on agent-initiated traffic, not a separate audit product — every decision (enqueued, blocked, delivered, failed) is recorded as a control event.
+- **Adapter registry + capability taxonomy** (`src/control/adapter-registry.ts`, `src/control/types.ts`) — each adapter declares exactly what it supports (`register`, `observe`, `tail`, `context_inject`, `mailbox`, `resume_send`, `live_stdin`, `interrupt`, ...). Delivery routes to the strongest shared capability; unsupported operations are refused, never silently degraded. No adapter infers behavior from a provider name.
+- **Adapters** (`src/control/adapters/`) — Claude Code (ambient hook context delivery), Codex (discovery-gated MCP/instructions), generic-HTTP (transcript-backed OpenRouter/Anthropic), and the deterministic fake used in tests. None claim a live stdin channel.
+- **Relay-owned processes** (`src/control/pty-session.ts`) — the one strong-control path. `relay session spawn` launches a child through node `child_process` pipes (no PTY dependency in v1): Relay tails its output as events, writes to its stdin (`live_stdin`), interrupts it (SIGINT), and records stopped-state on exit. Full-TTY CLIs detect non-TTY stdio, so they report `live_stdin` absent.
+- **Read model** (`src/control/read-model.ts`) — a bounded `ControlSnapshot` for the terminal Command Central, built only from store/broker helpers (no UI-local SQL).
+
+Diagnostics surface this layer: `relay verify` runs a rolled-back control smoke (broker send → delivered, zero residue), `relay doctor` reports session/queued/blocked counts, and `relay info` shows the session rollup plus the truthful adapter capability catalog.
+
 ## See also
 
 - [AGENTS.md](../AGENTS.md) — contributor operating manual (code rules, recurrent failure patterns)

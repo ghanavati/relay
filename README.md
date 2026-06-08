@@ -4,7 +4,7 @@
 
 > Git records what code changed. Relay records what the agent did — tasks given, models used, context injected, retries, failures, and lessons.
 
-You probably use Claude Code one day, Cursor or Codex the next, an LM Studio model after that. None of them remember what you decided yesterday and none of them let you supervise their work the way you'd supervise a human. Relay sits between you and any LLM tool: it carries memory across sessions, dispatches tasks to whichever provider you want (local LM Studio for free, paid when you need to), and is becoming the layer that makes agent sessions addressable — `list`, `inspect`, `tail`, `send`.
+You probably use Claude Code one day, Cursor or Codex the next, an LM Studio model after that. None of them remember what you decided yesterday and none of them let you supervise their work the way you'd supervise a human. Relay sits between you and any LLM tool: it carries memory across sessions, dispatches tasks to whichever provider you want (local LM Studio for free, paid when you need to), and makes agent sessions addressable and steerable — `list`, `inspect`, `tail`, `send`, `delegate`, `spawn`.
 
 For AI-heavy developers, tech leads supervising parallel agent work, and teams adopting autonomous coding workflows. Solo install today, multi-user-ready surface.
 
@@ -131,7 +131,7 @@ The operator layer around AI coding agents. Five concerns:
 - **Multi-model dispatch** — send a task to Codex CLI, OpenRouter, Anthropic, or a local LM Studio model (qwen, gemma, glm). One worker or many in parallel. Local-mode = zero API cost.
 - **Audit + provenance** — every run records the task, model, provider, injected context, tool calls, diffs, retries, and outcome. Searchable history that survives session boundaries.
 - **Steerable agentic execution** — `relay run --provider lmstudio-agentic` runs a real tool-call loop on a local model with shell access, sandboxed env, network blocklist, hash-based loop detection.
-- **Coming in v0.3 — addressable sessions** — `relay session list / inspect / tail / send` over your existing Claude Code sessions. Find what's running, see what it's doing, send a steering message into a specific session.
+- **Cross-session control** — one command surface over every session: `relay session list / inspect / tail / send / delegate / spawn`. Relay owns the processes it launches with `relay session spawn`, so those get live stdin control and interrupt; ambient Claude Code sessions (via hooks) and transcript-backed API providers get observe plus queued delivery. Each adapter declares its real capabilities and commands refuse what an adapter can't do — Relay never claims a live channel it doesn't have. Agent-initiated cross-session traffic runs through grants, budgets, and loop detection so one model can't drive another unsupervised.
 
 Hallucination check via optional [Berry](https://github.com/anthropics/berry) MCP integration. Model-agnostic. Single SQLite store. Works against any combination of paid + local providers.
 
@@ -143,7 +143,7 @@ Local storage by default. All memory lives in a single SQLite file under `~/.rel
 
 Pre-release `0.2.0`. **1371 tests** passing, four worker backends (Codex, LM Studio single-shot + agentic, OpenRouter, Anthropic), four cross-LLM context-injection wrappers, semantic recall via `nomic-embed-text-v1.5`, conflict detection on contradictory memories, delta extraction in auto-extract, REST-based Figma tools. CI runs Node 20 + 22 on every push.
 
-**Next:** v0.3 session-control slice — `relay session list / inspect / tail / send` against your live Claude Code sessions. See [`.planning/research/EXTERNAL-TOOLS-ASSESSMENT.md`](.planning/research/EXTERNAL-TOOLS-ASSESSMENT.md) for the product thesis.
+**Next:** a terminal Command Central (Ink) over the control layer — workspace/session rail, live event feed, and a keyboard-first command palette routed through the same broker the CLI uses. See [`.planning/research/EXTERNAL-TOOLS-ASSESSMENT.md`](.planning/research/EXTERNAL-TOOLS-ASSESSMENT.md) for the product thesis.
 
 ## v0.2 capabilities (shipped)
 

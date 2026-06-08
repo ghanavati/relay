@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — universal control layer (Phase 8)
+
+- **Cross-session control surface** — `relay session list / inspect / tail / send / delegate / spawn / grant / revoke / pause / resume / approve / deny`. Any supported LLM surface registers as a control session with an explicit, declared capability set; commands refuse unsupported operations instead of silently degrading.
+- **Relay-owned process sessions** — `relay session spawn --provider <name> <command...>` launches a child through node `child_process` pipes (no PTY dependency in v1). Relay tails its stdout/stderr as control events, writes to its stdin (`live_stdin`), interrupts it (SIGINT), and records stopped-state on exit. Full-TTY CLIs (claude, codex) detect non-TTY stdio, so they report `live_stdin` absent — observe and interrupt still apply. This is the one path with real live control; every other adapter is observe plus queued/transcript delivery.
+- **LLM-facing control tools** — models call `relay_session_send` / `relay_inbox_read` / etc. through the same broker the CLI uses. Agent-initiated cross-session sends are default-deny: they require a human-issued grant with a TTL and a message budget, with content redaction and identical-message loop detection as guardrails.
+- **Diagnostics** — `relay verify` runs a rolled-back control smoke (broker send → delivered, zero residue), `relay doctor` reports session / active / queued / blocked counts, and `relay info` adds a control rollup plus a truthful per-provider adapter capability catalog.
+
 ### Beyond v0.2 (planned)
 - v0.3.0: TUI visual layer (Ink) for history + live run progress + cost dashboard
 - v0.4.0: skill packs (slim), `relay run --pipe`, `relay queue cron`, `relay watch <dir>`, brew formula

@@ -123,6 +123,18 @@ Relay uses one SQLite file. Default location resolves in order:
 
 The DB is single-writer. Don't run two `relay` processes against the same DB simultaneously.
 
+## Control layer
+
+The Phase 8 control layer persists in the same SQLite file — the `control_sessions`, `control_events`, `control_mailbox`, `control_grants`, and `control_delivery_attempts` tables. There is no separate control config or daemon: sessions register on demand and `relay session ...` reads and writes the same DB resolved above.
+
+Policy values are per-command, not environment variables:
+
+- `relay session grant` defaults to a 15-minute TTL and a 10-message budget; override with `--ttl <duration>` and `--max-messages <N>`. Agent-initiated (`llm`) sends are default-deny without a grant.
+- Loop detection blocks an `llm` source→target pair after 3 identical messages inside a 10-minute window.
+- `relay session spawn` runs a Relay-owned process in the foreground; while it runs, peer `relay session send <id>` messages are polled onto the child's stdin (live_stdin sessions only).
+
+Control-event retention is not yet trimmed — the tables grow with use. Revisit when growth is measured.
+
 ## Per-project workdir scoping
 
 Memory entries can be scoped to a workdir. Pass `--workdir /path/to/project` to recall/remember commands. Unscoped entries are global.

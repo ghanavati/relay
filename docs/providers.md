@@ -61,6 +61,9 @@ Relay's control layer (Phase 8) reports per-provider session capabilities explic
 | lmstudio | Relay-native tool loop | Relay owns the process — strong in-process control through agentic tool handlers. |
 | openrouter | register, observe, tail, resume_send | Transcript-backed Relay session. `resume_send` = append to the stored transcript and make a new provider request. The provider API is stateless; the session state lives in Relay. |
 | anthropic | register, observe, tail, resume_send | Same transcript-backed semantics as openrouter, against the Anthropic Messages API. |
+| Relay-owned process | register, observe, tail, mailbox, live_stdin, interrupt | Launched by `relay session spawn --provider <name> <command...>`. Relay owns the pipes: line-based stdin writes (`live_stdin`), SIGINT interrupt, and stdout/stderr tailed as control events. This is the one path with real live control. Full-TTY CLIs (claude, codex) detect non-TTY stdio and change behavior, so a spawned claude/codex reports `live_stdin` absent — observe and interrupt still apply. |
+
+Strong (live) control is exclusive to Relay-owned processes — the sessions you start with `relay session spawn`. Every other adapter is observe + queued/transcript delivery; none of them get a live stdin channel.
 
 What Relay never claims:
 

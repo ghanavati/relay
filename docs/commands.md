@@ -102,7 +102,7 @@ Example: `relay parallel ./batch.json --max-concurrency 8`.
 
 ## relay session
 
-Universal control layer (Phase 8): every supported LLM surface registers as a control session with an explicit capability set. Commands refuse unsupported operations (`CONTROL_DELIVERY_UNSUPPORTED`) instead of silently degrading. Exit codes: 0 success, 1 policy/runtime failure (RelayError code on stderr), 2 usage error.
+Universal control layer (Phase 8): every supported LLM surface registers as a control session with an explicit capability set. One command surface drives them all — observe, send, delegate, and (for processes Relay launches) live stdin and interrupt. Commands refuse unsupported operations (`CONTROL_DELIVERY_UNSUPPORTED`) instead of silently degrading. Agent-initiated cross-session sends are gated by grants, budgets, and loop detection; human (`relay session ...`) sends are not. Exit codes: 0 success, 1 policy/runtime failure (RelayError code on stderr), 2 usage error.
 
 ### relay session list
 List registered control sessions with provider, state, and declared capabilities. Flags: `--provider <claude-code|codex|lmstudio|openrouter|anthropic|fake>`, `--state <active|idle|ended>`, `--json`.
@@ -120,6 +120,14 @@ Example: `relay session tail 4f1c... --after 120 --json`.
 Send a brokered, redacted, audited message to a session (sender_kind `human`). Delivery is attempted through the target provider's adapter when one is registered; otherwise the message waits honestly in the mailbox (`status: queued`). Flags: `--from <source_id>` (default `human:cli`), `--expires-in <duration>` (e.g. `30s`, `10m`, `2h`), `--no-deliver` (queue only), `--json`.
 Example: `relay session send 4f1c... 'stop after the current test run' --json`.
 
+### relay session delegate <session_id> <task>
+Delegate a task to a session that declares the `tool_call` capability (a session that can't call tools can't act on a delegated task — D-01). Routes through the same broker policy path as `send`. Flags: `--from <source_id>`, `--no-deliver`, `--json`.
+Example: `relay session delegate lm-sess-a 'write tests for src/auth.ts' --json`.
+
+### relay session spawn --provider <name> <command...>
+Launch a Relay-owned process session. Relay owns the pipes, so it can observe and tail the child's stdout/stderr as control events, write to its stdin (`live_stdin`), and interrupt it with SIGINT. Line-based processes get strong control; full-TTY CLIs (claude, codex) detect non-TTY stdio and report `live_stdin` absent. The command follows the provider; for a command with its own flags, wrap it in a shell — `relay session spawn --provider lmstudio sh -c 'mycli --flag'`. While it runs, peer `relay session send <id>` messages are delivered onto the child's stdin. Flags: `--workdir <path>`, `--json`. Exit code mirrors the child.
+Example: `relay session spawn --provider fake node repl.js`.
+
 ### relay session grant <source_id> <target_id>
 Authorize LLM-initiated sends from source to target (D-04 — LLM sends are default-deny). TTL and message budget are always bounded. Flags: `--ttl <duration>` (default `15m`), `--max-messages <N>` (default `10`), `--json`.
 Example: `relay session grant lm-sess-a cc-sess-b --ttl 30m --max-messages 5`.
@@ -127,6 +135,22 @@ Example: `relay session grant lm-sess-a cc-sess-b --ttl 30m --max-messages 5`.
 ### relay session revoke <grant_id>
 Revoke a grant immediately. Idempotent. Flags: `--json`.
 Example: `relay session revoke 9a2e...`.
+
+### relay session pause <session_id>
+Mark an active session idle (requires the session to declare `interrupt`). Records a `session_updated` audit event. Flags: `--json`.
+Example: `relay session pause 4f1c... --json`.
+
+### relay session resume <session_id>
+Return an idle session to active (requires `resume_send`). Flags: `--json`.
+Example: `relay session resume 4f1c... --json`.
+
+### relay session approve <request_id>
+Approve a pending model-initiated grant request and issue the grant. Human only — a model can never approve its own request (D-14). Flags: `--ttl <duration>`, `--max-messages <N>` (override the requested values), `--json`.
+Example: `relay session approve 7b3d... --ttl 20m --json`.
+
+### relay session deny <request_id> [reason]
+Deny a pending model-initiated grant request. Flags: `--json`.
+Example: `relay session deny 7b3d... 'not now' --json`.
 
 ## relay history / diff / compare
 
