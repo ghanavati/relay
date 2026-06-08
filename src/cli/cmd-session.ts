@@ -32,6 +32,7 @@ import { makeError, toRelayException } from '../errors.js';
 import { ControlSessionStore } from '../control/session-store.js';
 import { ControlBroker } from '../control/broker.js';
 import { ControlAdapterRegistry } from '../control/adapter-registry.js';
+import { runSpawnSession } from '../control/pty-session.js';
 import {
   ControlProviderSchema,
   ControlSessionStateSchema,
@@ -56,6 +57,14 @@ export interface SessionCommandOptions {
   readonly maxMessages?: string | undefined;
   readonly expiresIn?: string | undefined;
   readonly noDeliver?: boolean | undefined;
+  /** spawn: provider/adapter to register the owned process as (alias for --provider). */
+  readonly adapter?: string | undefined;
+  /** spawn: child command argv after `--` (falls back to positionals when absent). */
+  readonly command?: readonly string[] | undefined;
+  /** spawn: explicit session id (tests/scripts); defaults to a random uuid. */
+  readonly sessionId?: string | undefined;
+  /** spawn: workdir for the owned process. */
+  readonly workdir?: string | undefined;
   readonly json: boolean;
 }
 
@@ -75,7 +84,7 @@ export const DEFAULT_HUMAN_SOURCE = 'human:cli';
 export const DEFAULT_GRANT_TTL_MS = 15 * 60_000;
 export const DEFAULT_GRANT_MAX_MESSAGES = 10;
 
-const VALID_ACTIONS = 'list, inspect, tail, send, delegate, grant, revoke, pause, resume, approve, deny';
+const VALID_ACTIONS = 'list, inspect, tail, send, delegate, spawn, grant, revoke, pause, resume, approve, deny';
 
 // ─── Duration parsing ───────────────────────────────────────────────────────
 
@@ -157,6 +166,15 @@ const GrantArgsSchema = z
   .strict();
 
 const RevokeArgsSchema = z.object({ grant_id: idField }).strict();
+
+const SpawnArgsSchema = z
+  .object({
+    provider: ControlProviderSchema,
+    command: z.array(z.string().min(1)).min(1, 'spawn requires a command (after the provider/`--`)'),
+    session_id: idField.optional(),
+    workdir: z.string().min(1).max(1000).optional(),
+  })
+  .strict();
 
 const ApproveArgsSchema = z
   .object({
@@ -423,6 +441,58 @@ function runRevoke(options: SessionCommandOptions, deps: SessionActionDeps, io: 
     io.stdout(`revoked ${grant.grant_id} (${grant.source_session_id} -> ${grant.target_session_id})\n`);
   }
   return 0;
+}
+
+/**
+ * `relay session spawn` — start a Relay-owned process session (D-02). The
+ * process lifecycle lives in control/pty-session.ts; this stays a thin
+ * arg-parse + dispatch so cmd-session.ts does not absorb another subsystem.
+ * Provider comes from `--adapter` (or `--provider`); the command from the
+ * post-`--` argv (or, when no glue forwards it, the trailing positionals).
+ * Exit code mirrors the child: 0 clean, the child's code on non-zero, 1 when
+ * the child was signalled.
+ */
+async function runSpawn(options: SessionCommandOptions, io: CliIO): Promise<number> {
+  const args = parseArgs(
+    SpawnArgsSchema,
+    {
+      provider: options.adapter ?? options.provider,
+      command: options.command ?? options.positionals,
+      ...(options.sessionId !== undefined ? { session_id: options.sessionId } : {}),
+      ...(options.workdir !== undefined ? { workdir: options.workdir } : {}),
+    },
+    io,
+  );
+  if (!args) return 2;
+
+  const result = await runSpawnSession(
+    {
+      provider: args.provider,
+      command: args.command,
+      ...(args.session_id !== undefined ? { sessionId: args.session_id } : {}),
+      ...(args.workdir !== undefined ? { workdir: args.workdir } : {}),
+    },
+    io,
+  );
+
+  if (options.json) {
+    io.stdout(
+      JSON.stringify({
+        session_id: result.sessionId,
+        provider: result.provider,
+        capabilities: result.capabilities,
+        exit_code: result.exitCode,
+        signal: result.signal,
+      }) + '\n',
+    );
+  } else {
+    const how = result.signal !== null ? `signal=${result.signal}` : `code=${result.exitCode ?? 'null'}`;
+    io.stdout(`session ${result.sessionId} (${result.provider}) ended (${how})\n`);
+  }
+
+  if (result.exitCode === 0) return 0;
+  if (typeof result.exitCode === 'number') return Math.min(Math.max(result.exitCode, 1), 255);
+  return 1;
 }
 
 function runApprove(options: SessionCommandOptions, deps: SessionActionDeps, io: CliIO): number {
@@ -944,6 +1014,8 @@ export async function executeSessionCommand(
         return await runSend(options, actionDeps, io);
       case 'delegate':
         return await runDelegate(options, actionDeps, io);
+      case 'spawn':
+        return await runSpawn(options, io);
       case 'grant':
         return runGrant(options, actionDeps, io);
       case 'revoke':
