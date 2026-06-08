@@ -347,6 +347,9 @@ export class ProcessSession {
     errorDetail: string | undefined,
     now: number,
   ): void {
+    // A spawn error embeds the binary path/args (e.g. `spawn /tmp/sk-…/x ENOENT`),
+    // so redact before it lands in metadata or the session_ended event.
+    const safeError = errorDetail !== undefined ? redactSecrets(errorDetail) : undefined;
     try {
       const existing = this.store.getSession(this.sessionId);
       const txn = getDb().transaction(() => {
@@ -365,7 +368,7 @@ export class ProcessSession {
               exit_code: code,
               exit_signal: signal,
               stopped_at: now,
-              ...(errorDetail !== undefined ? { spawn_error: errorDetail } : {}),
+              ...(safeError !== undefined ? { spawn_error: safeError } : {}),
             },
           },
           now,
@@ -377,7 +380,7 @@ export class ProcessSession {
             payload: {
               exit_code: code,
               signal,
-              ...(errorDetail !== undefined ? { spawn_error: errorDetail } : {}),
+              ...(safeError !== undefined ? { spawn_error: safeError } : {}),
             },
           },
           now,
