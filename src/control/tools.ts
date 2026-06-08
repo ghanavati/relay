@@ -366,14 +366,28 @@ function handleSessionSend(args: unknown, callerSessionId: string, broker: Contr
 }
 
 function handleRequestGrant(
-  _args: unknown,
-  _callerSessionId: string,
-  _broker: ControlBroker,
+  args: unknown,
+  callerSessionId: string,
+  broker: ControlBroker,
 ): unknown {
-  // STUB (08-08 RED) — GREEN routes through broker.requestGrant with the
-  // caller-bound source and actor_kind 'llm' so the request is a first-class
-  // visible control_requested event.
-  throw new Error('relay_control_request_grant not implemented (08-08)');
+  const parsed = boundary(RequestGrantToolArgsSchema, args, 'relay_control_request_grant args');
+  // Caller-bound source (D-04): a model can only request authority FOR ITSELF,
+  // never on behalf of another session. actor_kind 'llm' makes the request a
+  // first-class, badge-able control_requested event (D-14/D-15).
+  const requested = broker.requestGrant({
+    source_session_id: callerSessionId,
+    target_session_id: parsed.target_session_id,
+    ttl_ms: DEFAULT_REQUEST_GRANT_TTL_MS,
+    max_messages: parsed.max_messages ?? DEFAULT_REQUEST_GRANT_MAX_MESSAGES,
+    actor_kind: 'llm',
+    ...(parsed.reason !== undefined ? { reason: parsed.reason } : {}),
+  });
+  return {
+    ok: true,
+    request_id: requested.payload['request_id'],
+    target_session_id: parsed.target_session_id,
+    status: 'pending',
+  };
 }
 
 function handleInboxRead(
@@ -398,7 +412,7 @@ function handleInboxRead(
       },
       now,
     );
-    broker.markDelivered(message.message_id, { capability: 'mailbox', now });
+    broker.markDelivered(message.message_id, { capability: 'mailbox', now, actor_kind: 'llm' });
     return {
       message_id: message.message_id,
       source_session_id: message.source_session_id,
@@ -429,7 +443,9 @@ function handleInboxAck(args: unknown, callerSessionId: string, store: ControlSe
         event_type: 'message_acknowledged',
         source_session_id: acknowledged.source_session_id,
         target_session_id: acknowledged.target_session_id,
-        payload: { message_id: acknowledged.message_id },
+        // actor_kind 'llm' — the model acknowledged its own mailbox item, so
+        // the event stream can badge it as a model-driven operation (D-15).
+        payload: { message_id: acknowledged.message_id, actor_kind: 'llm' },
       },
       now,
     );
