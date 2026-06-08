@@ -500,23 +500,21 @@ function fakeControl(parts: Partial<ControlSnapshot>): ControlSnapshot {
   };
 }
 
-describe('buildCommandCentralView — render shape (pure, no provider calls)', () => {
+describe('buildCommandCentralView — Option A render shape (pure, no provider calls)', () => {
   test('empty snapshot renders empty-state guidance in every pane', () => {
     const view = buildCommandCentralView(fakeControl({}), { width: 160 });
     assert.equal(view.narrow, false);
     assert.equal(view.rail.length, 0);
-    assert.ok(view.rail_empty, 'rail must offer empty-state guidance');
-    assert.ok(view.main.empty, 'main pane must explain there is no selection');
+    assert.ok(view.rail_empty, 'Sessions roster must offer empty-state guidance');
+    assert.equal(view.queue.length, 0);
+    assert.ok(view.queue_empty, 'Queue pane must offer empty-state guidance');
+    assert.ok(view.main.empty, 'live pane must explain there is no selection');
     assert.equal(view.main.events.length, 0);
-    assert.equal(view.inbox.length, 0);
-    assert.equal(view.grants.length, 0);
-    assert.equal(view.pending.length, 0);
-    assert.equal(view.audit.length, 0);
     assert.ok(view.status.includes('sessions 0'));
     assert.ok(view.hints.includes('q'), 'hints must document the quit key');
   });
 
-  test('active snapshot maps sessions to badge rail rows with selection and queue rollups', () => {
+  test('Sessions roster maps sessions to badge rail rows with selection and queue rollups', () => {
     const a = fakeSession({
       session_id: 'sess-active',
       state: 'active',
@@ -528,15 +526,8 @@ describe('buildCommandCentralView — render shape (pure, no provider calls)', (
       fakeControl({
         sessions: [a, b],
         selected_session: a,
-        events: [
-          fakeEvent({ id: 1, session_id: 'sess-active', event_type: 'session_registered', created_at: T0 - 5000 }),
-          fakeEvent({ id: 2, session_id: 'sess-active', event_type: 'message_enqueued', created_at: T0 - 1000 }),
-        ],
         inbox: [
           fakeMessage({ message_id: 'm1', source_session_id: 'sess-idle', target_session_id: 'sess-active' }),
-        ],
-        grants: [
-          fakeGrant({ grant_id: 'g1', source_session_id: 'sess-idle', target_session_id: 'sess-active', used_messages: 2, max_messages: 5 }),
         ],
       }),
       { width: 160 },
@@ -552,17 +543,97 @@ describe('buildCommandCentralView — render shape (pure, no provider calls)', (
     assert.ok(view.main.header.includes('ACT'));
     assert.ok(view.main.badges.includes('mbx'), 'capability badges use compact codes');
     assert.ok(view.main.badges.includes('obs'));
-    assert.equal(view.main.empty, null);
-    assert.equal(view.main.events.length, 2);
-    assert.ok(view.main.events[0]!.includes('session_registered'));
-    assert.ok(view.main.events[1]!.includes('message_enqueued'));
-    assert.equal(view.inbox.length, 1);
-    assert.ok(view.inbox[0]!.includes('sess-idle'), 'inbox lines show the source session');
-    assert.equal(view.grants.length, 1);
-    assert.ok(view.grants[0]!.includes('2/5'), 'grant lines show used/max budget');
     assert.ok(view.status.includes('sessions 2'));
     assert.ok(view.status.includes('1 act'));
     assert.ok(view.status.includes('inbox 1'));
+  });
+
+  test('right-pane live stream carries human/llm source badges and lifecycle disposition', () => {
+    const sel = fakeSession({ session_id: 'cc' });
+    const view = buildCommandCentralView(
+      fakeControl({
+        sessions: [sel],
+        selected_session: sel,
+        events: [
+          fakeEvent({
+            id: 1,
+            session_id: 'cc',
+            event_type: 'session_registered',
+            created_at: T0 - 5000,
+          }),
+          fakeEvent({
+            id: 2,
+            session_id: 'cc',
+            event_type: 'message_enqueued',
+            source_session_id: 'qwen',
+            target_session_id: 'cc',
+            payload: { sender_kind: 'llm' },
+            created_at: T0 - 4000,
+          }),
+          fakeEvent({
+            id: 3,
+            session_id: 'cc',
+            event_type: 'control_requested',
+            source_session_id: 'qwen',
+            target_session_id: 'cc',
+            payload: { request_id: 'req-1', action: 'grant', actor_kind: 'llm' },
+            created_at: T0 - 3000,
+          }),
+          fakeEvent({
+            id: 4,
+            session_id: 'cc',
+            event_type: 'message_blocked',
+            source_session_id: 'cc',
+            target_session_id: 'cc',
+            payload: { reason: 'self_send', sender_kind: 'human' },
+            created_at: T0 - 2000,
+          }),
+        ],
+      }),
+      { width: 160 },
+    );
+
+    assert.equal(view.main.events.length, 4);
+    // Chronological (oldest first), newest at the bottom — matches a transcript.
+    const [registered, enqueued, requested, blocked] = view.main.events;
+    assert.ok(registered!.text.includes('registered'));
+    assert.equal(registered!.source, 'system', 'relay-internal events read as system');
+    assert.ok(enqueued!.text.includes('enqueued'));
+    assert.ok(enqueued!.text.includes('qwen'), 'stream lines carry the source→target arrow');
+    assert.equal(enqueued!.source, 'llm', 'model-driven send shows the llm source badge');
+    assert.equal(requested!.disposition, 'pending', 'a grant request renders as pending');
+    assert.equal(requested!.source, 'llm');
+    assert.equal(blocked!.disposition, 'denied', 'a blocked send folds into the stream as denied');
+    assert.equal(blocked!.source, 'human');
+  });
+
+  test('Queue merges inbox, grants, and pending into one operational list', () => {
+    const sel = fakeSession({ session_id: 'cc' });
+    const view = buildCommandCentralView(
+      fakeControl({
+        sessions: [sel],
+        selected_session: sel,
+        inbox: [
+          fakeMessage({ message_id: 'm1', source_session_id: 'qwen', target_session_id: 'cc' }),
+        ],
+        grants: [
+          fakeGrant({ grant_id: 'g1', source_session_id: 'qwen', target_session_id: 'cc', used_messages: 2, max_messages: 5 }),
+        ],
+        pending_actions: [
+          fakeEvent({ id: 70, session_id: 'qwen', event_type: 'control_requested', payload: { request_id: 'req-9', action: 'grant', expires_at: T0 + 60_000 } }),
+        ],
+      }),
+      { width: 160 },
+    );
+
+    assert.equal(view.queue.length, 3, 'inbox + grants + pending fold into one list');
+    const inboxRow = view.queue.find((r) => r.kind === 'inbox');
+    const grantRow = view.queue.find((r) => r.kind === 'grant');
+    const pendingRow = view.queue.find((r) => r.kind === 'pending');
+    assert.ok(inboxRow && inboxRow.text.includes('qwen'), 'inbox row shows the source session');
+    assert.ok(grantRow && grantRow.text.includes('2/5'), 'grant row shows used/max budget');
+    assert.ok(pendingRow && pendingRow.text.includes('req-9'), 'pending row shows the request id');
+    assert.equal(pendingRow!.expired, false, 'a fresh request is not flagged expired');
   });
 
   test('blocked sessions are flagged on the rail and counted in the status strip', () => {
@@ -588,49 +659,22 @@ describe('buildCommandCentralView — render shape (pure, no provider calls)', (
     assert.equal(narrow.narrow, true);
   });
 
-  test('event pane is display-capped to the newest lines', () => {
+  test('live stream is display-capped to the newest lines (chronological)', () => {
     const sel = fakeSession({ session_id: 'sess-busy' });
     const events: ControlEvent[] = [];
-    for (let i = 0; i < 17; i++) {
-      events.push(fakeEvent({ id: i + 1, session_id: 'sess-busy', event_type: 'session_updated', created_at: T0 - (17 - i) * 1000 }));
+    for (let i = 0; i < 19; i++) {
+      events.push(fakeEvent({ id: i + 1, session_id: 'sess-busy', event_type: 'session_updated', created_at: T0 - (19 - i) * 1000 }));
     }
     events.push(fakeEvent({ id: 99, session_id: 'sess-busy', event_type: 'session_ended', created_at: T0 }));
     const view = buildCommandCentralView(
       fakeControl({ sessions: [sel], selected_session: sel, events }),
       { width: 160 },
     );
-    assert.equal(view.main.events.length, 12, 'event pane caps at PANE_ROWS.events');
-    assert.ok(view.main.events[view.main.events.length - 1]!.includes('session_ended'), 'cap keeps the NEWEST events');
-  });
-
-  test('pending actions render request ids; audit strip is bounded newest first', () => {
-    const sel = fakeSession({ session_id: 'sess-p' });
-    const audit: ControlEvent[] = [];
-    for (let i = 0; i < 6; i++) {
-      audit.push(
-        fakeEvent({
-          id: 50 - i,
-          session_id: 'sess-p',
-          event_type: i === 0 ? 'grant_issued' : 'session_updated',
-          created_at: T0 - i * 1000,
-        }),
-      );
-    }
-    const view = buildCommandCentralView(
-      fakeControl({
-        sessions: [sel],
-        selected_session: sel,
-        pending_actions: [
-          fakeEvent({ id: 70, session_id: 'sess-p', event_type: 'control_requested', payload: { request_id: 'req-9', action: 'send' } }),
-        ],
-        audit,
-      }),
-      { width: 160 },
+    assert.equal(view.main.events.length, 14, 'live stream caps at PANE_ROWS.events');
+    assert.ok(
+      view.main.events[view.main.events.length - 1]!.text.includes('ended'),
+      'cap keeps the NEWEST events, newest at the bottom',
     );
-    assert.equal(view.pending.length, 1);
-    assert.ok(view.pending[0]!.includes('req-9'));
-    assert.equal(view.audit.length, 4, 'audit strip caps at PANE_ROWS.audit');
-    assert.ok(view.audit[0]!.includes('grant_issued'), 'audit stays newest first');
   });
 
   test('hints document the ":" command palette key', () => {
@@ -1044,9 +1088,14 @@ describe('Command Central approval queue (D-14)', () => {
       }),
       { width: 160 },
     );
-    assert.equal(view.pending.length, 2);
-    assert.ok(!view.pending[0]!.includes('exp!'), 'unexpired requests carry no marker');
-    assert.ok(view.pending[1]!.includes('exp!'), 'expired requests are marked for the operator');
+    const pending = view.queue.filter((r) => r.kind === 'pending');
+    assert.equal(pending.length, 2);
+    const fresh = pending.find((r) => r.text.includes('req-fresh'));
+    const stale = pending.find((r) => r.text.includes('req-stale'));
+    assert.ok(fresh && fresh.expired === false, 'unexpired requests are not flagged');
+    assert.ok(fresh && !fresh.text.includes('exp!'), 'unexpired requests carry no marker');
+    assert.ok(stale && stale.expired === true, 'expired requests are flagged for the operator');
+    assert.ok(stale && stale.text.includes('exp!'), 'expired requests are marked in the queue text');
   });
 
   test('palette approve issues the grant through the broker with full audit', async () => {
