@@ -397,9 +397,47 @@ function readControlSnapshot(selected_session_id?: string): ControlSnapshot {
   }
 }
 
+// ─── Async resilience for Command Central (CONTROL-16, D-15) ────────────────
+
+/** Provider probes are network calls — bound them so a hung backend never
+ *  freezes the render path; a timed-out probe degrades to offline. */
+export const PROVIDER_PROBE_TIMEOUT_MS = 2500;
+
+/** Fast control-snapshot cadence (cheap synchronous DB read — keeps the live
+ *  event stream fresh). */
+export const CONTROL_REFRESH_MS = 1000;
+
+/** Slow full-snapshot cadence (provider probes + legacy health). */
+export const FULL_REFRESH_MS = 5000;
+
+/**
+ * Resolve `p`, but fall back to `fallback` if it does not settle within `ms`.
+ * Never rejects — a hung or failing probe degrades to the fallback instead of
+ * blocking Command Central. The pending timer is always cleared so it cannot
+ * keep the event loop alive after the race resolves.
+ */
+export async function withTimeout<T>(_p: Promise<T>, _ms: number, _fallback: T): Promise<T> {
+  // STUB (08-08 RED).
+  throw new Error('withTimeout not implemented (08-08)');
+}
+
+/** Drops results from a refresh older than the latest one started, so a slow
+ *  gather can never clobber a newer snapshot (stale-refresh cancellation). */
+export interface RefreshSequencer {
+  /** Start a new refresh; returns its monotonically increasing token. */
+  begin(): number;
+  /** True only for the most recently started refresh token. */
+  isCurrent(token: number): boolean;
+}
+
+export function createRefreshSequencer(): RefreshSequencer {
+  // STUB (08-08 RED).
+  throw new Error('createRefreshSequencer not implemented (08-08)');
+}
+
 /**
  * Gather one full snapshot — pure data, no rendering. Used by both `--json` mode
- * and the Ink renderer (which polls this every 5s).
+ * and the Ink renderer (which polls this on the slow cadence).
  *
  * Exported for tests.
  */
