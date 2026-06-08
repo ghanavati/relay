@@ -1305,7 +1305,7 @@ describe('T10 — shell_exec env allow-list (no secret exfiltration)', () => {
     assert.equal(sanitized['HOME'], '/home/u', 'HOME allowed');
   });
 
-  test('buildShellExecEnv preserves RELAY_* namespace + standard allow-list', () => {
+  test('buildShellExecEnv keeps the standard allow-list and drops the RELAY_* namespace (08-fix)', () => {
     const sanitized = buildShellExecEnv({
       PATH: '/p',
       HOME: '/h',
@@ -1325,12 +1325,15 @@ describe('T10 — shell_exec env allow-list (no secret exfiltration)', () => {
     assert.equal(sanitized['LC_ALL'], 'C');
     assert.equal(sanitized['TERM'], 'xterm');
     assert.equal(sanitized['TMPDIR'], '/tmp');
-    assert.equal(sanitized['RELAY_RUN_ID'], 'run-42', 'RELAY_* must be passed through');
-    assert.equal(sanitized['RELAY_WORKDIR'], '/w', 'RELAY_* must be passed through');
+    // 08-fix HIGH: RELAY_* is no longer forwarded — RELAY_DB_PATH would hand the
+    // model the control DB; RELAY_RUN_ID / RELAY_WORKDIR have no runtime reader in
+    // the child and only widen the bypass surface.
+    assert.equal(sanitized['RELAY_RUN_ID'], undefined, 'RELAY_* must NOT be passed through');
+    assert.equal(sanitized['RELAY_WORKDIR'], undefined, 'RELAY_* must NOT be passed through');
     assert.equal(sanitized['NOT_ALLOWED'], undefined, 'non-allow-listed must be stripped');
   });
 
-  test('buildShellExecEnv strips secret-shaped RELAY_* names — MED codex finding', () => {
+  test('buildShellExecEnv strips secret-shaped names anywhere (08-fix)', () => {
     const sanitized = buildShellExecEnv({
       RELAY_RUN_ID: 'run-42',
       RELAY_WORKDIR: '/w',
@@ -1342,11 +1345,11 @@ describe('T10 — shell_exec env allow-list (no secret exfiltration)', () => {
       RELAY_AUTH_CREDENTIAL: 'leak',
       PATH: '/p',
     } as NodeJS.ProcessEnv);
-    // Allowed: benign RELAY_*
-    assert.equal(sanitized['RELAY_RUN_ID'], 'run-42');
-    assert.equal(sanitized['RELAY_WORKDIR'], '/w');
+    // Whole RELAY_* namespace dropped (08-fix), benign or not.
+    assert.equal(sanitized['RELAY_RUN_ID'], undefined, 'RELAY_* dropped');
+    assert.equal(sanitized['RELAY_WORKDIR'], undefined, 'RELAY_* dropped');
     assert.equal(sanitized['PATH'], '/p');
-    // Denied: secret-shaped names, even within RELAY_* namespace
+    // Secret-shaped names denied regardless of namespace.
     assert.equal(sanitized['RELAY_BERRY_API_KEY'], undefined, 'API_KEY denied');
     assert.equal(sanitized['RELAY_FIGMA_TOKEN'], undefined, 'TOKEN denied');
     assert.equal(sanitized['RELAY_OPENAI_SECRET'], undefined, 'SECRET denied');
@@ -1680,5 +1683,172 @@ describe('T11 — extraToolHandlers dispatch (Phase 7 Figma wire-up)', () => {
     );
     assert.equal(shellCalled, true);
     assert.match(out.content, /STDOUT:/);
+  });
+});
+
+// ─── 08-fix HIGH: relay-CLI control bypass mitigation (shell_exec) ──────────
+
+import {
+  containsBlockedControlBinary,
+  CONTROL_BINARY_BLOCKLIST,
+} from './lmstudio-agentic.js';
+import { AGENTIC_SANDBOX_ENV } from '../security/env-sanitize.js';
+
+describe('08-fix — relay control binary blocked in shell_exec', () => {
+  test('CONTROL_BINARY_BLOCKLIST contains relay', () => {
+    assert.ok(CONTROL_BINARY_BLOCKLIST instanceof Set);
+    assert.ok(CONTROL_BINARY_BLOCKLIST.has('relay'), 'relay must be a blocked control binary');
+  });
+
+  test('containsBlockedControlBinary — relay invocations blocked (matches network tokenizer)', () => {
+    assert.deepEqual(
+      containsBlockedControlBinary('relay session send target hi'),
+      { blocked: true, binary: 'relay' }
+    );
+    // absolute path → basename match, like the network blocklist
+    assert.deepEqual(
+      containsBlockedControlBinary('/usr/local/bin/relay session grant a b'),
+      { blocked: true, binary: 'relay' }
+    );
+    // separators inspected
+    assert.deepEqual(
+      containsBlockedControlBinary('ls && relay session approve r1'),
+      { blocked: true, binary: 'relay' }
+    );
+    assert.deepEqual(
+      containsBlockedControlBinary('cat x | relay session deny r1'),
+      { blocked: true, binary: 'relay' }
+    );
+    // leading backslash escape, like \curl
+    assert.deepEqual(
+      containsBlockedControlBinary('\\relay session revoke g1'),
+      { blocked: true, binary: 'relay' }
+    );
+  });
+
+  test('containsBlockedControlBinary — relay as a non-head argument passes', () => {
+    assert.deepEqual(containsBlockedControlBinary('echo relay'), { blocked: false });
+    assert.deepEqual(containsBlockedControlBinary('grep relay README.md'), { blocked: false });
+    assert.deepEqual(containsBlockedControlBinary('ls -la'), { blocked: false });
+  });
+
+  test('shell_exec handler — relay command blocked → tool ERROR, shellExec never called', async () => {
+    const { shellExec, calls } = makeShellExecRecorder({ stdout: 'should not run', exitCode: 0 });
+    const call: ToolCall = {
+      id: 'call_relay_1',
+      type: 'function',
+      function: {
+        name: 'shell_exec',
+        arguments: JSON.stringify({ command: 'relay session send other-session pwned' }),
+      },
+    };
+    const result = await executeToolCall(call, '/tmp/work', shellExec);
+    assert.equal(result.role, 'tool');
+    assert.equal(result.tool_call_id, 'call_relay_1');
+    assert.match(result.content, /ERROR:.*relay/i);
+    assert.match(result.content, /relay_session_/, 'error must point at the in-process tools');
+    assert.equal(calls.length, 0, 'shellExec MUST NOT run a blocked relay command');
+  });
+});
+
+describe('08-fix — shell_exec env strips RELAY_* control vars, keeps marker out of source', () => {
+  test('buildShellExecEnv drops RELAY_DB_PATH and the RELAY_* control/config namespace', () => {
+    const sanitized = buildShellExecEnv({
+      RELAY_DB_PATH: '/home/u/.relay/relay.db',
+      RELAY_ALLOWED_ROOTS: '/work',
+      RELAY_MEMORY_ALLOWED_WORKDIRS: '/work',
+      RELAY_CONFIG: '/cfg.json',
+      RELAY_RECALLED_LESSONS: '1',
+      RELAY_RUN_ID: 'run-1',
+      RELAY_WORKDIR: '/w',
+      PATH: '/usr/bin:/bin',
+      HOME: '/home/u',
+    } as NodeJS.ProcessEnv);
+    for (const k of [
+      'RELAY_DB_PATH',
+      'RELAY_ALLOWED_ROOTS',
+      'RELAY_MEMORY_ALLOWED_WORKDIRS',
+      'RELAY_CONFIG',
+      'RELAY_RECALLED_LESSONS',
+      'RELAY_RUN_ID',
+      'RELAY_WORKDIR',
+    ]) {
+      assert.equal(sanitized[k], undefined, `${k} MUST be stripped from the shell_exec env`);
+    }
+    assert.equal(sanitized['PATH'], '/usr/bin:/bin', 'PATH still allowed');
+    assert.equal(sanitized['HOME'], '/home/u', 'HOME still allowed');
+  });
+
+  test('buildShellExecEnv does NOT copy the sandbox marker from source (re-injected per child)', () => {
+    const sanitized = buildShellExecEnv({
+      [AGENTIC_SANDBOX_ENV]: '1',
+      PATH: '/p',
+    } as NodeJS.ProcessEnv);
+    assert.equal(
+      sanitized[AGENTIC_SANDBOX_ENV],
+      undefined,
+      'marker is force-injected by defaultShellExec, never copied from the spawn env'
+    );
+    assert.equal(sanitized['PATH'], '/p');
+  });
+
+  test('defaultShellExec child has RELAY_AGENTIC_SANDBOX=1 and no RELAY_DB_PATH leak', async () => {
+    const origDb = process.env['RELAY_DB_PATH'];
+    const origEndpoint = process.env['LMSTUDIO_ENDPOINT'];
+    const origMarker = process.env[AGENTIC_SANDBOX_ENV];
+    process.env['RELAY_DB_PATH'] = '/should/not/leak/relay.db';
+    // Even if the parent already carries a marker, the child must see exactly "1".
+    delete process.env[AGENTIC_SANDBOX_ENV];
+    const fs = await import('node:fs/promises');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'relay-fix-marker-'));
+    try {
+      const eph = await startEphemeralLmStudio([
+        {
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: null,
+              tool_calls: [{
+                id: 'call_env_probe',
+                type: 'function',
+                function: { name: 'shell_exec', arguments: JSON.stringify({ command: 'env' }) },
+              }],
+            },
+            finish_reason: 'tool_calls',
+          }],
+        },
+        { choices: [{ message: { role: 'assistant', content: 'done' }, finish_reason: 'stop' }] },
+      ]);
+      process.env['LMSTUDIO_ENDPOINT'] = eph.url;
+      try {
+        // NOTE: deliberately NOT passing shellExec — exercises defaultShellExec.
+        const runner = new LmStudioAgenticRunner();
+        const result = await runner.run(baseTask({ workdir: tmp }));
+        assert.equal(result.status, 'success', `expected success; got ${result.error?.code ?? ''}`);
+        const body2 = JSON.parse(eph.requestBodies[1] ?? '{}');
+        const toolMsg = body2.messages.find((m: { role: string }) => m.role === 'tool');
+        const envStdout = String(toolMsg?.content ?? '');
+        assert.match(envStdout, /STDOUT:/, 'tool output must be the env dump');
+        assert.match(envStdout, /\nRELAY_AGENTIC_SANDBOX=1\b/, 'sandbox marker forced on for the child');
+        assert.equal(
+          /\nRELAY_DB_PATH=/.test(envStdout),
+          false,
+          'CATASTROPHIC: RELAY_DB_PATH (control DB path) leaked into the shell child'
+        );
+        assert.match(envStdout, /\nPATH=/, 'PATH must reach the child (sanity)');
+      } finally {
+        await eph.close();
+        if (origEndpoint === undefined) delete process.env['LMSTUDIO_ENDPOINT'];
+        else process.env['LMSTUDIO_ENDPOINT'] = origEndpoint;
+      }
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+      if (origDb === undefined) delete process.env['RELAY_DB_PATH'];
+      else process.env['RELAY_DB_PATH'] = origDb;
+      if (origMarker === undefined) delete process.env[AGENTIC_SANDBOX_ENV];
+      else process.env[AGENTIC_SANDBOX_ENV] = origMarker;
+    }
   });
 });

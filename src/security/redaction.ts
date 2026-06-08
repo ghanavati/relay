@@ -37,6 +37,16 @@ export const REDACTION_PATTERNS: readonly RedactionPattern[] = [
     replacement: "[REDACTED:API_KEY]",
   },
   {
+    // Connection-string credentials: scheme://user:pass@host. The secret is in
+    // the VALUE, not the env-var name, so the name-based env sanitizer cannot
+    // catch DATABASE_URL / REDIS_URL / MONGODB_URI etc. This value pass does,
+    // wherever redactSecrets runs (process output, broker messages, spawn
+    // errors). Scheme + host are preserved so logs stay useful.
+    name: "dsn_credentials",
+    pattern: /\b([a-z][a-z0-9+.\-]*:\/\/)[^\s:/@]+:[^\s:/@]+@/gi,
+    replacement: "$1[REDACTED:DSN]@",
+  },
+  {
     // Matches env-style assignments where the identifier contains a secret-suggestive
     // keyword (KEY, SECRET, TOKEN, PASSWORD, PWD, CREDENTIAL) as a complete `_`-delimited
     // segment. The keyword may appear anywhere in the identifier, e.g. MY_API_KEY=...,

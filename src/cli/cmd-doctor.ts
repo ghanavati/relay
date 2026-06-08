@@ -419,6 +419,64 @@ export async function checkConsentFiles(): Promise<ProviderProbe> {
   return { name: 'consent-files', status: 'ok', detail: `${present}/${total} workdirs have consent` };
 }
 
+/**
+ * Read-only control-layer health: session/queued/blocked counts from the live
+ * control tables. Reports `ok` when the tables are readable; `failed` only when
+ * the schema is missing/unreadable. Surfaces the queued-delivery backlog and
+ * blocked control attempts for D-05 visibility.
+ */
+export async function checkControlLayer(): Promise<ProviderProbe> {
+  try {
+    const { getDb } = await import('../runtime/store/db.js');
+    const db = getDb();
+    const one = (sql: string): number => (db.prepare(sql).get() as { n: number }).n;
+    const total = one('SELECT COUNT(*) AS n FROM control_sessions');
+    const active = one("SELECT COUNT(*) AS n FROM control_sessions WHERE state = 'active'");
+    const queued = one("SELECT COUNT(*) AS n FROM control_mailbox WHERE status = 'queued'");
+    const blocked = one("SELECT COUNT(*) AS n FROM control_events WHERE event_type = 'message_blocked'");
+    return {
+      name: 'control',
+      status: 'ok',
+      detail: `${total} session(s), ${active} active, ${queued} queued, ${blocked} blocked`,
+    };
+  } catch (err) {
+    return { name: 'control', status: 'failed', detail: `control tables unreadable: ${(err as Error).message}` };
+  }
+}
+
+/**
+ * Command Central read-model health (Phase 8 / D-12, D-14). Builds the bounded
+ * `ControlSnapshot` that `relay tui` and `relay tui --json` consume and reports
+ * the pending grant-request queue depth — model-driven grant requests (D-14)
+ * waiting on a human approve/deny. `failed` only when the snapshot cannot be
+ * built (control schema missing/unreadable); `ok` otherwise.
+ */
+export async function checkCommandCentral(): Promise<ProviderProbe> {
+  try {
+    const { gatherControlSnapshot, DEFAULT_CONTROL_SNAPSHOT_LIMITS } = await import('../control/read-model.js');
+    const started = Date.now();
+    const snapshot = gatherControlSnapshot();
+    const elapsed = Date.now() - started;
+    const lim = DEFAULT_CONTROL_SNAPSHOT_LIMITS;
+    const overflow =
+      snapshot.sessions.length > lim.sessions ||
+      snapshot.events.length > lim.events ||
+      snapshot.inbox.length > lim.inbox ||
+      snapshot.grants.length > lim.grants;
+    if (overflow) {
+      return { name: 'command-central', status: 'failed', detail: 'snapshot exceeded declared pane bounds' };
+    }
+    const pending = snapshot.pending_actions.length;
+    return {
+      name: 'command-central',
+      status: 'ok',
+      detail: `snapshot bounded (${elapsed}ms), ${pending} pending grant request(s), ${snapshot.sessions.length} session(s)`,
+    };
+  } catch (err) {
+    return { name: 'command-central', status: 'failed', detail: `snapshot unreadable: ${(err as Error).message}` };
+  }
+}
+
 export async function executeDoctorCommand(args: DoctorArgs, io: CliIO): Promise<number> {
   const checks: ProviderProbe[] = [];
   let summary = { ok: 0, missing: 0, failed: 0 };
@@ -484,6 +542,13 @@ export async function executeDoctorCommand(args: DoctorArgs, io: CliIO): Promise
 
   // 13. Consent files presence in known workdirs (additive)
   record(await checkConsentFiles());
+
+  // 14. Control layer health — session/queued/blocked counts (Phase 8)
+  record(await checkControlLayer());
+
+  // 15. Command Central read-model health — bounded snapshot + pending grant
+  //     queue depth, the data source behind `relay tui` (Phase 8 / D-12, D-14)
+  record(await checkCommandCentral());
 
   // Output
   if (args.json) {

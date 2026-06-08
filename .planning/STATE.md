@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v0.2
 milestone_name: milestone
-status: planning
-stopped_at: Completed 01-01-PLAN.md (Phase 1 Schema Cleanup)
-last_updated: "2026-05-19T19:37:02.634Z"
-last_activity: 2026-05-19 — ROADMAP.md created via gsd-roadmapper for v0.2 milestone
+status: verifying
+stopped_at: Completed 08-02-PLAN.md
+last_updated: "2026-06-07T20:53:30.000Z"
+last_activity: 2026-06-07
 progress:
-  total_phases: 7
+  total_phases: 8
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 1
+  total_plans: 9
+  completed_plans: 6
   percent: 0
 ---
 
@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-05-18)
 
 ## Current Position
 
-Phase: 1 of 7 (Schema Cleanup)
-Plan: 1 of 1 in current phase (Complete)
-Status: Phase 1 complete — ready to start Phase 2
-Last activity: 2026-05-19 — Phase 1 plan 01 executed (7 commits, 1126 tests passing)
+Phase: 8 (Universal LLM Control + Command Central, v0.3)
+Plan: 9 of 9 complete (08-01 through 08-09)
+Status: IMPLEMENTED + security-hardened on branch phase-8-control, full suite 1804/1804, all 17 CONTROL reqs met. Codex review: HIGH (shell_exec control bypass) mitigated + confirmed; 3 secret-leak edges fixed across re-review rounds (delimited env names, spawn_error, DSN-value credentials). Pending: maintainer merge decision (Codex loop stopped at diminishing returns — denylist secret detection is asymptotic; residuals documented in SECURITY.md).
+Last activity: 2026-06-08
 
-Progress: [█░░░░░░░░░] 14%
+Progress: [██████████] 100% (phase 8 plans) — security gate cleared; merge is maintainer's call
 
 ## Performance Metrics
 
@@ -56,6 +56,12 @@ Progress: [█░░░░░░░░░] 14%
 
 *Updated after each plan completion*
 | Phase 01-schema-cleanup P01 | 1h35m | 5 tasks | 14 files |
+| Phase 08 P01 | 18min | 2 tasks | 9 files |
+| Phase 08 P02 | 21min | 2 tasks | 6 files |
+| Phase 08 P03 | 23min | 2 tasks | 8 files |
+| Phase 08 P04 | 44min | 3 tasks | 15 files |
+| Phase 08 P06 | 25min | 3 tasks | 5 files |
+| Phase 08 P02 | 13min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -70,6 +76,11 @@ Recent decisions affecting v0.2 work (full log in PROJECT.md):
 - **Local models as runtime targets**: qwen3-coder-next + nomic-embed-text-v1.5 are RUNTIME targets, not code writers
 - [Phase 01-schema-cleanup]: Used sync copyFileSync for production .v1-backup (getDb is sync). Async db.backup() retained for tests + future async callers via prepareDatabase.
 - [Phase 01-schema-cleanup]: Fixed pre-existing npm test glob (sh/macOS bash 3.2 lacks globstar); test baseline went 1003 → 1107 from discovery alone before phase work added 19 more.
+- [Phase 08]: 08-01: Closed ControlProvider enum (6 surfaces) and closed 16-type control event set; extensions are explicit schema changes
+- [Phase 08]: 08-01: getGrant returns latest non-revoked grant without policy filtering; incrementGrantUsage is the atomic D-04 budget gate for the broker
+- [Phase 08]: 08-02: Loop detection is llm-send-only (D-04), counts persisted pair messages bidirectionally over the normalized content hash (threshold 3, 10-min window)
+- [Phase 08]: 08-02: Broker rejects caller-supplied content_hash/redaction — redaction runs before hashing/persistence, blocked sends persist content hashes only (D-06)
+- [Phase 08]: 08-02: Delivery capability preference (live_stdin > resume_send > context_inject > mailbox) shared by broker policy, registry routing, and adapters
 
 ### Partial v0.2 work already shipped (verified via git log)
 
@@ -107,6 +118,6 @@ Top blast-radius pitfalls to enforce at gate (research §4):
 
 ## Session Continuity
 
-Last session: 2026-05-19T19:37:02.633Z
-Stopped at: Completed 01-01-PLAN.md (Phase 1 Schema Cleanup)
+Last session: 2026-06-08 (orchestrated parallel wave execution, paused on user hold)
+Stopped at: 08-07 complete + verified — full suite 1718/1718. PAUSED before round 4. Next: {08-05 ∥ 08-08} parallel (write sets disjoint, build-lock protocol), then 08-09 close-out. Follow-up flagged: cmd-session.ts (970) + broker.ts (985) exceed 800-line cap — split in a refactor plan. User direction pending on terminal-vs-web Command Central emphasis; delegation-first framing (grants/audit are edge-gates, not the product).
 Resume file: None

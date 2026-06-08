@@ -184,10 +184,29 @@ const HOOK_ID = 'relay-memory-session-start';
 // `relay pause` is active, short-circuit before auto-extract runs. Otherwise the
 // paused user's transcripts still get distilled into memories, defeating the
 // privacy off-switch.
+//
+// Phase 8 / CONTROL-06: CC pipes the SessionEnd payload (session_id,
+// transcript_path, cwd) on stdin exactly ONCE. The script captures it into
+// RELAY_CC_HOOK_PAYLOAD and replays it to TWO consumers: `relay context emit
+// --target cc` (which stop-marks the control session as ended — its stdout is
+// irrelevant at SessionEnd, so it goes to /dev/null) and the existing
+// auto-extract pipeline. Each leg is independently `|| true` so a fault in
+// stop-marking can never cost the user their transcript distillation.
 export const HOOK_SCRIPT_SESSION_END =
   'relay pause --check --workdir "${CLAUDE_PROJECT_DIR:-$PWD}" 2>/dev/null && exit 0; ' +
-  'mkdir -p "$HOME/.relay" && relay memory auto-extract --from-stdin 2>>"$HOME/.relay/relay.ndjson" || true';
+  'mkdir -p "$HOME/.relay" && RELAY_CC_HOOK_PAYLOAD="$(cat 2>/dev/null)"; ' +
+  'printf \'%s\' "$RELAY_CC_HOOK_PAYLOAD" | relay context emit --target cc --workdir "${CLAUDE_PROJECT_DIR:-$PWD}" >/dev/null 2>>"$HOME/.relay/relay.ndjson" || true; ' +
+  'printf \'%s\' "$RELAY_CC_HOOK_PAYLOAD" | relay memory auto-extract --from-stdin 2>>"$HOME/.relay/relay.ndjson" || true';
 const HOOK_ID_SESSION_END = 'relay-memory-session-end';
+
+// UserPromptSubmit hook (Phase 8 / CONTROL-06): delivers queued Relay
+// cross-session messages as additionalContext on each prompt. The COMMAND is
+// identical to the SessionStart script — `relay context emit --target cc`
+// reads the hook payload from stdin and differentiates on
+// `hook_event_name` (UserPromptSubmit skips memory re-injection and only
+// drains the control mailbox), so one pipeline serves both boundaries.
+export const HOOK_SCRIPT_USER_PROMPT = HOOK_SCRIPT;
+const HOOK_ID_USER_PROMPT = 'relay-memory-user-prompt';
 
 // Stable marker we attach to every Relay-managed hook entry so install/uninstall
 // can identify our own entries without ever matching foreign hooks by command
@@ -197,6 +216,7 @@ const HOOK_ID_SESSION_END = 'relay-memory-session-end';
 export const HOOK_MARKER_FIELD = '_relay_id';
 export const HOOK_MARKER_SESSION_START = 'relay-context-emit-v1';
 export const HOOK_MARKER_SESSION_END = 'relay-session-end-v1';
+export const HOOK_MARKER_USER_PROMPT = 'relay-user-prompt-v1';
 
 /** Resolve the settings.json path. `global=true` targets the user-wide
  *  `~/.claude/settings.json` so the hook fires in every project; otherwise
@@ -237,8 +257,9 @@ function isRelayManagedHookEntry(
 
 /**
  * Install or remove a CC hook (SessionStart by default; SessionEnd when
- * `sessionEnd: true`). The two hook variants are independent — installing
- * one does not touch the other, so users can opt into either or both.
+ * `sessionEnd: true`; UserPromptSubmit when `userPrompt: true`). The hook
+ * variants are independent — installing one does not touch the others, so
+ * users can opt into any combination.
  *
  * Identification is marker-based: every entry we write carries an
  * `_relay_id` field (CC ignores unknown fields). Install replaces any
@@ -248,16 +269,31 @@ function isRelayManagedHookEntry(
  * hook that happens to look like ours.
  */
 export async function executeMemoryHookCommand(
-  command: { install: boolean; json: boolean; global?: boolean; sessionEnd?: boolean },
+  command: {
+    install: boolean;
+    json: boolean;
+    global?: boolean;
+    sessionEnd?: boolean;
+    userPrompt?: boolean;
+  },
   io: CliIO,
   cwd: string
 ): Promise<number> {
   const settingsPath = resolveHookSettingsPath(cwd, command.global === true);
   const sessionEnd = command.sessionEnd === true;
-  const hookEventName = sessionEnd ? 'SessionEnd' : 'SessionStart';
-  const hookScript = sessionEnd ? HOOK_SCRIPT_SESSION_END : HOOK_SCRIPT;
-  const legacyHookId = sessionEnd ? HOOK_ID_SESSION_END : HOOK_ID;
-  const marker = sessionEnd ? HOOK_MARKER_SESSION_END : HOOK_MARKER_SESSION_START;
+  const userPrompt = !sessionEnd && command.userPrompt === true;
+  const hookEventName = sessionEnd ? 'SessionEnd' : userPrompt ? 'UserPromptSubmit' : 'SessionStart';
+  const hookScript = sessionEnd
+    ? HOOK_SCRIPT_SESSION_END
+    : userPrompt
+      ? HOOK_SCRIPT_USER_PROMPT
+      : HOOK_SCRIPT;
+  const legacyHookId = sessionEnd ? HOOK_ID_SESSION_END : userPrompt ? HOOK_ID_USER_PROMPT : HOOK_ID;
+  const marker = sessionEnd
+    ? HOOK_MARKER_SESSION_END
+    : userPrompt
+      ? HOOK_MARKER_USER_PROMPT
+      : HOOK_MARKER_SESSION_START;
 
   let settings: Record<string, unknown> = {};
   let raw: string | undefined;
@@ -320,6 +356,7 @@ export async function executeMemoryHookCommand(
     await writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
     if (command.json) io.stdout(JSON.stringify({ installed: true, path: settingsPath, event: hookEventName }) + '\n');
     else if (sessionEnd) io.stdout(`SessionEnd hook installed in ${settingsPath}\nRelay will run auto-extract on session end (consent gated; see 'relay memory auto-extract --enable').\n`);
+    else if (userPrompt) io.stdout(`UserPromptSubmit hook installed in ${settingsPath}\nRelay will deliver queued cross-session messages into CC context on each prompt.\n`);
     else io.stdout(`SessionStart hook installed in ${settingsPath}\nRelay will inject recalled memories at the start of every new CC session.\n`);
   } else {
     hooks[hookEventName] = cleaned;

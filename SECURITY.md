@@ -59,6 +59,33 @@ Mitigations:
 - Workers are sandboxed (codex with --dangerously-bypass-approvals-and-sandbox runs in their own subprocess; lmstudio/openrouter are HTTP).
 - Workers do not have direct memory write access — only the user does via CLI.
 
+## Agentic shell_exec and the control layer
+
+`relay run --provider lmstudio-agentic` (and the same provider under `relay parallel`) runs a local model in a tool loop with a `shell_exec` tool. That shell runs as you, in the task workdir. The control layer (`relay session ...`, the broker, grants) is meant to be driven by models only through the in-process `relay_session_*` tools, which are caller-bound and default-deny — never through the human `relay` CLI, which always acts as `kind: human`.
+
+A model with `shell_exec` could otherwise shell out to `relay session send` / `grant` / `approve` to sidestep the broker's default-deny, or read the control DB directly. v0.1.x raises the bar with layered checks; it does NOT make this airtight:
+
+- `shell_exec` blocks `relay` as a command head, the same way it blocks `curl` / `ssh`. This is a basename match only — it does not see `relay` hidden inside `sh -c "relay ..."` or a copied/renamed binary.
+- The `shell_exec` child env drops the whole `RELAY_*` namespace (including `RELAY_DB_PATH`) and every secret-shaped variable, then force-sets `RELAY_AGENTIC_SANDBOX=1`.
+- Mutating `relay session` subcommands (send, delegate, grant, revoke, approve, deny, pause, resume, spawn) refuse when `RELAY_AGENTIC_SANDBOX` is set. So even when a `relay` binary does run — via `sh -c`, an alias, or a copied path — it refuses, as long as it inherited the marker. Read-only `list` / `inspect` / `tail` stay allowed.
+
+Residual bypasses, documented rather than claimed fixed:
+
+- Unsetting the marker at exec time, e.g. `RELAY_AGENTIC_SANDBOX= relay session send ...` or `env -u RELAY_AGENTIC_SANDBOX relay ...`. Injecting the marker into the spawn env cannot stop a command string from clearing its own environment.
+- Direct DB writes. `RELAY_DB_PATH` is stripped, but `HOME` is allowed, so a model can compute `$HOME/.relay/relay.db` and write it with `sqlite3` or any language runtime. The control DB is an unencrypted local file (see Database access).
+- Any non-`relay` binary or in-process trick the basename blocklist does not cover.
+
+This is mitigation, not a security boundary. A determined or prompt-injected local model with shell access can still reach `~/.relay/relay.db`. Treat `lmstudio-agentic` the way you would treat running any untrusted local script as your user. Airtight isolation — an OS sandbox (sandbox-exec / unshare), a separate control DB the agentic worker cannot open, or an unprivileged user — is future work, not in v0.1.x.
+
+## Relay-owned process sessions
+
+`relay session spawn` launches a child process Relay owns, tails its output as control events, and can write its stdin. Two safeguards keep that child's secrets out of the stored audit trail:
+
+- The child gets a sanitized env: secret-shaped variables (provider API keys) and the `RELAY_*` control namespace are removed before spawn. A child that prints `env` cannot echo a provider key into a control event. A spawned CLI that needs an API key must read it from its own config file, not inherit it from Relay's environment.
+- Output (stdout/stderr), injected stdin, the command/args text, and any spawn error are run through the same redactor as the broker (`REDACTION_PATTERNS`) before they are written to control events or session metadata. The live terminal mirror still shows you the child's real output.
+
+The env-name sanitizer is delimiter-aware: it strips `_`-delimited credential names such as `AWS_ACCESS_KEY_ID`, `GOOGLE_APPLICATION_CREDENTIALS`, `SSH_AUTH_SOCK`, and `MYSQL_PWD`, not only names with a trailing keyword. Connection-string credentials live in the value rather than the name (a `DATABASE_URL` whose value embeds a user and password inside the URL userinfo), so a child can still inherit such a var to function; the redactor strips the userinfo credentials before any value reaches a stored event. Name-based stripping is necessarily incomplete — treat a secret printed by an owned child as redacted-in-storage, not as never-having-existed in the child's memory.
+
 ## Workdir isolation
 
 The `RELAY_MEMORY_ALLOWED_WORKDIRS` env var allows you to restrict which workdirs can write memory. Set it for multi-project setups where you don't want one project's writes affecting another.

@@ -23,8 +23,8 @@ function createSchemaVersionTable(db: Database.Database): void {
 }
 
 describe('schema-version helpers', () => {
-  test('EXPECTED_SCHEMA_VERSION is 3', () => {
-    assert.equal(EXPECTED_SCHEMA_VERSION, 3);
+  test('EXPECTED_SCHEMA_VERSION is 4', () => {
+    assert.equal(EXPECTED_SCHEMA_VERSION, 4);
   });
 
   test('readSchemaVersion returns 0 when table is missing', () => {

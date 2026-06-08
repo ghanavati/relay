@@ -5,7 +5,7 @@ import * as assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { executeVerifyCommand, type VerifyCheck, type VerifyDeps } from './cmd-verify.js';
+import { executeVerifyCommand, runCommandCentralCheck, type VerifyCheck, type VerifyDeps } from './cmd-verify.js';
 import { getDb } from '../runtime/store/db.js';
 import { MemoryStore } from '../memory/memory-store.js';
 import type { CliIO } from './commands.js';
@@ -101,6 +101,24 @@ describe('executeVerifyCommand', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // 08-09 — Command Central snapshot health wired as a verify check
+  // ---------------------------------------------------------------------------
+  // The terminal Command Central (and `relay tui --json`) consume the bounded
+  // ControlSnapshot read model. `relay verify` proves that read model builds
+  // and reports the pending grant-request queue depth (D-14) so a broken
+  // operator console surfaces in the smoke, not only when the TUI is opened.
+  test('includes the command-central snapshot check (snapshot + pending grant depth)', async () => {
+    const cap = makeIO(tmp);
+    await executeVerifyCommand({ json: true }, cap.io);
+    const parsed = JSON.parse(cap.stdout.join('').trim()) as { checks: VerifyCheck[] };
+    const cc = parsed.checks.find(c => c.name === 'command-central');
+    assert.ok(cc, 'command-central check present in verify report');
+    assert.strictEqual(cc.status, 'pass', `expected pass on clean DB, got ${cc.status}: ${cc.message}`);
+    assert.match(cc.message, /pending|grant/i, 'message reports pending grant-request depth');
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  // ---------------------------------------------------------------------------
   // T23 — Failure-path coverage (DI stubs via VerifyDeps)
   // ---------------------------------------------------------------------------
   // Defaults: real check implementations everywhere except the one under test.
@@ -114,6 +132,8 @@ describe('executeVerifyCommand', () => {
       runContextEmitCheck: async () => ({ name: 'context-emit', status: 'pass', message: 'stub-pass', critical: true }),
       runHookCheck: async () => ({ name: 'hook', status: 'pass', message: 'stub-pass', critical: false }),
       runDbRoundtripCheck: async () => ({ name: 'db-roundtrip', status: 'pass', message: 'stub-pass', critical: true }),
+      runControlCheck: async () => ({ name: 'control', status: 'pass', message: 'stub-pass', critical: true }),
+      runCommandCentralCheck: async () => ({ name: 'command-central', status: 'pass', message: 'stub-pass', critical: true }),
     };
   }
 
@@ -168,7 +188,7 @@ describe('executeVerifyCommand', () => {
     assert.strictEqual(recallCheck.status, 'fail');
     assert.match(recallCheck.message, /not in recalled memories/);
     assert.strictEqual(parsed.summary.fail, 1);
-    assert.strictEqual(parsed.summary.pass, 4);
+    assert.strictEqual(parsed.summary.pass, 6);
     assert.strictEqual(parsed.ok, false);
     assert.strictEqual(code, 1);
     await rm(tmp, { recursive: true, force: true });
@@ -261,7 +281,7 @@ describe('executeVerifyCommand', () => {
       assert.ok(typeof ch.critical === 'boolean');
     }
     assert.strictEqual(parsed.summary.fail, 2);
-    assert.strictEqual(parsed.summary.pass, 3);
+    assert.strictEqual(parsed.summary.pass, 5);
     assert.strictEqual(parsed.summary.skip, 0);
     assert.strictEqual(parsed.ok, false);
     assert.strictEqual(code, 1);
@@ -382,5 +402,165 @@ describe('executeVerifyCommand', () => {
       else process.env[ALLOW_LIST_ENV] = savedAllowList;
       await rm(ALLOWED_WORKDIR, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 08-09 — runCommandCentralCheck unit coverage
+// ---------------------------------------------------------------------------
+describe('runCommandCentralCheck', () => {
+  beforeEach(() => {
+    // Clean control tables so the snapshot is deterministic on the shared
+    // :memory: DB (other test files may have left sessions/events behind).
+    const db = getDb();
+    for (const table of [
+      'control_delivery_attempts',
+      'control_mailbox',
+      'control_grants',
+      'control_events',
+      'control_sessions',
+    ]) {
+      try { db.prepare(`DELETE FROM ${table}`).run(); } catch { /* table may not exist in older schema */ }
+    }
+  });
+
+  test('healthy control store → pass, reports a bounded snapshot + pending grant depth', async () => {
+    const check = await runCommandCentralCheck();
+    assert.strictEqual(check.name, 'command-central');
+    assert.strictEqual(check.status, 'pass', `expected pass, got ${check.status}: ${check.message}`);
+    assert.strictEqual(check.critical, true);
+    // Clean store → zero pending grant requests, and the message must say so.
+    assert.match(check.message, /0 pending grant request/i);
+  });
+
+  test('surfaces pending model-driven grant requests in the depth count', async () => {
+    const { ControlSessionStore } = await import('../control/session-store.js');
+    const { ControlBroker } = await import('../control/broker.js');
+    const store = new ControlSessionStore();
+    const broker = new ControlBroker(store);
+    const now = Date.now();
+    store.upsertSession({ session_id: 'cc-src', provider: 'fake', capabilities: ['register', 'tool_call'], state: 'active' });
+    store.upsertSession({ session_id: 'cc-tgt', provider: 'fake', capabilities: ['register', 'mailbox'], state: 'active' });
+    // A model opens a visible grant request (D-14): stays pending until a human resolves it.
+    broker.requestGrant(
+      {
+        source_session_id: 'cc-src',
+        target_session_id: 'cc-tgt',
+        ttl_ms: 15 * 60_000,
+        max_messages: 5,
+        actor_kind: 'llm',
+        reason: 'verify pending depth',
+      },
+      now,
+    );
+    const check = await runCommandCentralCheck(now);
+    assert.strictEqual(check.status, 'pass');
+    assert.match(check.message, /1 pending grant request/i, `pending request must be counted: ${check.message}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 08-09 — Command Central operator docs contract
+// ---------------------------------------------------------------------------
+// 08-05 already pinned the live-control framing + every `relay session`
+// subcommand (control-e2e.test.ts). This block adds the Command Central
+// operator surface: the keyboard palette, the human + model-requested UAT, the
+// terminal-native (no browser) guarantee, and the snapshot / pending-grant
+// diagnostics that verify and doctor now expose.
+describe('Command Central docs contract (08-09)', () => {
+  async function readRepoFile(rel: string): Promise<string> {
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const here = new URL('.', import.meta.url).pathname; // dist/cli/
+    const root = path.resolve(here, '..', '..'); // repo root
+    return fs.readFile(path.join(root, rel), 'utf-8');
+  }
+
+  /** Slice one markdown section out by a heading-text needle (to next same/higher heading). */
+  function section(doc: string, headingNeedle: string): string {
+    const lines = doc.split('\n');
+    const start = lines.findIndex(
+      (l) => /^#{1,3}\s/.test(l) && l.toLowerCase().includes(headingNeedle.toLowerCase()),
+    );
+    assert.ok(start >= 0, `heading containing "${headingNeedle}" not found`);
+    const level = (lines[start]!.match(/^#+/) ?? ['##'])[0].length;
+    let end = lines.length;
+    for (let i = start + 1; i < lines.length; i++) {
+      const m = lines[i]!.match(/^(#+)\s/);
+      if (m && m[1]!.length <= level) {
+        end = i;
+        break;
+      }
+    }
+    return lines.slice(start, end).join('\n');
+  }
+
+  const PALETTE_ACTIONS = [
+    'send', 'delegate', 'inspect', 'tail', 'grant', 'revoke', 'pause', 'resume', 'approve', 'deny',
+  ];
+
+  test('commands.md Command Central section documents every palette action', async () => {
+    const docs = await readRepoFile('docs/commands.md');
+    assert.match(docs, /Command Central/, 'commands.md names Command Central');
+    const cc = section(docs, 'relay tui');
+    assert.match(cc, /Command Central/, 'the relay tui section is the Command Central section');
+    assert.match(cc, /palette/i, 'documents the keyboard command palette');
+    for (const action of PALETTE_ACTIONS) {
+      assert.match(cc, new RegExp(`\\b${action}\\b`), `Command Central section documents palette action "${action}"`);
+    }
+    assert.match(cc, /\bspawn\b/, 'references relay session spawn (owned-process sessions)');
+  });
+
+  test('Command Central is terminal-native Ink — no doc claims a browser/web UI', async () => {
+    const commands = await readRepoFile('docs/commands.md');
+    const cc = section(commands, 'relay tui');
+    assert.match(cc, /terminal/i, 'states Command Central is terminal-native');
+    assert.match(cc, /\bInk\b/, 'names the Ink rendering layer');
+    for (const doc of [commands, await readRepoFile('README.md'), await readRepoFile('docs/architecture.md')]) {
+      assert.doesNotMatch(
+        doc,
+        /Command Central[\s\S]{0,160}\b(browser|web dashboard|web[- ]based|web ui|web app)\b/i,
+        'no doc may frame Command Central as a browser/web UI',
+      );
+    }
+  });
+
+  test('commands.md UAT covers human-driven AND model-requested control', async () => {
+    const cc = section(await readRepoFile('docs/commands.md'), 'relay tui');
+    assert.match(cc, /human/i, 'UAT covers human-driven control');
+    assert.match(cc, /model/i, 'UAT covers model-driven control');
+    // Model-requested grant lifecycle: request → approve/deny → deliver.
+    assert.match(cc, /request/i);
+    assert.match(cc, /approve/i);
+    assert.match(cc, /deny/i);
+    assert.match(cc, /deliver/i);
+    // A model can never approve its own request (D-14).
+    assert.match(cc, /(self-approval|cannot approve its own|approve its own)/i, 'documents self-approval is denied');
+  });
+
+  test('commands.md documents the snapshot + pending-grant diagnostics', async () => {
+    const docs = await readRepoFile('docs/commands.md');
+    assert.match(docs, /snapshot/i, 'documents the Command Central snapshot health check');
+    assert.match(docs, /pending grant/i, 'documents the pending grant-request queue depth check');
+  });
+
+  test('architecture.md frames Command Central as the terminal operator console over the broker', async () => {
+    const arch = await readRepoFile('docs/architecture.md');
+    assert.match(arch, /Command Central/, 'architecture names Command Central');
+    assert.match(arch, /ControlSnapshot/, 'ties it to the shared ControlSnapshot read model (D-12)');
+    assert.match(arch, /operator|operational/i, 'operator console, not a passive dashboard (D-15)');
+    assert.match(arch, /same broker/i, 'human + model actions use the same broker policy (D-13)');
+    assert.match(
+      arch,
+      /(cannot approve (its|their) own|self-approval|never approve (its|their) own|no self-grant)/i,
+      'models cannot self-escalate (D-14)',
+    );
+  });
+
+  test('README relay tui row presents it as Command Central', async () => {
+    const readme = await readRepoFile('README.md');
+    const tuiRow = readme.split('\n').find((l) => /`relay tui`/.test(l));
+    assert.ok(tuiRow, 'README has a relay tui row');
+    assert.match(tuiRow, /Command Central/, 'relay tui row describes Command Central, not a passive dashboard');
   });
 });

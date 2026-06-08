@@ -83,8 +83,68 @@ interface InfoReport {
   autoExtract: { enabledWorkdirs: number };
   hooks: HooksState;
   providers: ProviderInfo[];
+  control: ControlInfo;
   lastActivity: LastActivity;
   activity: Activity;
+}
+
+// ─── Control layer (Phase 8 / Plan 05 / Task 2) ─────────────────────────────
+
+export interface ControlAdapterCatalogEntry {
+  readonly provider: string;
+  readonly capabilities: readonly string[];
+  /** True only when the adapter can write to a live process Relay owns (live_stdin). */
+  readonly live_control: boolean;
+}
+
+export interface ControlInfo {
+  readonly sessions: { total: number; active: number; idle: number; ended: number };
+  readonly queued: number;
+  readonly blocked: number;
+  readonly adapters: readonly ControlAdapterCatalogEntry[];
+}
+
+/**
+ * Truthful per-provider control capability catalog. Mirrors the adapter
+ * capability sets in src/control/adapters/* and docs/providers.md. No adapter
+ * declares `live_stdin` here: ambient/transcript sessions are not a live input
+ * channel. Live control belongs only to Relay-owned processes (relay session
+ * spawn → live_stdin + interrupt for non-full-TTY providers). Codex's
+ * context_inject/tool_call are discovery-gated (instructions block / Relay MCP
+ * entry); listed as the configured-maximal set — see docs/providers.md.
+ */
+export const CONTROL_ADAPTER_CATALOG: readonly ControlAdapterCatalogEntry[] = [
+  { provider: 'claude-code', capabilities: ['register', 'observe', 'context_inject', 'mailbox'], live_control: false },
+  { provider: 'codex', capabilities: ['register', 'context_inject', 'tool_call', 'mailbox'], live_control: false },
+  { provider: 'lmstudio', capabilities: ['register', 'observe', 'tail', 'mailbox', 'tool_call'], live_control: false },
+  { provider: 'openrouter', capabilities: ['register', 'observe', 'tail', 'resume_send'], live_control: false },
+  { provider: 'anthropic', capabilities: ['register', 'observe', 'tail', 'resume_send'], live_control: false },
+  { provider: 'fake', capabilities: ['register', 'observe', 'tail', 'mailbox', 'tool_call'], live_control: false },
+];
+
+/** Live control-table rollup for `relay info`: session states, queued backlog, blocked attempts. */
+export async function readControlState(): Promise<ControlInfo> {
+  const sessions = { total: 0, active: 0, idle: 0, ended: 0 };
+  let queued = 0;
+  let blocked = 0;
+  try {
+    const { getDb } = await import('../runtime/store/db.js');
+    const db = getDb();
+    const rows = db
+      .prepare('SELECT state, COUNT(*) AS n FROM control_sessions GROUP BY state')
+      .all() as Array<{ state: string; n: number }>;
+    for (const r of rows) {
+      sessions.total += r.n;
+      if (r.state === 'active') sessions.active = r.n;
+      else if (r.state === 'idle') sessions.idle = r.n;
+      else if (r.state === 'ended') sessions.ended = r.n;
+    }
+    queued = (db.prepare("SELECT COUNT(*) AS n FROM control_mailbox WHERE status = 'queued'").get() as { n: number }).n;
+    blocked = (db.prepare("SELECT COUNT(*) AS n FROM control_events WHERE event_type = 'message_blocked'").get() as { n: number }).n;
+  } catch {
+    // control tables unavailable — leave zeros (info is best-effort).
+  }
+  return { sessions, queued, blocked, adapters: CONTROL_ADAPTER_CATALOG };
 }
 
 async function probeBinaryPath(): Promise<string | null> {
@@ -303,9 +363,10 @@ export async function executeInfoCommand(args: InfoArgs, io: CliIO, version: str
   ]);
   const openrouter = probeEnvKey('OPENROUTER_API_KEY', 'openrouter');
   const anthropic = probeEnvKey('ANTHROPIC_API_KEY', 'anthropic');
-  const [lastActivity, activity] = await Promise.all([
+  const [lastActivity, activity, control] = await Promise.all([
     readLastActivity(),
     readActivityCounts(),
+    readControlState(),
   ]);
 
   const providers: ProviderInfo[] = [
@@ -323,6 +384,7 @@ export async function executeInfoCommand(args: InfoArgs, io: CliIO, version: str
     autoExtract: { enabledWorkdirs: countAutoExtractWorkdirs() },
     hooks,
     providers,
+    control,
     lastActivity,
     activity,
   };
@@ -348,6 +410,13 @@ export async function executeInfoCommand(args: InfoArgs, io: CliIO, version: str
   for (const p of providers) {
     io.stdout(`    ${p.name.padEnd(12)}${providerBadge(p)} ${c.dim(p.detail)}\n`);
   }
+  io.stdout(`  Control:\n`);
+  io.stdout(
+    `    sessions        ${control.sessions.total} (${control.sessions.active} active, ${control.sessions.idle} idle, ${control.sessions.ended} ended)\n`,
+  );
+  io.stdout(`    queued          ${control.queued}\n`);
+  io.stdout(`    blocked         ${control.blocked}\n`);
+  io.stdout(`    adapters        ${control.adapters.map((a) => a.provider).join(', ')}  ${c.dim('(live control: Relay-owned processes only)')}\n`);
   io.stdout(`  Activity (24h):   ${activity.last24h.recalls} recalls, ${activity.last24h.writes} writes, ${activity.last24h.autoExtracts} auto-extracts\n`);
   io.stdout(`  Last activity:\n`);
   io.stdout(`    last recall     ${formatAgo(lastActivity.lastRecallAgoMs)}\n`);

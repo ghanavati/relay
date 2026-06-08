@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { RunStore } from '../runtime/store/run-store.js';
 import type { WorkerRunner } from '../workers/runner.js';
 import type { WorkerResult } from '../workers/types.js';
+import { AGENTIC_SANDBOX_ENV } from '../security/env-sanitize.js';
 
 export interface ParallelArgs {
   specPath: string;
@@ -125,6 +126,13 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
     if (!t.task?.trim()) { io.stderr(`task[${idx}].task is empty\n`); return 2; }
     if (!validProviders.has(t.provider)) { io.stderr(`task[${idx}].provider must be codex|lmstudio|openrouter|anthropic|lmstudio-agentic\n`); return 2; }
     if (httpProviders.has(t.provider) && !t.model) { io.stderr(`task[${idx}].model required for provider=${t.provider}\n`); return 2; }
+  }
+
+  // 08-fix HIGH — if any task runs the agentic shell loop, mark this process as an
+  // agentic sandbox so a model that shells into the `relay` CLI is refused mutating
+  // control subcommands (shell_exec children inherit + force-inject the marker).
+  if (spec.tasks.some((t) => t.provider === 'lmstudio-agentic')) {
+    process.env[AGENTIC_SANDBOX_ENV] = '1';
   }
 
   const store = new RunStore();

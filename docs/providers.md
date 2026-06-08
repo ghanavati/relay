@@ -50,6 +50,27 @@ Dispatch:
 relay run 'analyze this codebase for SQL injection risk' --provider openrouter --model anthropic/claude-opus-4-5
 ```
 
+## Session control capabilities
+
+Relay's control layer (Phase 8) reports per-provider session capabilities explicitly. The command surface is universal; delivery semantics are adapter-specific and never overclaimed — commands refuse unsupported operations instead of silently degrading.
+
+| Provider | Capabilities | Delivery semantics |
+|---|---|---|
+| claude-code | register, observe, context_inject, mailbox | Ambient sessions register via CC hooks (SessionStart/UserPromptSubmit/SessionEnd). Queued messages render as `additionalContext` at the next hook boundary. No live stdin — hooks are not an input channel. |
+| codex | register (+context_inject, mailbox with instructions block; +tool_call, mailbox with Relay MCP entry) | Conservative, discovery-based. `relay setup-llm codex` reports what is currently discoverable. Messages ride along with instructions renders or wait for MCP tool pull. |
+| lmstudio | Relay-native tool loop | Relay owns the process — strong in-process control through agentic tool handlers. |
+| openrouter | register, observe, tail, resume_send | Transcript-backed Relay session. `resume_send` = append to the stored transcript and make a new provider request. The provider API is stateless; the session state lives in Relay. |
+| anthropic | register, observe, tail, resume_send | Same transcript-backed semantics as openrouter, against the Anthropic Messages API. |
+| Relay-owned process | register, observe, tail, mailbox, live_stdin, interrupt | Launched by `relay session spawn --provider <name> <command...>`. Relay owns the pipes: line-based stdin writes (`live_stdin`), SIGINT interrupt, and stdout/stderr tailed as control events. This is the one path with real live control. Full-TTY CLIs (claude, codex) detect non-TTY stdio and change behavior, so a spawned claude/codex reports `live_stdin` absent — observe and interrupt still apply. |
+
+Strong (live) control is exclusive to Relay-owned processes — the sessions you start with `relay session spawn`. Every other adapter is observe + queued/transcript delivery; none of them get a live stdin channel.
+
+What Relay never claims:
+
+- `live_stdin` into Claude Code or Codex sessions Relay did not launch. Full-TTY CLIs are out of live-injection scope in v1; the capability is reported truthfully absent.
+- Provider-native session resume for OpenRouter/Anthropic — `resume_send` there means Relay-transcript continuation, not provider-side live state.
+- Any hardcoded model fallback: transcript sessions refuse to send when no model is configured rather than guessing.
+
 ## Routing rules (when to use which)
 
 | Task | Provider |

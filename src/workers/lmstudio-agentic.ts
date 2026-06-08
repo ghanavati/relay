@@ -33,6 +33,7 @@ import { z } from 'zod';
 
 import { makeError } from '../errors.js';
 import { getLmStudioEndpoint, getLmStudioApiKey } from '../config/providers.js';
+import { AGENTIC_SANDBOX_ENV, isSecretEnvName } from '../security/env-sanitize.js';
 import type { WorkerRunner, WorkerCapabilities } from './runner.js';
 import type {
   WorkerTask,
@@ -113,15 +114,19 @@ export type FetchFn = typeof fetch;
 export type ShellExecFn = (args: ShellExecArgs) => Promise<ShellExecResult>;
 
 /**
- * Per-tool handler for non-shell tools (Phase 7 onward — Figma REST tools).
- * Dispatched by name from `executeToolCall`; result is JSON.stringified into
- * the tool message content for the model.
+ * Per-tool handler for non-shell tools (Phase 7 onward — Figma REST tools,
+ * Phase 8 — Relay control tools). Dispatched by name from `executeToolCall`;
+ * result is JSON.stringified into the tool message content for the model.
  */
 export interface NamedToolHandler {
   name: string;
   handle: (args: unknown, ctx: { workdir: string; pat: string }) => Promise<unknown>;
-  /** PAT or other credential needed by the handler. Passed as `ctx.pat`. */
-  pat: string;
+  /**
+   * PAT or other credential needed by the handler. Passed as `ctx.pat`.
+   * Optional since Phase 8 — credential-less tools (Relay control tools)
+   * omit it; dispatch substitutes ''.
+   */
+  pat?: string;
 }
 
 export interface LmStudioAgenticRunnerOpts {
@@ -207,8 +212,12 @@ const SHELL_EXEC_ARGS_SCHEMA = z
 /**
  * Env vars passed through to the spawned shell. Everything else (notably
  * ANTHROPIC_API_KEY, OPENROUTER_API_KEY, GITHUB_TOKEN, etc.) is stripped to
- * prevent secret exfiltration via model-emitted shell commands. `RELAY_*` is
- * allowed for tool-side coordination with the orchestrator.
+ * prevent secret exfiltration via model-emitted shell commands.
+ *
+ * 08-fix HIGH: the `RELAY_*` namespace is NO LONGER forwarded. RELAY_DB_PATH
+ * would hand the model the control DB path (direct sqlite mutation bypass);
+ * RELAY_ALLOWED_ROOTS / RELAY_MEMORY_ALLOWED_WORKDIRS reveal and govern scoping.
+ * A model-emitted command needs none of these for a workdir task.
  */
 const SHELL_EXEC_ENV_ALLOW = new Set<string>([
   'PATH',
@@ -221,21 +230,23 @@ const SHELL_EXEC_ENV_ALLOW = new Set<string>([
 ]);
 
 /**
- * Even within the `RELAY_*` namespace, deny secret-shaped names. A future
- * `RELAY_BERRY_API_KEY` or `RELAY_FIGMA_TOKEN` must NOT reach the spawned
- * shell — model-emitted commands could `echo $RELAY_FIGMA_TOKEN > /dev/...`.
- * Match is case-insensitive on the suffix, applied to ANY env var name.
+ * Build a sanitized env from the allow-list only. Secret-shaped names and the
+ * whole RELAY_* control/config namespace are dropped (08-fix). The agentic
+ * sandbox marker is intentionally NOT copied from the source here — it is
+ * force-injected per child by defaultShellExec AFTER this strip, so a
+ * model-controlled spawn env cannot pre-empt or blank it.
  */
-const SECRET_NAME_PATTERN = /(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE|AUTH)\b/i;
-
-/** Build a sanitized env containing only allow-listed keys + safe `RELAY_*` names. */
 export function buildShellExecEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(source)) {
     if (value === undefined) continue;
-    // Deny secret-shaped names even when explicitly allow-listed or RELAY_-namespaced.
-    if (SECRET_NAME_PATTERN.test(key)) continue;
-    if (SHELL_EXEC_ENV_ALLOW.has(key) || key.startsWith('RELAY_')) {
+    // The marker is re-injected separately; never trust a source-provided value.
+    if (key === AGENTIC_SANDBOX_ENV) continue;
+    // Deny secret-shaped names even when allow-listed.
+    if (isSecretEnvName(key)) continue;
+    // Drop the entire RELAY_* control/config namespace.
+    if (key.startsWith('RELAY_')) continue;
+    if (SHELL_EXEC_ENV_ALLOW.has(key)) {
       out[key] = value;
     }
   }
@@ -285,37 +296,78 @@ export const NETWORK_BINARY_BLOCKLIST: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Inspect a shell command string and report the first blocked network-binary
- * token, if any. Tokenizes by command-separator characters (`;`, `&&`, `||`, `|`)
- * and checks the FIRST whitespace-delimited token of each segment against the
- * blocklist (basename match — `/usr/bin/curl` → `curl`).
+ * Yield the head (first whitespace-delimited token) of each command segment,
+ * with its basename. Tokenizes by command-separator characters (`;`, `&&`,
+ * `||`, `|`); strips a leading backslash escape (`\curl`); basenames an
+ * absolute path (`/usr/bin/curl` → `curl`). Shared by the network and control
+ * binary blocklists so both use the SAME detection mechanism (08-fix).
  *
- * Does NOT flag blocked names appearing as substrings (e.g. `echo "curl docs"`
- * is allowed because the first token is `echo`).
+ * Does NOT flag blocked names appearing as non-head tokens (e.g. `echo "curl
+ * docs"` is allowed because the head of the only segment is `echo`).
  */
-export function containsBlockedNetworkBinary(
-  cmd: string
-): { blocked: true; binary: string } | { blocked: false } {
-  // Split on shell command separators. Treat `;`, `&&`, `||`, `|` as boundaries.
+function* segmentHeads(cmd: string): Generator<{ segment: string; basename: string }> {
   const segments = cmd.split(/;|&&|\|\||\|/);
   for (const rawSegment of segments) {
     const segment = rawSegment.trim();
     if (!segment) continue;
-    // Strip a leading backslash (bash escape, e.g. `\curl`).
     const head = segment.replace(/^\\/, '').split(/\s+/)[0] ?? '';
     if (!head) continue;
-    // Basename: `/usr/bin/curl` → `curl`.
     const basename = head.split('/').pop() ?? head;
+    yield { segment, basename };
+  }
+}
+
+/**
+ * Inspect a shell command string and report the first blocked network-binary
+ * token, if any (basename match — `/usr/bin/curl` → `curl`).
+ */
+export function containsBlockedNetworkBinary(
+  cmd: string
+): { blocked: true; binary: string } | { blocked: false } {
+  for (const { segment, basename } of segmentHeads(cmd)) {
+    const lower = basename.toLowerCase();
     // openssl s_client special-case: `openssl s_client -connect ...`
-    if (basename.toLowerCase() === 'openssl') {
+    if (lower === 'openssl') {
       const args = segment.replace(/^\S+\s*/, '').trimStart();
       if (/^s_client\b/i.test(args)) {
         return { blocked: true, binary: 'openssl s_client' };
       }
       continue;
     }
-    if (NETWORK_BINARY_BLOCKLIST.has(basename.toLowerCase())) {
-      return { blocked: true, binary: basename.toLowerCase() };
+    if (NETWORK_BINARY_BLOCKLIST.has(lower)) {
+      return { blocked: true, binary: lower };
+    }
+  }
+  return { blocked: false };
+}
+
+/**
+ * Control-plane binaries blocked inside shell_exec (08-fix HIGH). A model must
+ * drive control sessions through the in-process relay_session_* tools
+ * (caller-bound, default-deny), never by shelling out to the human `relay` CLI
+ * which always acts as kind:human and would let the model mint its own
+ * authority.
+ *
+ * This is best-effort hardening, not a hard boundary: it matches the
+ * network-binary tokenizer exactly, so the same residuals apply (a head hidden
+ * behind `sh -c "relay ..."`, a copied/renamed binary, etc.). The deeper
+ * defense is the RELAY_AGENTIC_SANDBOX marker + the cmd-session CLI guard, which
+ * refuses even when a `relay` binary does execute. See SECURITY.md.
+ */
+export const CONTROL_BINARY_BLOCKLIST: ReadonlySet<string> = new Set<string>(['relay']);
+
+/**
+ * Inspect a shell command string and report the first blocked control-binary
+ * head, if any (basename match — `/usr/local/bin/relay` → `relay`). Uses the
+ * SAME tokenizer as containsBlockedNetworkBinary.
+ */
+export function containsBlockedControlBinary(
+  cmd: string
+): { blocked: true; binary: string } | { blocked: false } {
+  for (const { basename } of segmentHeads(cmd)) {
+    const lower = basename.toLowerCase();
+    if (CONTROL_BINARY_BLOCKLIST.has(lower)) {
+      return { blocked: true, binary: lower };
     }
   }
   return { blocked: false };
@@ -331,7 +383,13 @@ const defaultShellExec: ShellExecFn = (args: ShellExecArgs) =>
         cwd: args.cwd,
         timeout: 30_000,
         maxBuffer: 64 * 1024,
-        env: buildShellExecEnv(process.env),
+        // Force the agentic-sandbox marker on AFTER the strip (08-fix): every
+        // shell_exec child is, by definition, a sandboxed agentic shell. Any
+        // `relay` binary that runs as a descendant inherits this and the
+        // cmd-session CLI guard refuses its mutating subcommands. A model can
+        // still unset it inline (`RELAY_AGENTIC_SANDBOX= relay ...`) — that
+        // residual is documented in SECURITY.md.
+        env: { ...buildShellExecEnv(process.env), [AGENTIC_SANDBOX_ENV]: '1' },
       },
       (err, stdout, stderr) => {
         const exitCode =
@@ -401,6 +459,14 @@ export async function executeShellExec(
       `Network-binary ${netCheck.binary} blocked. Outbound network is denied in shell_exec sandbox. Use a Relay tool or whitelist via --unsafe-shell (not yet implemented).`
     );
   }
+  const ctrlCheck = containsBlockedControlBinary(parsed.command);
+  if (ctrlCheck.blocked) {
+    throw new Error(
+      `Control binary ${ctrlCheck.binary} blocked in shell_exec sandbox. ` +
+        `Drive control sessions through the in-process relay_session_* tools ` +
+        `(caller-bound, default-deny); the human relay CLI cannot be invoked from a sandboxed agent.`
+    );
+  }
   const result = await shellExec({
     command: parsed.command,
     cwd: workdir,
@@ -438,7 +504,7 @@ export async function executeToolCall(
       return { role: 'tool', tool_call_id: call.id, content: 'ERROR: arguments not valid JSON' };
     }
     try {
-      const result = await extra.handle(parsedArgs, { workdir, pat: extra.pat });
+      const result = await extra.handle(parsedArgs, { workdir, pat: extra.pat ?? '' });
       const content = typeof result === 'string' ? result : JSON.stringify(result);
       return { role: 'tool', tool_call_id: call.id, content };
     } catch (err) {
