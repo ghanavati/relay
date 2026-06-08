@@ -416,9 +416,17 @@ export const FULL_REFRESH_MS = 5000;
  * blocking Command Central. The pending timer is always cleared so it cannot
  * keep the event loop alive after the race resolves.
  */
-export async function withTimeout<T>(_p: Promise<T>, _ms: number, _fallback: T): Promise<T> {
-  // STUB (08-08 RED).
-  throw new Error('withTimeout not implemented (08-08)');
+export async function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), ms);
+  });
+  try {
+    // p.catch degrades a rejection to the fallback; the timeout degrades a hang.
+    return await Promise.race([p.catch(() => fallback), timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 /** Drops results from a refresh older than the latest one started, so a slow
@@ -431,8 +439,11 @@ export interface RefreshSequencer {
 }
 
 export function createRefreshSequencer(): RefreshSequencer {
-  // STUB (08-08 RED).
-  throw new Error('createRefreshSequencer not implemented (08-08)');
+  let latest = 0;
+  return {
+    begin: () => (latest += 1),
+    isCurrent: (token: number) => token === latest,
+  };
 }
 
 /**
@@ -446,13 +457,23 @@ export async function gatherSnapshot(args: {
   version: string;
   selected_session_id?: string;
 }): Promise<Snapshot> {
+  // Provider probes are network calls — bound them so a hung/offline backend
+  // degrades to offline instead of blocking Command Central (CONTROL-16).
   const [activity, preview, dbEntries, hookInstalled, codex, lmstudio] = await Promise.all([
     readRecentActivity(10),
     readRecallPreview(args.cwd, 5),
     readDbEntries(),
     readHookInstalled(),
-    probeCodex(),
-    probeLmStudio(),
+    withTimeout(probeCodex(), PROVIDER_PROBE_TIMEOUT_MS, {
+      name: 'codex',
+      status: 'failed',
+      detail: 'probe timed out',
+    }),
+    withTimeout(probeLmStudio(), PROVIDER_PROBE_TIMEOUT_MS, {
+      name: 'lmstudio',
+      status: 'failed',
+      detail: 'probe timed out',
+    }),
   ]);
   const openrouter = probeEnvKey('OPENROUTER_API_KEY', 'openrouter');
   const anthropic = probeEnvKey('ANTHROPIC_API_KEY', 'anthropic');
@@ -489,7 +510,7 @@ async function renderInk(args: TuiArgs): Promise<number> {
   const React = await import('react');
   const { render, Box, Text, useInput, useApp } = await import('ink');
   const ce = React.createElement;
-  const { useState, useEffect, useCallback } = React;
+  const { useState, useEffect, useCallback, useRef } = React;
 
   function badgeColor(badge: RailRow['badge']): string {
     return badge === 'ACT' ? 'green' : badge === 'IDL' ? 'yellow' : 'gray';
@@ -619,7 +640,12 @@ async function renderInk(args: TuiArgs): Promise<number> {
   }
 
   function App(): React.ReactElement {
+    // Two cadences (CONTROL-16): the control snapshot is a cheap synchronous DB
+    // read refreshed fast (CONTROL_REFRESH_MS) so the live event stream stays
+    // fresh; the full snapshot (provider probes + legacy health) is refreshed
+    // slowly (FULL_REFRESH_MS) so network probes never gate the UI.
     const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+    const [control, setControl] = useState<ControlSnapshot | null>(null);
     const [lastRefresh, setLastRefresh] = useState<number>(Date.now());
     const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
     const [palette, setPaletteState] = useState<{ open: boolean; input: string }>({
@@ -629,21 +655,44 @@ async function renderInk(args: TuiArgs): Promise<number> {
     const [paletteResult, setPaletteResult] = useState<PaletteResult | null>(null);
     const { exit } = useApp();
 
-    const refresh = useCallback(async (sel: string | undefined) => {
+    // Stale-refresh guards: a slow gather that finishes after a newer one
+    // started is dropped instead of clobbering the fresher snapshot.
+    const controlSeq = useRef(createRefreshSequencer()).current;
+    const fullSeq = useRef(createRefreshSequencer()).current;
+
+    /** Fast, synchronous control refresh — no await on the render path. */
+    const refreshControl = useCallback((sel: string | undefined) => {
+      const token = controlSeq.begin();
+      const next = readControlSnapshot(sel);
+      if (controlSeq.isCurrent(token)) {
+        setControl(next);
+        setLastRefresh(Date.now());
+      }
+    }, [controlSeq]);
+
+    /** Slow full refresh — provider probes are already timeout-bounded inside
+     *  gatherSnapshot, and a stale result is dropped by the sequencer. */
+    const refreshFull = useCallback(async (sel: string | undefined) => {
+      const token = fullSeq.begin();
       const snap = await gatherSnapshot({
         cwd: args.cwd,
         version: args.version,
         ...(sel !== undefined ? { selected_session_id: sel } : {}),
       });
-      setSnapshot(snap);
-      setLastRefresh(Date.now());
-    }, []);
+      if (fullSeq.isCurrent(token)) setSnapshot(snap);
+    }, [fullSeq]);
 
     useEffect(() => {
-      void refresh(selectedId);
-      const id = setInterval(() => { void refresh(selectedId); }, 5000);
+      refreshControl(selectedId);
+      const id = setInterval(() => refreshControl(selectedId), CONTROL_REFRESH_MS);
       return () => clearInterval(id);
-    }, [refresh, selectedId]);
+    }, [refreshControl, selectedId]);
+
+    useEffect(() => {
+      void refreshFull(selectedId);
+      const id = setInterval(() => { void refreshFull(selectedId); }, FULL_REFRESH_MS);
+      return () => clearInterval(id);
+    }, [refreshFull, selectedId]);
 
     // Palette commands mutate ONLY through the shared broker/session-command
     // path (D-13); the store stays the source of truth — after every command
@@ -659,9 +708,12 @@ async function renderInk(args: TuiArgs): Promise<number> {
         if (result.ok && result.select_session_id !== undefined) {
           setSelectedId(result.select_session_id);
         }
-        await refresh(nextSel);
+        // Immediate (synchronous) control refresh so the operator sees the
+        // result without waiting for the next tick; full refresh in background.
+        refreshControl(nextSel);
+        void refreshFull(nextSel);
       },
-      [refresh],
+      [refreshControl, refreshFull],
     );
 
     useInput((input, key) => {
@@ -672,7 +724,7 @@ async function renderInk(args: TuiArgs): Promise<number> {
           if (line.trim() !== '') {
             void runPaletteLine(
               line,
-              selectedId ?? snapshot?.control.selected_session?.session_id,
+              selectedId ?? control?.selected_session?.session_id,
             );
           }
           return;
@@ -696,13 +748,16 @@ async function renderInk(args: TuiArgs): Promise<number> {
         return;
       }
       if (input === 'q' || (key.ctrl && input === 'c')) exit();
-      if (input === 'r') void refresh(selectedId);
+      if (input === 'r') {
+        refreshControl(selectedId);
+        void refreshFull(selectedId);
+      }
       const down = input === 'j' || key.downArrow;
       const up = input === 'k' || key.upArrow;
-      if (snapshot !== null && (down || up)) {
-        const ids = snapshot.control.sessions.map((s) => s.session_id);
+      if (control !== null && (down || up)) {
+        const ids = control.sessions.map((s) => s.session_id);
         if (ids.length === 0) return;
-        const current = snapshot.control.selected_session?.session_id;
+        const current = control.selected_session?.session_id;
         const idx = current === undefined ? -1 : ids.indexOf(current);
         const nextIdx = Math.min(
           Math.max(idx === -1 ? 0 : idx + (down ? 1 : -1), 0),
@@ -713,11 +768,14 @@ async function renderInk(args: TuiArgs): Promise<number> {
       }
     });
 
-    if (!snapshot) {
+    // Panes render from the fast control snapshot the moment it lands — they do
+    // not wait for provider probes (CONTROL-16: offline providers never block).
+    const liveControl = control ?? snapshot?.control ?? null;
+    if (liveControl === null) {
       return ce(Box, { padding: 1 }, ce(Text, null, 'Loading Command Central...'));
     }
 
-    const view = buildCommandCentralView(snapshot.control, {
+    const view = buildCommandCentralView(liveControl, {
       width: process.stdout.columns ?? 120,
     });
     const panes = [
@@ -736,11 +794,17 @@ async function renderInk(args: TuiArgs): Promise<number> {
               : `${paletteResult.code}: ${paletteResult.message}`,
           )
         : null;
+    // Bottom health strip needs the slow full snapshot; until it lands the
+    // panes are already live, so show a thin placeholder instead of blocking.
+    const bottom =
+      snapshot !== null
+        ? ce(BottomStrip, { view, snapshot, lastRefreshMs: lastRefresh })
+        : ce(Text, { key: 'health-loading', dimColor: true }, 'probing providers…');
     return ce(
       Box,
       { flexDirection: 'column' },
       ce(Box, { flexDirection: view.narrow ? 'column' : 'row' }, ...panes),
-      ce(BottomStrip, { view, snapshot, lastRefreshMs: lastRefresh }),
+      bottom,
       paletteLine,
     );
   }
