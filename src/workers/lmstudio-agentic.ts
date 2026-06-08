@@ -325,6 +325,24 @@ export function containsBlockedNetworkBinary(
   return { blocked: false };
 }
 
+/**
+ * Control-plane binaries blocked inside shell_exec. A model must drive control
+ * sessions through the in-process relay_session_* tools (caller-bound,
+ * default-deny), never by shelling out to the human `relay` CLI which always
+ * acts as kind:human and would let the model mint its own authority.
+ *
+ * STUB (RED): empty set + always-false check so the new tests fail; real
+ * detection (matching the network-binary tokenizer) lands in GREEN.
+ */
+export const CONTROL_BINARY_BLOCKLIST: ReadonlySet<string> = new Set<string>();
+
+/** STUB (RED) — real implementation mirrors containsBlockedNetworkBinary in GREEN. */
+export function containsBlockedControlBinary(
+  _cmd: string
+): { blocked: true; binary: string } | { blocked: false } {
+  return { blocked: false };
+}
+
 /** Default real-shell executor. Truncates stdout/stderr at maxBytes (byte-safe). */
 const defaultShellExec: ShellExecFn = (args: ShellExecArgs) =>
   new Promise<ShellExecResult>((resolve) => {

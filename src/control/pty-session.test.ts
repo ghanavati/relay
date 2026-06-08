@@ -263,3 +263,68 @@ describe('executeSessionCommand spawn', () => {
     assert.match(cap.stderr.join(''), /command/i);
   });
 });
+
+// ─── 08-fix MEDIUM: spawned-process secret leak ─────────────────────────────
+
+describe('ProcessSession — sanitized child env + redacted persistence', () => {
+  /** node one-liner that prints its own env as JSON and exits. */
+  function envDumper(): string[] {
+    return [execPath, '-e', 'process.stdout.write(JSON.stringify(process.env));process.exit(0);'];
+  }
+
+  test('owned child env drops secret-shaped + RELAY_* vars (no key/control-DB leak)', async () => {
+    const store = new ControlSessionStore();
+    const id = uid('env-strip');
+    const sentinel = 'sk-ant-PTYLEAK' + Math.random().toString(36).slice(2);
+    const origAnthropic = process.env['ANTHROPIC_API_KEY'];
+    process.env['ANTHROPIC_API_KEY'] = sentinel;
+    // RELAY_DB_PATH is ':memory:' from the file header — assert it is NOT inherited.
+    try {
+      const session = new ProcessSession({ sessionId: id, provider: 'fake', command: envDumper(), store });
+      session.start();
+      await session.waitForExit(5000);
+      const dump = outputLines(store.tailEvents(id, { limit: 1000 })).map((l) => l.text).join('');
+      const childEnv = JSON.parse(dump) as Record<string, string>;
+      assert.equal(childEnv['ANTHROPIC_API_KEY'], undefined, 'API key MUST NOT reach the owned child');
+      assert.equal(childEnv['RELAY_DB_PATH'], undefined, 'RELAY_DB_PATH MUST NOT reach the owned child');
+      // No secret-shaped var name survives in the child environment.
+      const secretShaped = Object.keys(childEnv).filter((k) =>
+        /(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE|AUTH)\b/i.test(k),
+      );
+      assert.deepEqual(secretShaped, [], `secret-shaped vars leaked: ${secretShaped.join(', ')}`);
+      assert.ok(childEnv['PATH'] !== undefined, 'PATH passes through (sanity — child is functional)');
+    } finally {
+      if (origAnthropic === undefined) delete process.env['ANTHROPIC_API_KEY'];
+      else process.env['ANTHROPIC_API_KEY'] = origAnthropic;
+    }
+  });
+
+  test('a secret printed by the child is redacted in the persisted output event', async () => {
+    const store = new ControlSessionStore();
+    const id = uid('redact-out');
+    const secret = 'AKIAABCDEFGHIJKLMNOP'; // AKIA + 16 → aws_key redaction pattern
+    const command = [
+      execPath,
+      '-e',
+      `process.stdout.write(${JSON.stringify('aws ' + secret + ' end\n')});process.exit(0);`,
+    ];
+    const session = new ProcessSession({ sessionId: id, provider: 'fake', command, store });
+    session.start();
+    await session.waitForExit(5000);
+    const persisted = outputLines(store.tailEvents(id, { limit: 1000 })).map((l) => l.text).join('\n');
+    assert.equal(persisted.includes(secret), false, 'child output secret MUST be redacted before persistence');
+    assert.match(persisted, /REDACTED/, 'a redaction marker replaces the secret');
+  });
+
+  test('command text carrying a secret is redacted in session metadata', async () => {
+    const store = new ControlSessionStore();
+    const id = uid('redact-cmd');
+    const secret = 'AKIAABCDEFGHIJKLMNOP';
+    const command = [execPath, '-e', 'process.exit(0);', '--aws-key', secret];
+    const session = new ProcessSession({ sessionId: id, provider: 'fake', command, store });
+    session.start();
+    await session.waitForExit(5000);
+    const meta = JSON.stringify(store.getSession(id)?.metadata ?? {});
+    assert.equal(meta.includes(secret), false, 'command metadata MUST be redacted before persistence');
+  });
+});
