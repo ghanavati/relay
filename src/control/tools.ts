@@ -169,6 +169,39 @@ const SESSION_SEND_DEF: ToolDef = {
   },
 };
 
+const REQUEST_GRANT_DEF: ToolDef = {
+  type: 'function',
+  function: {
+    name: 'relay_control_request_grant',
+    description:
+      'Request a human-approved grant authorizing YOUR session to send messages to another session. ' +
+      'LLM sends are default-deny (D-04), so this opens a VISIBLE, auditable control request that a ' +
+      'human (or a permitted non-self approver) must approve before any send is allowed. You can never ' +
+      'approve your own request (D-14). Returns { ok, request_id, status: "pending" } or { ok:false, code, message }.',
+    parameters: {
+      type: 'object',
+      properties: {
+        target_session_id: {
+          type: 'string',
+          description: 'Session you are requesting permission to message.',
+        },
+        max_messages: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 10000,
+          description: 'Requested message budget for the grant (default 5).',
+        },
+        reason: {
+          type: 'string',
+          description: 'Why you need to message the target (shown to the approver).',
+        },
+      },
+      required: ['target_session_id'],
+      additionalProperties: false,
+    },
+  },
+};
+
 const INBOX_READ_DEF: ToolDef = {
   type: 'function',
   function: {
@@ -210,11 +243,12 @@ const INBOX_ACK_DEF: ToolDef = {
   },
 };
 
-/** The five model-facing control tools, in registration order. */
+/** The model-facing control tools, in registration order. */
 export const CONTROL_TOOL_DEFS: readonly ToolDef[] = Object.freeze([
   SESSION_LIST_DEF,
   SESSION_INSPECT_DEF,
   SESSION_SEND_DEF,
+  REQUEST_GRANT_DEF,
   INBOX_READ_DEF,
   INBOX_ACK_DEF,
 ]);
@@ -237,6 +271,14 @@ const SendToolArgsSchema = z
   })
   .strict();
 
+const RequestGrantToolArgsSchema = z
+  .object({
+    target_session_id: idField,
+    max_messages: z.number().int().min(1).max(10_000).optional(),
+    reason: z.string().min(1).max(500).optional(),
+  })
+  .strict();
+
 const InboxReadArgsSchema = z
   .object({ limit: z.number().int().positive().max(100).optional() })
   .strict();
@@ -244,6 +286,12 @@ const InboxReadArgsSchema = z
 const InboxAckArgsSchema = z.object({ message_id: idField }).strict();
 
 const DEFAULT_INBOX_READ_LIMIT = 10;
+
+/** Requested grant budget when the model omits one. */
+const DEFAULT_REQUEST_GRANT_MAX_MESSAGES = 5;
+
+/** Lifetime of the GRANT once approved (not the approval window). */
+const DEFAULT_REQUEST_GRANT_TTL_MS = 15 * 60_000;
 
 // ─── Handlers ───────────────────────────────────────────────────────────────
 
@@ -315,6 +363,17 @@ function handleSessionSend(args: unknown, callerSessionId: string, broker: Contr
     target_session_id: message.target_session_id,
     status: message.status,
   };
+}
+
+function handleRequestGrant(
+  _args: unknown,
+  _callerSessionId: string,
+  _broker: ControlBroker,
+): unknown {
+  // STUB (08-08 RED) — GREEN routes through broker.requestGrant with the
+  // caller-bound source and actor_kind 'llm' so the request is a first-class
+  // visible control_requested event.
+  throw new Error('relay_control_request_grant not implemented (08-08)');
 }
 
 function handleInboxRead(
@@ -400,6 +459,10 @@ export function registerControlTools(
       handle: guard((args) => handleSessionInspect(args, callerSessionId, store, broker)),
     },
     { def: SESSION_SEND_DEF, handle: guard((args) => handleSessionSend(args, callerSessionId, broker)) },
+    {
+      def: REQUEST_GRANT_DEF,
+      handle: guard((args) => handleRequestGrant(args, callerSessionId, broker)),
+    },
     {
       def: INBOX_READ_DEF,
       handle: guard((args) => handleInboxRead(args, callerSessionId, store, broker)),

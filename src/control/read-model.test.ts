@@ -18,7 +18,13 @@ import * as assert from 'node:assert/strict';
 
 import { getDb } from '../runtime/store/db.js';
 import { ControlSessionStore } from './session-store.js';
-import { emptyControlSnapshot, gatherControlSnapshot } from './read-model.js';
+import {
+  classifyEventDisposition,
+  classifyEventSource,
+  emptyControlSnapshot,
+  gatherControlSnapshot,
+} from './read-model.js';
+import type { ControlEvent, ControlEventType } from './types.js';
 
 const T0 = 1_750_000_000_000; // fixed epoch-ms base for deterministic clocks
 
@@ -454,5 +460,65 @@ describe('gatherControlSnapshot — provider status summaries', () => {
       snap.providers.map((p) => ({ ...p })),
       [{ provider: 'fake', total: 3, active: 2, idle: 1, ended: 0 }],
     );
+  });
+});
+
+// ─── Event source / disposition classification (D-14, D-15) ─────────────────
+
+function ev(
+  event_type: ControlEventType,
+  payload: Record<string, unknown> = {},
+): ControlEvent {
+  return Object.freeze({
+    id: 1,
+    session_id: 's',
+    event_type,
+    source_session_id: null,
+    target_session_id: null,
+    payload: payload as ControlEvent['payload'],
+    created_at: T0,
+  });
+}
+
+describe('classifyEventSource', () => {
+  test('llm-driven sends and pulls read as llm', () => {
+    assert.equal(classifyEventSource(ev('message_enqueued', { sender_kind: 'llm' })), 'llm');
+    assert.equal(classifyEventSource(ev('message_blocked', { sender_kind: 'llm' })), 'llm');
+    assert.equal(classifyEventSource(ev('message_delivered', { actor_kind: 'llm' })), 'llm');
+    assert.equal(classifyEventSource(ev('control_requested', { actor_kind: 'llm' })), 'llm');
+  });
+
+  test('human-driven operations read as human', () => {
+    assert.equal(classifyEventSource(ev('message_enqueued', { sender_kind: 'human' })), 'human');
+    assert.equal(classifyEventSource(ev('control_approved', { approved_by_kind: 'human' })), 'human');
+  });
+
+  test('approver / denier kind drives approved/denied source', () => {
+    assert.equal(classifyEventSource(ev('control_approved', { approved_by_kind: 'llm' })), 'llm');
+    assert.equal(classifyEventSource(ev('control_denied', { denied_by_kind: 'human' })), 'human');
+  });
+
+  test('relay-internal lifecycle events with no actor marker read as system', () => {
+    assert.equal(classifyEventSource(ev('session_registered')), 'system');
+    assert.equal(classifyEventSource(ev('session_ended')), 'system');
+    assert.equal(classifyEventSource(ev('grant_issued', { grant_id: 'g1' })), 'system');
+    // A non-human/llm marker value must not be trusted.
+    assert.equal(classifyEventSource(ev('message_enqueued', { sender_kind: 'robot' })), 'system');
+  });
+});
+
+describe('classifyEventDisposition', () => {
+  test('control lifecycle events map to pending/approved/denied/executed', () => {
+    assert.equal(classifyEventDisposition(ev('control_requested')), 'pending');
+    assert.equal(classifyEventDisposition(ev('control_approved')), 'approved');
+    assert.equal(classifyEventDisposition(ev('control_denied')), 'denied');
+    assert.equal(classifyEventDisposition(ev('control_executed')), 'executed');
+  });
+
+  test('blocked sends read as denied; plain message events have no disposition', () => {
+    assert.equal(classifyEventDisposition(ev('message_blocked')), 'denied');
+    assert.equal(classifyEventDisposition(ev('message_enqueued')), null);
+    assert.equal(classifyEventDisposition(ev('message_delivered')), null);
+    assert.equal(classifyEventDisposition(ev('session_registered')), null);
   });
 });
