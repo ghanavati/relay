@@ -48,6 +48,8 @@ export interface VerifyDeps {
   runContextEmitCheck?: (workdir: string, token: string) => Promise<VerifyCheck>;
   runHookCheck?: () => Promise<VerifyCheck>;
   runDbRoundtripCheck?: (workdir: string) => Promise<VerifyCheck>;
+  runControlCheck?: (token: string) => Promise<VerifyCheck>;
+  runCommandCentralCheck?: (now?: number) => Promise<VerifyCheck>;
 }
 
 export async function runRememberCheck(token: string, workdir: string): Promise<VerifyCheck> {
@@ -169,6 +171,93 @@ export async function runDbRoundtripCheck(workdir: string): Promise<VerifyCheck>
   }
 }
 
+/**
+ * Control-fabric smoke: register a session, broker a human send to it, and
+ * confirm the delivery transition — all inside a transaction that is rolled
+ * back, so a healthy `relay verify` leaves zero residue in the control tables
+ * (unlike the memory checks, the control smoke is non-persistent by design).
+ */
+export async function runControlCheck(token: string): Promise<VerifyCheck> {
+  try {
+    const { getDb } = await import('../runtime/store/db.js');
+    const { ControlSessionStore } = await import('../control/session-store.js');
+    const { ControlBroker } = await import('../control/broker.js');
+    const store = new ControlSessionStore();
+    const broker = new ControlBroker(store);
+    const sid = `relay-verify-control-${token}`;
+    const rollback = new Error('__relay_verify_rollback__');
+    let delivered = false;
+    try {
+      getDb().transaction(() => {
+        store.upsertSession({
+          session_id: sid,
+          provider: 'fake',
+          capabilities: ['register', 'observe', 'mailbox'],
+          state: 'active',
+          label: 'relay verify control smoke',
+        });
+        const msg = broker.sendMessage({
+          source_session_id: 'human:relay-verify',
+          target_session_id: sid,
+          sender_kind: 'human',
+          content: `control smoke ${token}`,
+        });
+        delivered = broker.markDelivered(msg.message_id, { capability: 'mailbox' }).status === 'delivered';
+        // Discard the whole smoke — verify must not pollute the control tables.
+        throw rollback;
+      })();
+    } catch (err) {
+      if (err !== rollback) throw err;
+    }
+    if (!delivered) {
+      return { name: 'control', status: 'fail', message: 'brokered send did not reach delivered', critical: true };
+    }
+    return { name: 'control', status: 'pass', message: 'broker send → delivered (rolled back, no residue)', critical: true };
+  } catch (err) {
+    return { name: 'control', status: 'fail', message: (err as Error).message, critical: true };
+  }
+}
+
+/**
+ * Command Central read-model health (Phase 8 / D-12, D-14): build the bounded
+ * `ControlSnapshot` that the terminal Command Central and `relay tui --json`
+ * consume, confirm it returns well-formed and within its declared pane bounds,
+ * and report the pending grant-request queue depth — model-driven grant
+ * requests (D-14) waiting on a human approve/deny. Read-only: no writes, so
+ * unlike the broker smoke there is nothing to roll back.
+ */
+export async function runCommandCentralCheck(now: number = Date.now()): Promise<VerifyCheck> {
+  try {
+    const { gatherControlSnapshot, DEFAULT_CONTROL_SNAPSHOT_LIMITS } = await import('../control/read-model.js');
+    const started = Date.now();
+    const snapshot = gatherControlSnapshot({ now });
+    const elapsed = Date.now() - started;
+    const lim = DEFAULT_CONTROL_SNAPSHOT_LIMITS;
+    // Every pane is read through a bounded store helper (D-12). If any collection
+    // came back over its declared limit, an unbounded SELECT slipped in and the
+    // operator console could stall on a hot DB — fail loudly.
+    const overflow =
+      snapshot.sessions.length > lim.sessions ||
+      snapshot.events.length > lim.events ||
+      snapshot.inbox.length > lim.inbox ||
+      snapshot.grants.length > lim.grants ||
+      snapshot.blocked.length > lim.blocked ||
+      snapshot.audit.length > lim.audit;
+    if (overflow) {
+      return { name: 'command-central', status: 'fail', message: 'snapshot exceeded declared pane bounds', critical: true };
+    }
+    const pending = snapshot.pending_actions.length;
+    return {
+      name: 'command-central',
+      status: 'pass',
+      message: `snapshot ok in ${elapsed}ms (${snapshot.sessions.length} session(s), ${pending} pending grant request(s))`,
+      critical: true,
+    };
+  } catch (err) {
+    return { name: 'command-central', status: 'fail', message: (err as Error).message, critical: true };
+  }
+}
+
 export async function executeVerifyCommand(args: VerifyArgs, io: CliIO, _deps?: VerifyDeps): Promise<number> {
   const token = randomUUID().slice(0, 8);
   const checks: VerifyCheck[] = [];
@@ -179,6 +268,8 @@ export async function executeVerifyCommand(args: VerifyArgs, io: CliIO, _deps?: 
   const contextEmitFn = _deps?.runContextEmitCheck ?? runContextEmitCheck;
   const hookFn = _deps?.runHookCheck ?? runHookCheck;
   const dbRoundtripFn = _deps?.runDbRoundtripCheck ?? runDbRoundtripCheck;
+  const controlFn = _deps?.runControlCheck ?? runControlCheck;
+  const commandCentralFn = _deps?.runCommandCentralCheck ?? runCommandCentralCheck;
 
   // 1. write a memory
   checks.push(await rememberFn(token, io.cwd));
@@ -190,6 +281,10 @@ export async function executeVerifyCommand(args: VerifyArgs, io: CliIO, _deps?: 
   checks.push(await hookFn());
   // 5. direct db roundtrip
   checks.push(await dbRoundtripFn(io.cwd));
+  // 6. control fabric smoke (broker send → delivered, rolled back)
+  checks.push(await controlFn(token));
+  // 7. Command Central read-model health (bounded snapshot + pending grant depth)
+  checks.push(await commandCentralFn());
 
   const summary: VerifySummary = checks.reduce(
     (acc, ch) => {

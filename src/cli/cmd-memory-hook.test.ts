@@ -10,9 +10,11 @@ import {
   resolveHookSettingsPath,
   HOOK_SCRIPT,
   HOOK_SCRIPT_SESSION_END,
+  HOOK_SCRIPT_USER_PROMPT,
   HOOK_MARKER_FIELD,
   HOOK_MARKER_SESSION_START,
   HOOK_MARKER_SESSION_END,
+  HOOK_MARKER_USER_PROMPT,
 } from './cmd-memory-ops.js';
 import type { CliIO } from './commands.js';
 
@@ -45,6 +47,7 @@ interface CcSettings {
   hooks?: {
     SessionStart?: Array<CcHookEntry>;
     SessionEnd?: Array<CcHookEntry>;
+    UserPromptSubmit?: Array<CcHookEntry>;
   };
 }
 
@@ -951,5 +954,196 @@ describe('executeMemoryHookCommand — SessionEnd global install', () => {
     );
     assert.ok(allCommands.includes(foreignSessionEnd), 'foreign SessionEnd hook preserved');
     assert.ok(allCommands.includes(HOOK_SCRIPT_SESSION_END), 'relay SessionEnd hook installed');
+  });
+});
+
+// ─── Phase 8 / CONTROL-06 — SessionEnd script stop-marking extension ─────────
+
+describe('HOOK_SCRIPT_SESSION_END — control-session stop-marking (Phase 8)', () => {
+  test('still gated by relay pause --check (privacy off-switch precedes everything)', () => {
+    assert.match(HOOK_SCRIPT_SESSION_END, /^relay pause --check/);
+  });
+
+  test('captures the hook payload once and replays it to BOTH consumers', () => {
+    // CC pipes the SessionEnd payload on stdin exactly once. The script must
+    // capture it into a variable and replay it to context-emit (session
+    // stop-marking) AND auto-extract (transcript distillation) — piping the
+    // live stdin to the first consumer would starve the second.
+    assert.match(HOOK_SCRIPT_SESSION_END, /\$\(cat[^)]*\)/, 'payload captured via $(cat)');
+    const replays = HOOK_SCRIPT_SESSION_END.match(/printf '%s' "\$RELAY_CC_HOOK_PAYLOAD"/g) ?? [];
+    assert.strictEqual(replays.length, 2, 'payload replayed to exactly two consumers');
+  });
+
+  test('pipes the payload to relay context emit (stop-marking) before auto-extract', () => {
+    assert.match(HOOK_SCRIPT_SESSION_END, /relay context emit --target cc/);
+    const emitIdx = HOOK_SCRIPT_SESSION_END.indexOf('relay context emit');
+    const extractIdx = HOOK_SCRIPT_SESSION_END.indexOf('relay memory auto-extract');
+    assert.ok(emitIdx >= 0, 'context emit present');
+    assert.ok(extractIdx > emitIdx, 'stop-marking runs before auto-extract');
+  });
+
+  test('context-emit failures cannot block auto-extract (both legs are || true)', () => {
+    // Each consumer leg degrades independently; a relay binary fault during
+    // stop-marking must not cost the user their transcript distillation.
+    const legs = HOOK_SCRIPT_SESSION_END.split(';').map((s) => s.trim());
+    const emitLeg = legs.find((l) => l.includes('relay context emit'));
+    const extractLeg = legs.find((l) => l.includes('relay memory auto-extract'));
+    assert.ok(emitLeg?.endsWith('|| true'), 'context-emit leg degrades gracefully');
+    assert.ok(extractLeg?.endsWith('|| true'), 'auto-extract leg degrades gracefully');
+  });
+});
+
+// ─── Phase 8 / CONTROL-06 — UserPromptSubmit hook variant ────────────────────
+
+describe('HOOK_SCRIPT_USER_PROMPT shape', () => {
+  test('uses the same context-emit pipeline as SessionStart (payload-differentiated)', () => {
+    // The command string is deliberately identical: `relay context emit
+    // --target cc` reads the hook payload from stdin and branches on
+    // hook_event_name, so one pipeline serves both boundaries.
+    assert.strictEqual(HOOK_SCRIPT_USER_PROMPT, HOOK_SCRIPT);
+  });
+
+  test('marker constant is relay-user-prompt-v1', () => {
+    assert.strictEqual(HOOK_MARKER_USER_PROMPT, 'relay-user-prompt-v1');
+  });
+});
+
+describe('executeMemoryHookCommand — UserPromptSubmit install (userPrompt: true)', () => {
+  let tmp: string;
+
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'relay-hook-up-'));
+  });
+
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  test('install writes a marked UserPromptSubmit entry and does not seed other events', async () => {
+    const cap = makeIO(tmp);
+    const code = await executeMemoryHookCommand(
+      { install: true, json: false, userPrompt: true },
+      cap.io,
+      tmp
+    );
+    assert.strictEqual(code, 0);
+
+    const settings = await readSettings(join(tmp, '.claude', 'settings.json'));
+    const entries = settings.hooks?.UserPromptSubmit ?? [];
+    assert.strictEqual(entries.length, 1, 'one UserPromptSubmit entry');
+    assert.strictEqual(entries[0]?.[HOOK_MARKER_FIELD as '_relay_id'], HOOK_MARKER_USER_PROMPT);
+    assert.strictEqual(entries[0]?.hooks?.[0]?.type, 'command');
+    assert.strictEqual(entries[0]?.hooks?.[0]?.command, HOOK_SCRIPT_USER_PROMPT);
+    assert.strictEqual(settings.hooks?.SessionStart, undefined, 'SessionStart not seeded');
+    assert.strictEqual(settings.hooks?.SessionEnd, undefined, 'SessionEnd not seeded');
+  });
+
+  test('install is idempotent — second install leaves a single marked entry', async () => {
+    const cap = makeIO(tmp);
+    await executeMemoryHookCommand({ install: true, json: false, userPrompt: true }, cap.io, tmp);
+    const code = await executeMemoryHookCommand(
+      { install: true, json: false, userPrompt: true },
+      cap.io,
+      tmp
+    );
+    assert.strictEqual(code, 0);
+
+    const settings = await readSettings(join(tmp, '.claude', 'settings.json'));
+    const marked = (settings.hooks?.UserPromptSubmit ?? []).filter(
+      (e) => e[HOOK_MARKER_FIELD as '_relay_id'] === HOOK_MARKER_USER_PROMPT
+    );
+    assert.strictEqual(marked.length, 1, 'no duplicate marked entries');
+  });
+
+  test('JSON mode reports event=UserPromptSubmit', async () => {
+    const cap = makeIO(tmp);
+    const code = await executeMemoryHookCommand(
+      { install: true, json: true, userPrompt: true },
+      cap.io,
+      tmp
+    );
+    assert.strictEqual(code, 0);
+    const parsed = JSON.parse(cap.stdout.join('').trim()) as {
+      installed: boolean;
+      path: string;
+      event: string;
+    };
+    assert.strictEqual(parsed.installed, true);
+    assert.strictEqual(parsed.event, 'UserPromptSubmit');
+    assert.strictEqual(parsed.path, join(tmp, '.claude', 'settings.json'));
+  });
+
+  test('uninstall removes only the UserPromptSubmit marker; SessionStart and SessionEnd survive', async () => {
+    const cap = makeIO(tmp);
+    await executeMemoryHookCommand({ install: true, json: false }, cap.io, tmp);
+    await executeMemoryHookCommand(
+      { install: true, json: false, sessionEnd: true },
+      cap.io,
+      tmp
+    );
+    await executeMemoryHookCommand(
+      { install: true, json: false, userPrompt: true },
+      cap.io,
+      tmp
+    );
+
+    const code = await executeMemoryHookCommand(
+      { install: false, json: false, userPrompt: true },
+      cap.io,
+      tmp
+    );
+    assert.strictEqual(code, 0);
+
+    const settings = await readSettings(join(tmp, '.claude', 'settings.json'));
+    assert.strictEqual(
+      (settings.hooks?.UserPromptSubmit ?? []).filter(
+        (e) => e[HOOK_MARKER_FIELD as '_relay_id'] === HOOK_MARKER_USER_PROMPT
+      ).length,
+      0,
+      'UserPromptSubmit marker removed'
+    );
+    assert.strictEqual(
+      (settings.hooks?.SessionStart ?? []).filter(
+        (e) => e[HOOK_MARKER_FIELD as '_relay_id'] === HOOK_MARKER_SESSION_START
+      ).length,
+      1,
+      'SessionStart marker untouched'
+    );
+    assert.strictEqual(
+      (settings.hooks?.SessionEnd ?? []).filter(
+        (e) => e[HOOK_MARKER_FIELD as '_relay_id'] === HOOK_MARKER_SESSION_END
+      ).length,
+      1,
+      'SessionEnd marker untouched'
+    );
+  });
+
+  test('install preserves foreign UserPromptSubmit hooks', async () => {
+    const settingsPath = join(tmp, '.claude', 'settings.json');
+    await mkdir(join(tmp, '.claude'), { recursive: true });
+    const foreignCommand = 'my-own-prompt-logger --append';
+    await writeFile(
+      settingsPath,
+      JSON.stringify(
+        {
+          hooks: {
+            UserPromptSubmit: [{ hooks: [{ type: 'command', command: foreignCommand }] }],
+          },
+        },
+        null,
+        2
+      ) + '\n',
+      'utf8'
+    );
+
+    const cap = makeIO(tmp);
+    await executeMemoryHookCommand({ install: true, json: false, userPrompt: true }, cap.io, tmp);
+
+    const settings = await readSettings(settingsPath);
+    const allCommands = (settings.hooks?.UserPromptSubmit ?? []).flatMap((e) =>
+      (e.hooks ?? []).map((h) => h.command)
+    );
+    assert.ok(allCommands.includes(foreignCommand), 'foreign hook preserved');
+    assert.ok(allCommands.includes(HOOK_SCRIPT_USER_PROMPT), 'relay hook installed');
   });
 });

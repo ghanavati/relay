@@ -36,12 +36,12 @@ function withTmpDb<T>(run: (db: Database.Database) => T): T {
 }
 
 describe('db.ts — applySchema on fresh DB', () => {
-  test('writes schema_version=1 (bootstrap) AND schema_version=2 (v2 cleanup) AND schema_version=3 (v3 budget-drop)', () => {
+  test('writes schema_version=1 (bootstrap) AND schema_version=2 (v2 cleanup) AND schema_version=3 (v3 budget-drop) AND schema_version=4 (control tables)', () => {
     withTmpDb(db => {
       applySchema(db);
       const rows = db.prepare('SELECT version FROM schema_version ORDER BY version').all() as Array<{ version: number }>;
       const versions = rows.map(r => r.version);
-      assert.deepEqual(versions, [1, 2, 3], `expected [1,2,3], got ${JSON.stringify(versions)}`);
+      assert.deepEqual(versions, [1, 2, 3, 4], `expected [1,2,3,4], got ${JSON.stringify(versions)}`);
     });
   });
 
@@ -63,9 +63,11 @@ describe('db.ts — applySchema on fresh DB', () => {
       const v1Count = (db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version = 1').get() as { n: number }).n;
       const v2Count = (db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version = 2').get() as { n: number }).n;
       const v3Count = (db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version = 3').get() as { n: number }).n;
+      const v4Count = (db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version = 4').get() as { n: number }).n;
       assert.equal(v1Count, 1, `version=1 should appear exactly once (got ${v1Count})`);
       assert.equal(v2Count, 1, `version=2 should appear exactly once (got ${v2Count})`);
       assert.equal(v3Count, 1, `version=3 should appear exactly once (got ${v3Count})`);
+      assert.equal(v4Count, 1, `version=4 should appear exactly once (got ${v4Count})`);
     });
   });
 
