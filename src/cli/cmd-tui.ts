@@ -1,16 +1,23 @@
 /**
  * `relay tui` — Command Central: terminal-native operator console (Ink).
  *
- * Herdr-inspired layout over the shared ControlSnapshot read model (D-11,
- * D-12, D-15, CONTROL-11/12/17):
- *   - Left:   session rail with state badges (ACT/IDL/END), blocked flags,
- *             and queued-message rollups.
- *   - Main:   selected session pane — capability badges + bounded event tail.
- *   - Right:  inbox/grants/pending-actions queue.
- *   - Bottom: audit strip, control status rollup, legacy health line, hints.
+ * Option A layout (maintainer-directed re-layout, D-11/D-12/D-15) over the
+ * shared ControlSnapshot read model:
+ *   - LEFT column, split top/bottom:
+ *       Sessions = roster with state badges (ACT/IDL/END), provider, title,
+ *                  ✉queued rollup, ▸selection.
+ *       Queue    = inbox + grants + pending-actions merged into one operational
+ *                  list (exp! markers on stale pending requests).
+ *   - RIGHT (the centerpiece) = selected session: header + capability badges +
+ *       the LIVE event stream. Model-driven operations render here with
+ *       human/llm source badges and pending/approved/denied/executed state;
+ *       blocked/audit events fold into this stream (no separate audit box).
+ *   - BOTTOM = a single status+hints strip (rollup + health + palette hints +
+ *       "live Ns" freshness).
  *
- * Auto-refreshes every 5 seconds (one bounded gather per tick). Key bindings:
- *   q | Ctrl-C → quit · r → refresh · j/k or ↑/↓ → select session
+ * The control snapshot refreshes fast (CONTROL_REFRESH_MS) so the stream stays
+ * live; provider probes ride a slow cadence (FULL_REFRESH_MS) and are
+ * timeout-bounded so an offline backend never blocks the UI (CONTROL-16).
  *
  * `--json` emits ONE bounded snapshot of the same data (no Ink, no refresh
  * loop) and exits — the machine-readable Command Central state contract.
@@ -18,12 +25,13 @@
  * top-level for scripts; the shared control read model lives under `control`.
  *
  * Uses `React.createElement` (no JSX) to avoid adding JSX support to tsconfig.
- * Layout content is computed by the PURE buildCommandCentralView, so render
- * shape is testable without a TTY or provider network calls.
+ * Layout content is computed by the PURE buildCommandCentralView (extracted to
+ * command-central-view.ts), so render shape is testable without a TTY or
+ * provider network calls.
  */
 
 import type { CliIO } from './commands.js';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { parseLogLines } from './cmd-memory-tail.js';
@@ -33,13 +41,19 @@ import {
   gatherControlSnapshot,
   type ControlSnapshot,
 } from '../control/read-model.js';
-import type {
-  ControlCapability,
-  ControlEvent,
-  ControlGrant,
-  ControlMessage,
-  ControlSessionState,
-} from '../control/types.js';
+import {
+  buildCommandCentralView,
+  formatAgoMs,
+  NARROW_WIDTH,
+  PANE_ROWS,
+  type CommandCentralView,
+  type EventLine,
+  type QueueRow,
+  type RailRow,
+} from './command-central-view.js';
+// Re-exported so cmd-tui.ts stays the single Command Central entry point.
+export { buildCommandCentralView, NARROW_WIDTH, PANE_ROWS };
+export type { CommandCentralView, RailRow, QueueRow, EventLine };
 
 // Command Central palette — same shared action functions as `relay session ...`
 // (D-13). Defined next to the session command surface; re-exported here so the
@@ -82,220 +96,6 @@ interface Snapshot {
     hook_installed: boolean;
     providers: Array<{ name: string; status: string }>;
   };
-}
-
-// ─── Command Central view model (pure — render-shape tested without Ink) ────
-
-/** Pane layout flips to stacked below this terminal width. */
-export const NARROW_WIDTH = 110;
-
-/** Display caps per pane — the snapshot is already bounded; these keep the
- * terminal scannable (Herdr-style rollups instead of scrollback walls). */
-export const PANE_ROWS = Object.freeze({
-  events: 12,
-  inbox: 6,
-  grants: 4,
-  pending: 4,
-  audit: 4,
-});
-
-/** One left-rail row: state badge + provider + queue rollup (D-15). */
-export interface RailRow {
-  readonly session_id: string;
-  readonly badge: 'ACT' | 'IDL' | 'END';
-  readonly blocked: boolean;
-  readonly provider: string;
-  readonly title: string;
-  readonly queued: number;
-  readonly selected: boolean;
-}
-
-/**
- * Herdr-inspired Command Central view: left session rail, main selected
- * session pane, right inbox/grants/pending queue, bottom audit/status strip
- * and command hints. Pure data — the Ink components only map it to Text.
- */
-export interface CommandCentralView {
-  readonly narrow: boolean;
-  readonly rail: readonly RailRow[];
-  readonly rail_empty: string | null;
-  readonly main: {
-    readonly header: string;
-    readonly badges: string;
-    readonly events: readonly string[];
-    readonly empty: string | null;
-  };
-  readonly inbox: readonly string[];
-  readonly grants: readonly string[];
-  readonly pending: readonly string[];
-  readonly audit: readonly string[];
-  readonly status: string;
-  readonly hints: string;
-}
-
-const STATE_BADGES: Record<ControlSessionState, RailRow['badge']> = {
-  active: 'ACT',
-  idle: 'IDL',
-  ended: 'END',
-};
-
-/** Compact per-capability codes — badges over verbose text (D-15). */
-const CAPABILITY_BADGES: Record<ControlCapability, string> = {
-  register: 'reg',
-  observe: 'obs',
-  tail: 'tail',
-  context_inject: 'inj',
-  mailbox: 'mbx',
-  resume_send: 'res',
-  live_stdin: 'stdin',
-  interrupt: 'int',
-  fork: 'fork',
-  spawn: 'spawn',
-  tool_call: 'tool',
-};
-
-/** Compact relative time for a non-negative millisecond delta. */
-function formatAgoMs(delta: number): string {
-  const d = Math.max(0, delta);
-  if (d < 60_000) return `${Math.max(1, Math.round(d / 1000))}s`;
-  if (d < 3_600_000) return `${Math.round(d / 60_000)}m`;
-  if (d < 86_400_000) return `${Math.round(d / 3_600_000)}h`;
-  return `${Math.round(d / 86_400_000)}d`;
-}
-
-function shortId(id: string): string {
-  return id.length > 10 ? id.slice(0, 10) : id;
-}
-
-function truncate(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, Math.max(1, max - 1))}…`;
-}
-
-function formatEventLine(event: ControlEvent, now: number): string {
-  const ago = formatAgoMs(now - event.created_at).padStart(4);
-  const arrow =
-    event.source_session_id !== null && event.target_session_id !== null
-      ? ` ${shortId(event.source_session_id)}→${shortId(event.target_session_id)}`
-      : '';
-  return `${ago} ${event.event_type}${arrow}`;
-}
-
-function formatInboxLine(message: ControlMessage, now: number): string {
-  const kind = message.sender_kind === 'human' ? 'h' : 'l';
-  const preview = truncate(message.content.replace(/\s+/g, ' '), 24);
-  return (
-    `[${kind}] ${shortId(message.source_session_id)}→${shortId(message.target_session_id)}` +
-    ` ${formatAgoMs(now - message.created_at)} "${preview}"`
-  );
-}
-
-function formatGrantLine(grant: ControlGrant, now: number): string {
-  return (
-    `${shortId(grant.source_session_id)}→${shortId(grant.target_session_id)}` +
-    ` ${grant.used_messages}/${grant.max_messages} ttl ${formatAgoMs(grant.expires_at - now)}`
-  );
-}
-
-function formatPendingLine(event: ControlEvent, now: number): string {
-  const requestId =
-    typeof event.payload['request_id'] === 'string' ? event.payload['request_id'] : '(no id)';
-  const action = typeof event.payload['action'] === 'string' ? ` ${event.payload['action']}` : '';
-  // Approval-window expiry (broker requestGrant payload, D-14): mark stale
-  // requests so the operator knows approve will refuse them.
-  const expires = event.payload['expires_at'];
-  const expired = typeof expires === 'number' && expires <= now ? ' exp!' : '';
-  return `${formatAgoMs(now - event.created_at)} ${requestId}${action}${expired} @${shortId(event.session_id)}`;
-}
-
-/** Build the Command Central view model from the shared ControlSnapshot. */
-export function buildCommandCentralView(
-  control: ControlSnapshot,
-  opts: { width: number },
-): CommandCentralView {
-  const now = control.generated_at;
-  const selectedId = control.selected_session?.session_id;
-
-  const queuedByTarget = new Map<string, number>();
-  for (const message of control.inbox) {
-    queuedByTarget.set(
-      message.target_session_id,
-      (queuedByTarget.get(message.target_session_id) ?? 0) + 1,
-    );
-  }
-  // message_blocked events are source-anchored (broker D-05) — the flagged
-  // session is the denied actor.
-  const blockedSessions = new Set(control.blocked.map((event) => event.session_id));
-
-  const rail = control.sessions.map(
-    (session): RailRow =>
-      Object.freeze({
-        session_id: session.session_id,
-        badge: STATE_BADGES[session.state],
-        blocked: blockedSessions.has(session.session_id),
-        provider: session.provider,
-        title: truncate(session.label ?? session.session_id, 20),
-        queued: queuedByTarget.get(session.session_id) ?? 0,
-        selected: session.session_id === selectedId,
-      }),
-  );
-
-  const selected = control.selected_session;
-  // control.events is the chronological newest-N tail; keep the TAIL end
-  // when display-capping so the newest events stay visible.
-  const eventLines =
-    selected === null
-      ? []
-      : control.events.slice(-PANE_ROWS.events).map((event) => formatEventLine(event, now));
-  const main = Object.freeze({
-    header:
-      selected === null
-        ? ''
-        : `${truncate(selected.session_id, 40)} · ${selected.provider} · ` +
-          `${STATE_BADGES[selected.state]}${blockedSessions.has(selected.session_id) ? ' !BLK' : ''}`,
-    badges:
-      selected === null
-        ? ''
-        : selected.capabilities.map((capability) => CAPABILITY_BADGES[capability]).join(' '),
-    events: Object.freeze(eventLines),
-    empty:
-      selected === null
-        ? 'no session selected — sessions appear here once adapters register'
-        : eventLines.length === 0
-          ? 'no events yet for this session'
-          : null,
-  });
-
-  const activeCount = control.sessions.filter((s) => s.state === 'active').length;
-  const budgetUsed = control.grants.reduce((sum, g) => sum + g.used_messages, 0);
-  const budgetMax = control.grants.reduce((sum, g) => sum + g.max_messages, 0);
-  const status =
-    `sessions ${control.sessions.length} (${activeCount} act) · inbox ${control.inbox.length}` +
-    ` · blocked ${control.blocked.length} · pending ${control.pending_actions.length}` +
-    ` · grants ${control.grants.length} (budget ${budgetUsed}/${budgetMax})`;
-
-  return Object.freeze({
-    narrow: opts.width < NARROW_WIDTH,
-    rail: Object.freeze(rail),
-    rail_empty:
-      rail.length === 0 ? 'no sessions registered — waiting for adapters to register' : null,
-    main,
-    inbox: Object.freeze(
-      control.inbox.slice(0, PANE_ROWS.inbox).map((message) => formatInboxLine(message, now)),
-    ),
-    grants: Object.freeze(
-      control.grants.slice(0, PANE_ROWS.grants).map((grant) => formatGrantLine(grant, now)),
-    ),
-    pending: Object.freeze(
-      control.pending_actions
-        .slice(0, PANE_ROWS.pending)
-        .map((event) => formatPendingLine(event, now)),
-    ),
-    audit: Object.freeze(
-      control.audit.slice(0, PANE_ROWS.audit).map((event) => formatEventLine(event, now)),
-    ),
-    status,
-    hints: 'q quit · r refresh · j/k or ↑/↓ select session · : command palette',
-  });
 }
 
 /** Resolve the ndjson activity-log path the same way `relay memory tail` does. */
@@ -516,9 +316,26 @@ async function renderInk(args: TuiArgs): Promise<number> {
     return badge === 'ACT' ? 'green' : badge === 'IDL' ? 'yellow' : 'gray';
   }
 
-  /** Left rail — session roster with state badges and queue rollups. */
+  /** Event-stream source badge: human vs llm vs relay-internal (D-15). */
+  const SOURCE_BADGE: Record<EventLine['source'], string> = {
+    human: 'h',
+    llm: 'l',
+    system: '·',
+  };
+  function sourceColor(source: EventLine['source']): string {
+    return source === 'human' ? 'cyan' : source === 'llm' ? 'magenta' : 'gray';
+  }
+  function dispositionColor(disposition: NonNullable<EventLine['disposition']>): string {
+    return disposition === 'denied' ? 'red' : disposition === 'pending' ? 'yellow' : 'green';
+  }
+  function queueColor(kind: QueueRow['kind'], expired: boolean): string {
+    if (expired) return 'red';
+    return kind === 'inbox' ? 'magenta' : kind === 'grant' ? 'blue' : 'yellow';
+  }
+
+  /** Top-left — Sessions roster with state badges and queue rollups. */
   function RailPane(props: { view: CommandCentralView }): React.ReactElement {
-    const { rail, rail_empty, narrow } = props.view;
+    const { rail, rail_empty } = props.view;
     const rows =
       rail.length === 0
         ? [ce(Text, { key: 'empty', dimColor: true }, rail_empty ?? 'no sessions')]
@@ -529,26 +346,38 @@ async function renderInk(args: TuiArgs): Promise<number> {
               ce(Text, { color: 'cyan' }, row.selected ? '▸ ' : '  '),
               ce(Text, { color: badgeColor(row.badge), bold: row.selected }, row.badge),
               ce(Text, { color: 'red' }, row.blocked ? '!' : ' '),
-              ce(Text, { color: 'blue' }, ` ${row.provider.padEnd(11)}`),
+              ce(Text, { color: 'blue' }, ` ${row.provider.padEnd(10)}`),
               ce(Text, { bold: row.selected }, row.title),
               row.queued > 0 ? ce(Text, { color: 'magenta' }, ` ✉${row.queued}`) : null,
             ),
           );
     return ce(
       Box,
-      {
-        flexDirection: 'column',
-        borderStyle: 'round',
-        borderColor: 'gray',
-        paddingX: 1,
-        width: narrow ? undefined : 40,
-      },
+      { flexDirection: 'column', borderStyle: 'round', borderColor: 'gray', paddingX: 1 },
       ce(Text, { bold: true }, 'Sessions'),
       ...rows,
     );
   }
 
-  /** Main pane — selected session header, capability badges, event tail. */
+  /** Bottom-left — merged operational Queue (inbox + grants + pending). */
+  function QueuePane(props: { view: CommandCentralView }): React.ReactElement {
+    const { queue, queue_empty } = props.view;
+    const rows =
+      queue.length === 0
+        ? [ce(Text, { key: 'q-empty', dimColor: true }, queue_empty ?? 'empty')]
+        : queue.map((row, i) =>
+            ce(Text, { key: `q-${i}`, color: queueColor(row.kind, row.expired) }, row.text),
+          );
+    return ce(
+      Box,
+      { flexDirection: 'column', borderStyle: 'round', borderColor: 'gray', paddingX: 1 },
+      ce(Text, { bold: true }, 'Queue'),
+      ...rows,
+    );
+  }
+
+  /** Right (centerpiece) — selected session header, capability badges, and the
+   *  live event stream with source + disposition badges. */
   function MainPane(props: { view: CommandCentralView }): React.ReactElement {
     const { main } = props.view;
     const body: React.ReactNode[] = [];
@@ -560,81 +389,50 @@ async function renderInk(args: TuiArgs): Promise<number> {
       body.push(ce(Text, { key: 'empty', dimColor: true }, main.empty));
     }
     main.events.forEach((line, i) =>
-      body.push(ce(Text, { key: `ev-${i}`, color: 'gray' }, line)),
+      body.push(
+        ce(
+          Box,
+          { key: `ev-${i}`, flexDirection: 'row' },
+          ce(Text, { color: 'gray' }, `${line.time.padStart(4)} `),
+          ce(Text, { color: sourceColor(line.source) }, `${SOURCE_BADGE[line.source]} `),
+          ce(Text, null, line.text),
+          line.disposition !== null
+            ? ce(Text, { color: dispositionColor(line.disposition) }, ` ‹${line.disposition}›`)
+            : null,
+        ),
+      ),
     );
     return ce(
       Box,
       { flexDirection: 'column', borderStyle: 'round', borderColor: 'gray', paddingX: 1, flexGrow: 1 },
-      ce(Text, { bold: true }, 'Selected session'),
+      ce(Text, { bold: true }, 'Live'),
       ...body,
     );
   }
 
-  /** Right pane — queued inbox, active grants, pending control actions. */
-  function QueuePane(props: { view: CommandCentralView }): React.ReactElement {
-    const { inbox, grants, pending, narrow } = props.view;
-    const section = (
-      title: string,
-      lines: readonly string[],
-      emptyText: string,
-      keyPrefix: string,
-    ): React.ReactNode[] => [
-      ce(Text, { key: `${keyPrefix}-title`, bold: true }, title),
-      ...(lines.length === 0
-        ? [ce(Text, { key: `${keyPrefix}-empty`, dimColor: true }, emptyText)]
-        : lines.map((line, i) => ce(Text, { key: `${keyPrefix}-${i}`, color: 'gray' }, line))),
-    ];
-    return ce(
-      Box,
-      {
-        flexDirection: 'column',
-        borderStyle: 'round',
-        borderColor: 'gray',
-        paddingX: 1,
-        width: narrow ? undefined : 46,
-      },
-      ...section('Inbox (queued)', inbox, 'empty', 'inbox'),
-      ...section('Grants', grants, 'none active', 'grants'),
-      ...section('Pending actions', pending, 'none', 'pending'),
-    );
-  }
-
-  /** Bottom strip — audit tail, control rollup, legacy health, hints. */
-  function BottomStrip(props: {
+  /** Single bottom status+hints strip (no separate audit box). Health comes
+   *  from the slow snapshot; until it lands the panes are already live. */
+  function StatusStrip(props: {
     view: CommandCentralView;
-    snapshot: Snapshot;
+    snapshot: Snapshot | null;
     lastRefreshMs: number;
   }): React.ReactElement {
-    const s = props.snapshot.status;
-    const providers = s.providers.map((p) => `${p.name}=${p.status}`).join('  ');
-    const auditLines =
-      props.view.audit.length === 0
-        ? [ce(Text, { key: 'audit-empty', dimColor: true }, 'no audit events yet')]
-        : props.view.audit.map((line, i) =>
-            ce(Text, { key: `audit-${i}`, color: 'gray' }, line),
-          );
+    const s = props.snapshot?.status;
+    const health =
+      s === undefined
+        ? 'probing providers…'
+        : `relay v${s.binary_version} · db=${s.db_path} (${s.db_entries}) · ` +
+          `hook=${s.hook_installed ? 'on' : 'off'} · ` +
+          s.providers.map((p) => `${p.name}=${p.status}`).join(' ');
     return ce(
       Box,
       { flexDirection: 'column', borderStyle: 'round', borderColor: 'gray', paddingX: 1 },
-      ce(Text, { bold: true }, 'Audit'),
-      ...auditLines,
       ce(Text, { color: 'yellow' }, props.view.status),
-      ce(
-        Box,
-        { flexDirection: 'row' },
-        ce(Text, { bold: true }, `relay v${s.binary_version}  `),
-        ce(Text, { color: 'gray' }, `db=${s.db_path} (${s.db_entries})  `),
-        ce(
-          Text,
-          { color: s.hook_installed ? 'green' : 'gray' },
-          `hook=${s.hook_installed ? 'installed' : 'missing'}  `,
-        ),
-        ce(Text, { color: 'gray' }, providers),
-      ),
+      ce(Text, { dimColor: true }, health),
       ce(
         Text,
         { dimColor: true },
-        `${props.view.hints} · last refresh ${formatAgoMs(Date.now() - props.lastRefreshMs)} ago`,
+        `${props.view.hints} · live ${formatAgoMs(Date.now() - props.lastRefreshMs)}`,
       ),
     );
   }
@@ -778,11 +576,19 @@ async function renderInk(args: TuiArgs): Promise<number> {
     const view = buildCommandCentralView(liveControl, {
       width: process.stdout.columns ?? 120,
     });
-    const panes = [
+    // LEFT column = Sessions over Queue (two stacked panes); RIGHT = live stream.
+    const leftColumn = ce(
+      Box,
+      { flexDirection: 'column', width: view.narrow ? undefined : 40 },
       ce(RailPane, { key: 'rail', view }),
-      ce(MainPane, { key: 'main', view }),
       ce(QueuePane, { key: 'queue', view }),
-    ];
+    );
+    const body = ce(
+      Box,
+      { flexDirection: view.narrow ? 'column' : 'row' },
+      leftColumn,
+      ce(MainPane, { key: 'main', view }),
+    );
     const paletteLine = palette.open
       ? ce(Text, { key: 'palette', color: 'cyan' }, `: ${palette.input}▌`)
       : paletteResult !== null
@@ -794,17 +600,11 @@ async function renderInk(args: TuiArgs): Promise<number> {
               : `${paletteResult.code}: ${paletteResult.message}`,
           )
         : null;
-    // Bottom health strip needs the slow full snapshot; until it lands the
-    // panes are already live, so show a thin placeholder instead of blocking.
-    const bottom =
-      snapshot !== null
-        ? ce(BottomStrip, { view, snapshot, lastRefreshMs: lastRefresh })
-        : ce(Text, { key: 'health-loading', dimColor: true }, 'probing providers…');
     return ce(
       Box,
       { flexDirection: 'column' },
-      ce(Box, { flexDirection: view.narrow ? 'column' : 'row' }, ...panes),
-      bottom,
+      body,
+      ce(StatusStrip, { view, snapshot, lastRefreshMs: lastRefresh }),
       paletteLine,
     );
   }
