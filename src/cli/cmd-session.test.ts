@@ -605,3 +605,73 @@ describe('cli.ts session wiring', () => {
     assert.match(src, /relay session grant/);
   });
 });
+
+// ─── 08-fix HIGH: agentic-sandbox guard (relay-CLI control bypass) ──────────
+
+import { AGENTIC_SANDBOX_ENV } from '../security/env-sanitize.js';
+
+describe('relay session — agentic-sandbox guard', () => {
+  async function withSandbox<T>(fn: () => Promise<T>): Promise<T> {
+    const orig = process.env[AGENTIC_SANDBOX_ENV];
+    process.env[AGENTIC_SANDBOX_ENV] = '1';
+    try {
+      return await fn();
+    } finally {
+      if (orig === undefined) delete process.env[AGENTIC_SANDBOX_ENV];
+      else process.env[AGENTIC_SANDBOX_ENV] = orig;
+    }
+  }
+
+  // The named mutating set from the finding, plus delegate/pause/resume which are
+  // equally mutating — the guard is fail-closed (everything but read-only refuses).
+  for (const action of [
+    'send',
+    'grant',
+    'approve',
+    'deny',
+    'revoke',
+    'spawn',
+    'delegate',
+    'pause',
+    'resume',
+  ] as const) {
+    test(`refuses mutating '${action}' under RELAY_AGENTIC_SANDBOX`, async () => {
+      await withSandbox(async () => {
+        const cap = makeIO();
+        const positionals = action === 'spawn' ? ['some-binary'] : ['some-target', 'payload'];
+        const extra = action === 'spawn' ? { provider: 'fake' } : {};
+        const code = await executeSessionCommand(opts(action, positionals, extra), cap.io);
+        assert.equal(code, 1, `${action} must refuse with exit 1 under the sandbox marker`);
+        const err = cap.stderr.join('');
+        assert.match(err, /CONTROL_SANDBOX_DENIED/, 'refusal uses the dedicated RelayError code');
+        assert.match(err, /relay_session_/, 'refusal points the model at the in-process tools');
+      });
+    });
+  }
+
+  test('read-only list / inspect / tail stay allowed under RELAY_AGENTIC_SANDBOX', async () => {
+    await withSandbox(async () => {
+      const { store } = makeRig();
+      const id = uid('sandbox-ro');
+      registerSession(store, id, ['register', 'observe', 'mailbox']);
+
+      let cap = makeIO();
+      assert.equal(await executeSessionCommand(opts('list'), cap.io), 0, 'list allowed in sandbox');
+
+      cap = makeIO();
+      assert.equal(await executeSessionCommand(opts('inspect', [id]), cap.io), 0, 'inspect allowed in sandbox');
+
+      cap = makeIO();
+      assert.equal(await executeSessionCommand(opts('tail', [id]), cap.io), 0, 'tail allowed in sandbox');
+    });
+  });
+
+  test('without the marker, a mutating send proceeds normally (guard is marker-gated)', async () => {
+    const { store } = makeRig();
+    const target = uid('nosandbox');
+    registerSession(store, target, ['mailbox']);
+    const cap = makeIO();
+    const code = await executeSessionCommand(opts('send', [target, 'hi']), cap.io);
+    assert.equal(code, 0, 'no marker → send is not blocked by the guard');
+  });
+});
