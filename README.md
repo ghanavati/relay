@@ -94,7 +94,7 @@ Add `--clean` to remove duplicate Relay-managed hooks before reinstalling. Add `
 | `relay doctor` | Probe provider + DB health (10 checks: providers, hooks, env, recall, auto-extract, berry, lmstudio model, consent files). |
 | `relay verify` | End-to-end smoke (memory + recall + context emit + hook + db). |
 | `relay info` | Status summary (binary, db size, type counts, 24h activity, hooks, providers). |
-| `relay tui` | Ink dashboard — recent activity + memory recall preview + status (q to quit). |
+| `relay tui` | Command Central — terminal Ink operator console over the control layer: session rail, live event stream, and a `:` command palette routed through the broker (q to quit). |
 
 ### Setup / install
 | Command | What it does |
@@ -143,7 +143,9 @@ Local storage by default. All memory lives in a single SQLite file under `~/.rel
 
 Pre-release `0.2.0`. **1371 tests** passing, four worker backends (Codex, LM Studio single-shot + agentic, OpenRouter, Anthropic), four cross-LLM context-injection wrappers, semantic recall via `nomic-embed-text-v1.5`, conflict detection on contradictory memories, delta extraction in auto-extract, REST-based Figma tools. CI runs Node 20 + 22 on every push.
 
-**Next:** a terminal Command Central (Ink) over the control layer — workspace/session rail, live event feed, and a keyboard-first command palette routed through the same broker the CLI uses. See [`.planning/research/EXTERNAL-TOOLS-ASSESSMENT.md`](.planning/research/EXTERNAL-TOOLS-ASSESSMENT.md) for the product thesis.
+**Command Central (shipped).** `relay tui` is the terminal Ink operator console over the control layer: a session rail, a live event stream with human/model source badges and pending/approved/denied/executed dispositions, and a keyboard-first `:` command palette routed through the same broker the CLI uses. Human palette actions and model tool calls share one broker, one policy path, and one audit trail; a model can request a grant but can never approve its own.
+
+**Next:** strong live control beyond Relay-owned processes (opt-in PTY for full-TTY CLIs) and per-session cost/usage rollups. See [`.planning/research/EXTERNAL-TOOLS-ASSESSMENT.md`](.planning/research/EXTERNAL-TOOLS-ASSESSMENT.md) for the product thesis.
 
 ## v0.2 capabilities (shipped)
 
