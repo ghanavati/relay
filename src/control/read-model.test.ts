@@ -480,6 +480,36 @@ function ev(
   });
 }
 
+// ─── Large session sets stay bounded (CONTROL-16) ───────────────────────────
+
+describe('gatherControlSnapshot — large session sets stay bounded', () => {
+  beforeEach(wipeControlTables);
+
+  test('roster + event tail honor their limits while provider rollups stay complete', () => {
+    const store = new ControlSessionStore();
+    const N = 250;
+    for (let i = 0; i < N; i++) {
+      register(store, `bulk-${i}`, 'fake', T0 + i);
+    }
+    // A busy selected session with far more events than the tail limit.
+    for (let i = 0; i < 400; i++) {
+      store.appendEvent(
+        { session_id: `bulk-${N - 1}`, event_type: 'session_updated', payload: { seq: i } },
+        T0 + N + i,
+      );
+    }
+
+    const snap = gatherControlSnapshot({ store, now: T0 + 1_000_000 });
+    // Bounded reads — never the full table.
+    assert.ok(snap.sessions.length <= 50, 'roster is capped by the default sessions limit');
+    assert.ok(snap.events.length <= 50, 'event tail is capped by the default events limit');
+    // Aggregate still counts ALL sessions regardless of the roster cap.
+    const fake = snap.providers.find((p) => p.provider === 'fake');
+    assert.ok(fake);
+    assert.equal(fake.total, N, 'provider rollup counts every session, not just the bounded roster');
+  });
+});
+
 describe('classifyEventSource', () => {
   test('llm-driven sends and pulls read as llm', () => {
     assert.equal(classifyEventSource(ev('message_enqueued', { sender_kind: 'llm' })), 'llm');
