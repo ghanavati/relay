@@ -419,6 +419,18 @@ export async function checkConsentFiles(): Promise<ProviderProbe> {
   return { name: 'consent-files', status: 'ok', detail: `${present}/${total} workdirs have consent` };
 }
 
+/**
+ * Read-only control-layer health: session/queued/blocked counts from the live
+ * control tables. Reports `ok` when the tables are readable; `failed` only when
+ * the schema is missing/unreadable. Surfaces the queued-delivery backlog and
+ * blocked control attempts for D-05 visibility.
+ *
+ * RED stub: returns failed until the GREEN implementation lands.
+ */
+export async function checkControlLayer(): Promise<ProviderProbe> {
+  return { name: 'control', status: 'failed', detail: 'not implemented (RED)' };
+}
+
 export async function executeDoctorCommand(args: DoctorArgs, io: CliIO): Promise<number> {
   const checks: ProviderProbe[] = [];
   let summary = { ok: 0, missing: 0, failed: 0 };
