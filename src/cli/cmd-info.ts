@@ -87,6 +87,35 @@ interface InfoReport {
   activity: Activity;
 }
 
+// ─── Control layer (Phase 8 / Plan 05 / Task 2) ─────────────────────────────
+
+export interface ControlAdapterCatalogEntry {
+  readonly provider: string;
+  readonly capabilities: readonly string[];
+  /** True only when the adapter can write to a live process Relay owns (live_stdin). */
+  readonly live_control: boolean;
+}
+
+export interface ControlInfo {
+  readonly sessions: { total: number; active: number; idle: number; ended: number };
+  readonly queued: number;
+  readonly blocked: number;
+  readonly adapters: readonly ControlAdapterCatalogEntry[];
+}
+
+/**
+ * Truthful per-provider control capability catalog (RED stub: empty until the
+ * GREEN implementation lands). Mirrors the adapter capability sets in
+ * src/control/adapters/* and docs/providers.md — no adapter overclaims
+ * live_stdin; live control belongs only to Relay-owned processes.
+ */
+export const CONTROL_ADAPTER_CATALOG: readonly ControlAdapterCatalogEntry[] = [];
+
+/** Live control-table rollup. RED stub: zeros + empty catalog. */
+export async function readControlState(): Promise<ControlInfo> {
+  return { sessions: { total: 0, active: 0, idle: 0, ended: 0 }, queued: 0, blocked: 0, adapters: CONTROL_ADAPTER_CATALOG };
+}
+
 async function probeBinaryPath(): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync('which', ['relay'], { encoding: 'utf-8', timeout: 3000 });

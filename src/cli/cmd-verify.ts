@@ -169,6 +169,18 @@ export async function runDbRoundtripCheck(workdir: string): Promise<VerifyCheck>
   }
 }
 
+/**
+ * Control-fabric smoke: register a session, broker a human send to it, and
+ * confirm the delivery transition — all inside a transaction that is rolled
+ * back, so a healthy `relay verify` leaves zero residue in the control tables
+ * (unlike the memory checks, the control smoke is non-persistent by design).
+ *
+ * RED stub: returns fail until the GREEN implementation lands.
+ */
+export async function runControlCheck(_token: string): Promise<VerifyCheck> {
+  return { name: 'control', status: 'fail', message: 'not implemented (RED)', critical: true };
+}
+
 export async function executeVerifyCommand(args: VerifyArgs, io: CliIO, _deps?: VerifyDeps): Promise<number> {
   const token = randomUUID().slice(0, 8);
   const checks: VerifyCheck[] = [];
