@@ -114,6 +114,7 @@ describe('executeVerifyCommand', () => {
       runContextEmitCheck: async () => ({ name: 'context-emit', status: 'pass', message: 'stub-pass', critical: true }),
       runHookCheck: async () => ({ name: 'hook', status: 'pass', message: 'stub-pass', critical: false }),
       runDbRoundtripCheck: async () => ({ name: 'db-roundtrip', status: 'pass', message: 'stub-pass', critical: true }),
+      runControlCheck: async () => ({ name: 'control', status: 'pass', message: 'stub-pass', critical: true }),
     };
   }
 
@@ -168,7 +169,7 @@ describe('executeVerifyCommand', () => {
     assert.strictEqual(recallCheck.status, 'fail');
     assert.match(recallCheck.message, /not in recalled memories/);
     assert.strictEqual(parsed.summary.fail, 1);
-    assert.strictEqual(parsed.summary.pass, 4);
+    assert.strictEqual(parsed.summary.pass, 5);
     assert.strictEqual(parsed.ok, false);
     assert.strictEqual(code, 1);
     await rm(tmp, { recursive: true, force: true });
@@ -261,7 +262,7 @@ describe('executeVerifyCommand', () => {
       assert.ok(typeof ch.critical === 'boolean');
     }
     assert.strictEqual(parsed.summary.fail, 2);
-    assert.strictEqual(parsed.summary.pass, 3);
+    assert.strictEqual(parsed.summary.pass, 4);
     assert.strictEqual(parsed.summary.skip, 0);
     assert.strictEqual(parsed.ok, false);
     assert.strictEqual(code, 1);

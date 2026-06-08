@@ -48,6 +48,7 @@ export interface VerifyDeps {
   runContextEmitCheck?: (workdir: string, token: string) => Promise<VerifyCheck>;
   runHookCheck?: () => Promise<VerifyCheck>;
   runDbRoundtripCheck?: (workdir: string) => Promise<VerifyCheck>;
+  runControlCheck?: (token: string) => Promise<VerifyCheck>;
 }
 
 export async function runRememberCheck(token: string, workdir: string): Promise<VerifyCheck> {
@@ -174,11 +175,46 @@ export async function runDbRoundtripCheck(workdir: string): Promise<VerifyCheck>
  * confirm the delivery transition — all inside a transaction that is rolled
  * back, so a healthy `relay verify` leaves zero residue in the control tables
  * (unlike the memory checks, the control smoke is non-persistent by design).
- *
- * RED stub: returns fail until the GREEN implementation lands.
  */
-export async function runControlCheck(_token: string): Promise<VerifyCheck> {
-  return { name: 'control', status: 'fail', message: 'not implemented (RED)', critical: true };
+export async function runControlCheck(token: string): Promise<VerifyCheck> {
+  try {
+    const { getDb } = await import('../runtime/store/db.js');
+    const { ControlSessionStore } = await import('../control/session-store.js');
+    const { ControlBroker } = await import('../control/broker.js');
+    const store = new ControlSessionStore();
+    const broker = new ControlBroker(store);
+    const sid = `relay-verify-control-${token}`;
+    const rollback = new Error('__relay_verify_rollback__');
+    let delivered = false;
+    try {
+      getDb().transaction(() => {
+        store.upsertSession({
+          session_id: sid,
+          provider: 'fake',
+          capabilities: ['register', 'observe', 'mailbox'],
+          state: 'active',
+          label: 'relay verify control smoke',
+        });
+        const msg = broker.sendMessage({
+          source_session_id: 'human:relay-verify',
+          target_session_id: sid,
+          sender_kind: 'human',
+          content: `control smoke ${token}`,
+        });
+        delivered = broker.markDelivered(msg.message_id, { capability: 'mailbox' }).status === 'delivered';
+        // Discard the whole smoke — verify must not pollute the control tables.
+        throw rollback;
+      })();
+    } catch (err) {
+      if (err !== rollback) throw err;
+    }
+    if (!delivered) {
+      return { name: 'control', status: 'fail', message: 'brokered send did not reach delivered', critical: true };
+    }
+    return { name: 'control', status: 'pass', message: 'broker send → delivered (rolled back, no residue)', critical: true };
+  } catch (err) {
+    return { name: 'control', status: 'fail', message: (err as Error).message, critical: true };
+  }
 }
 
 export async function executeVerifyCommand(args: VerifyArgs, io: CliIO, _deps?: VerifyDeps): Promise<number> {
@@ -191,6 +227,7 @@ export async function executeVerifyCommand(args: VerifyArgs, io: CliIO, _deps?: 
   const contextEmitFn = _deps?.runContextEmitCheck ?? runContextEmitCheck;
   const hookFn = _deps?.runHookCheck ?? runHookCheck;
   const dbRoundtripFn = _deps?.runDbRoundtripCheck ?? runDbRoundtripCheck;
+  const controlFn = _deps?.runControlCheck ?? runControlCheck;
 
   // 1. write a memory
   checks.push(await rememberFn(token, io.cwd));
@@ -202,6 +239,8 @@ export async function executeVerifyCommand(args: VerifyArgs, io: CliIO, _deps?: 
   checks.push(await hookFn());
   // 5. direct db roundtrip
   checks.push(await dbRoundtripFn(io.cwd));
+  // 6. control fabric smoke (broker send → delivered, rolled back)
+  checks.push(await controlFn(token));
 
   const summary: VerifySummary = checks.reduce(
     (acc, ch) => {

@@ -424,11 +424,24 @@ export async function checkConsentFiles(): Promise<ProviderProbe> {
  * control tables. Reports `ok` when the tables are readable; `failed` only when
  * the schema is missing/unreadable. Surfaces the queued-delivery backlog and
  * blocked control attempts for D-05 visibility.
- *
- * RED stub: returns failed until the GREEN implementation lands.
  */
 export async function checkControlLayer(): Promise<ProviderProbe> {
-  return { name: 'control', status: 'failed', detail: 'not implemented (RED)' };
+  try {
+    const { getDb } = await import('../runtime/store/db.js');
+    const db = getDb();
+    const one = (sql: string): number => (db.prepare(sql).get() as { n: number }).n;
+    const total = one('SELECT COUNT(*) AS n FROM control_sessions');
+    const active = one("SELECT COUNT(*) AS n FROM control_sessions WHERE state = 'active'");
+    const queued = one("SELECT COUNT(*) AS n FROM control_mailbox WHERE status = 'queued'");
+    const blocked = one("SELECT COUNT(*) AS n FROM control_events WHERE event_type = 'message_blocked'");
+    return {
+      name: 'control',
+      status: 'ok',
+      detail: `${total} session(s), ${active} active, ${queued} queued, ${blocked} blocked`,
+    };
+  } catch (err) {
+    return { name: 'control', status: 'failed', detail: `control tables unreadable: ${(err as Error).message}` };
+  }
 }
 
 export async function executeDoctorCommand(args: DoctorArgs, io: CliIO): Promise<number> {
@@ -496,6 +509,9 @@ export async function executeDoctorCommand(args: DoctorArgs, io: CliIO): Promise
 
   // 13. Consent files presence in known workdirs (additive)
   record(await checkConsentFiles());
+
+  // 14. Control layer health — session/queued/blocked counts (Phase 8)
+  record(await checkControlLayer());
 
   // Output
   if (args.json) {
