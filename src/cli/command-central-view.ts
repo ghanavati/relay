@@ -205,17 +205,102 @@ function formatEventLine(event: ControlEvent, now: number): EventLine {
  * Build the Option A Command Central view from the shared ControlSnapshot.
  */
 export function buildCommandCentralView(
-  _control: ControlSnapshot,
-  _opts: { width: number },
+  control: ControlSnapshot,
+  opts: { width: number },
 ): CommandCentralView {
-  // STUB (08-08 re-layout RED) — GREEN assembles the split rail, merged queue,
-  // and the live event stream from the snapshot.
-  void STATE_BADGES;
-  void CAPABILITY_BADGES;
-  void formatInboxLine;
-  void formatGrantLine;
-  void formatPendingLine;
-  void formatEventLine;
-  void truncate;
-  throw new Error('buildCommandCentralView not implemented (08-08 re-layout)');
+  const now = control.generated_at;
+  const selectedId = control.selected_session?.session_id;
+
+  const queuedByTarget = new Map<string, number>();
+  for (const message of control.inbox) {
+    queuedByTarget.set(
+      message.target_session_id,
+      (queuedByTarget.get(message.target_session_id) ?? 0) + 1,
+    );
+  }
+  // message_blocked events are source-anchored (broker D-05) — the flagged
+  // session is the denied actor.
+  const blockedSessions = new Set(control.blocked.map((event) => event.session_id));
+
+  // ── Top-left: Sessions roster ──────────────────────────────────────────────
+  const rail = control.sessions.map(
+    (session): RailRow =>
+      Object.freeze({
+        session_id: session.session_id,
+        badge: STATE_BADGES[session.state],
+        blocked: blockedSessions.has(session.session_id),
+        provider: session.provider,
+        title: truncate(session.label ?? session.session_id, 18),
+        queued: queuedByTarget.get(session.session_id) ?? 0,
+        selected: session.session_id === selectedId,
+      }),
+  );
+
+  // ── Bottom-left: merged operational Queue (inbox + grants + pending) ────────
+  const queue: QueueRow[] = [
+    ...control.inbox.slice(0, PANE_ROWS.inbox).map(
+      (message): QueueRow =>
+        Object.freeze({ kind: 'inbox' as const, text: formatInboxLine(message, now), expired: false }),
+    ),
+    ...control.grants.slice(0, PANE_ROWS.grants).map(
+      (grant): QueueRow =>
+        Object.freeze({ kind: 'grant' as const, text: formatGrantLine(grant, now), expired: false }),
+    ),
+    ...control.pending_actions.slice(0, PANE_ROWS.pending).map(
+      (event): QueueRow =>
+        Object.freeze({
+          kind: 'pending' as const,
+          text: formatPendingLine(event, now),
+          expired: isPendingExpired(event, now),
+        }),
+    ),
+  ];
+
+  // ── Right (centerpiece): selected session live stream ───────────────────────
+  // control.events is the chronological newest-N tail; keep the TAIL when
+  // display-capping so the freshest events stay visible (newest at the bottom).
+  const selected = control.selected_session;
+  const eventLines =
+    selected === null
+      ? []
+      : control.events.slice(-PANE_ROWS.events).map((event) => formatEventLine(event, now));
+  const main = Object.freeze({
+    header:
+      selected === null
+        ? ''
+        : `${truncate(selected.session_id, 40)} · ${selected.provider} · ` +
+          `${STATE_BADGES[selected.state]}${blockedSessions.has(selected.session_id) ? ' !BLK' : ''}`,
+    badges:
+      selected === null
+        ? ''
+        : selected.capabilities.map((capability) => CAPABILITY_BADGES[capability]).join(' '),
+    events: Object.freeze(eventLines),
+    empty:
+      selected === null
+        ? 'no session selected — sessions appear here once adapters register'
+        : eventLines.length === 0
+          ? 'no events yet for this session'
+          : null,
+  });
+
+  // ── Bottom strip rollup ─────────────────────────────────────────────────────
+  const activeCount = control.sessions.filter((s) => s.state === 'active').length;
+  const budgetUsed = control.grants.reduce((sum, g) => sum + g.used_messages, 0);
+  const budgetMax = control.grants.reduce((sum, g) => sum + g.max_messages, 0);
+  const status =
+    `sessions ${control.sessions.length} (${activeCount} act) · inbox ${control.inbox.length}` +
+    ` · blocked ${control.blocked.length} · pending ${control.pending_actions.length}` +
+    ` · grants ${control.grants.length} (budget ${budgetUsed}/${budgetMax})`;
+
+  return Object.freeze({
+    narrow: opts.width < NARROW_WIDTH,
+    rail: Object.freeze(rail),
+    rail_empty:
+      rail.length === 0 ? 'no sessions registered — waiting for adapters to register' : null,
+    queue: Object.freeze(queue),
+    queue_empty: queue.length === 0 ? 'no inbox, grants, or pending requests' : null,
+    main,
+    status,
+    hints: ': palette (send · grant · tail · pause) · j/k select · q quit',
+  });
 }
