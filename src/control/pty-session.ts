@@ -27,6 +27,8 @@ import { createInterface, type Interface as ReadlineInterface } from 'node:readl
 
 import { getDb } from '../runtime/store/db.js';
 import { makeError, toRelayException, type RelayException } from '../errors.js';
+import { redactSecrets } from '../security/redaction.js';
+import { sanitizeChildEnv } from '../security/env-sanitize.js';
 import type { CliIO } from '../cli/commands.js';
 import { ControlBroker } from './broker.js';
 import { ControlSessionStore } from './session-store.js';
@@ -152,6 +154,11 @@ export class ProcessSession {
 
     const child = spawn(bin, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
+      // 08-fix MEDIUM — never hand an owned child the parent's raw secret env.
+      // sanitizeChildEnv drops secret-shaped names (provider API keys) and the
+      // RELAY_* control namespace (RELAY_DB_PATH et al.); a child that prints
+      // `env` cannot leak provider keys into stored control events.
+      env: sanitizeChildEnv(process.env),
       ...(this.init.workdir !== undefined ? { cwd: this.init.workdir } : {}),
     }) as ChildProcessWithoutNullStreams;
     this.child = child;
@@ -182,7 +189,8 @@ export class ProcessSession {
       throw controlError('INVALID_ARGS', `session ${this.sessionId} has no live stdin to write to`);
     }
     child.stdin.write(text.endsWith('\n') ? text : `${text}\n`);
-    this.recordEvent('process_input', { text });
+    // 08-fix MEDIUM — the child receives the raw line; the persisted event is redacted.
+    this.recordEvent('process_input', { text: redactSecrets(text) });
   }
 
   /** Send SIGINT to the child (interrupt). No-op once exited. */
@@ -257,7 +265,9 @@ export class ProcessSession {
           label: this.init.label ?? null,
           workdir: this.init.workdir ?? null,
           ...(pid !== null ? { pid } : {}),
-          metadata: { owned_by: 'relay', command: this.init.command.join(' ') },
+          // 08-fix MEDIUM — redact the command/args before persisting; a flag
+          // value like `--token sk-...` must not land raw in control metadata.
+          metadata: { owned_by: 'relay', command: redactSecrets(this.init.command.join(' ')) },
         },
         now,
       );
@@ -288,7 +298,9 @@ export class ProcessSession {
     const line: ProcessLine = Object.freeze({ stream, text, seq });
     this.lineBuffer.push(line);
     if (this.lineBuffer.length > MAX_BUFFERED_LINES) this.lineBuffer.shift();
-    this.recordEvent('process_output', { stream, text, seq });
+    // 08-fix MEDIUM — the live mirror + in-memory buffer keep the operator's real
+    // output; only the durable control event is redacted before persistence.
+    this.recordEvent('process_output', { stream, text: redactSecrets(text), seq });
     this.emitter.emit('line', line);
   }
 

@@ -14,6 +14,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { CliIO } from './commands.js';
+import { AGENTIC_SANDBOX_ENV } from '../security/env-sanitize.js';
 
 export interface RunCommandArgs {
   task: string;
@@ -79,6 +80,10 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
       const { AnthropicRunner } = await import('../workers/anthropic.js');
       runner = new AnthropicRunner();
     } else if (args.provider === 'lmstudio-agentic') {
+      // 08-fix HIGH — mark this process as an agentic sandbox. shell_exec children
+      // inherit it (and defaultShellExec force-injects it per child), so any `relay`
+      // CLI a model shells into refuses mutating control subcommands.
+      process.env[AGENTIC_SANDBOX_ENV] = '1';
       const { LmStudioAgenticRunner } = await import('../workers/lmstudio-agentic.js');
       // Phase 7 — env-gated Figma REST tools. registerFigmaTools returns null
       // when PAT is absent (FIGMA-03 graceful — model sees zero Figma tools,

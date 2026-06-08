@@ -40,6 +40,8 @@ export type ErrorCode =
   | "CONTROL_SELF_SEND_BLOCKED"
   | "CONTROL_LOOP_DETECTED"
   | "CONTROL_ADAPTER_DUPLICATE"
+  // 08-fix — mutating `relay session` CLI refused inside an agentic sandbox.
+  | "CONTROL_SANDBOX_DENIED"
   | "UNKNOWN";
 
 export interface RelayError {
@@ -120,5 +122,6 @@ export const RELAY_ERROR_CODES: readonly ErrorCode[] = [
   "CONTROL_SELF_SEND_BLOCKED",
   "CONTROL_LOOP_DETECTED",
   "CONTROL_ADAPTER_DUPLICATE",
+  "CONTROL_SANDBOX_DENIED",
   "UNKNOWN",
 ] as const;
