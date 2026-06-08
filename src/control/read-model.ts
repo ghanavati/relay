@@ -112,15 +112,31 @@ export type ControlEventDisposition = 'pending' | 'approved' | 'denied' | 'execu
  * `approved_by_kind`/`denied_by_kind`. Relay-internal lifecycle events (session
  * registered/updated/ended, grant issued) have no actor marker → 'system'.
  */
-export function classifyEventSource(_event: ControlEvent): ControlEventSource {
-  // STUB (08-08 RED) — GREEN reads the payload actor markers.
-  throw new Error('classifyEventSource not implemented (08-08)');
+export function classifyEventSource(event: ControlEvent): ControlEventSource {
+  const p = event.payload;
+  // Precedence: the direct actor marker, then the message sender, then the
+  // approval/denial actor kind. Only 'human'/'llm' are trusted; anything else
+  // (missing, or a hand-edited junk value) is relay-internal → 'system'.
+  const marker =
+    p['actor_kind'] ?? p['sender_kind'] ?? p['approved_by_kind'] ?? p['denied_by_kind'];
+  return marker === 'human' || marker === 'llm' ? marker : 'system';
 }
 
 /** Map an event type to its operator-visible escalation disposition (D-14). */
-export function classifyEventDisposition(_event: ControlEvent): ControlEventDisposition {
-  // STUB (08-08 RED) — GREEN maps control_* and message_blocked event types.
-  throw new Error('classifyEventDisposition not implemented (08-08)');
+export function classifyEventDisposition(event: ControlEvent): ControlEventDisposition {
+  switch (event.event_type) {
+    case 'control_requested':
+      return 'pending';
+    case 'control_approved':
+      return 'approved';
+    case 'control_executed':
+      return 'executed';
+    case 'control_denied':
+    case 'message_blocked':
+      return 'denied';
+    default:
+      return null;
+  }
 }
 
 // ─── Read model ─────────────────────────────────────────────────────────────

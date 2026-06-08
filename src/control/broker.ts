@@ -214,6 +214,9 @@ const RequestGrantInputSchema = z
     max_messages: z.number().int().min(1).max(10_000),
     reason: z.string().min(1).max(500).optional(),
     expires_in_ms: z.number().int().positive().optional(),
+    // Who initiated the request — stamped onto the visible control_requested
+    // event so Command Central can badge it human vs llm (D-14/D-15). Additive.
+    actor_kind: ControlSenderKindSchema.optional(),
   })
   .strict()
   .readonly();
@@ -467,7 +470,7 @@ export class ControlBroker {
   /** Transition to delivered + target-anchored `message_delivered` event, atomically. */
   markDelivered(
     message_id: string,
-    opts: { capability?: ControlCapability; now?: number } = {},
+    opts: { capability?: ControlCapability; now?: number; actor_kind?: ControlSenderKind } = {},
   ): ControlMessage {
     return this.finishMessage(message_id, 'delivered', opts);
   }
@@ -476,7 +479,7 @@ export class ControlBroker {
   markFailed(
     message_id: string,
     reason: string,
-    opts: { capability?: ControlCapability; now?: number } = {},
+    opts: { capability?: ControlCapability; now?: number; actor_kind?: ControlSenderKind } = {},
   ): ControlMessage {
     return this.finishMessage(message_id, 'failed', opts, reason);
   }
@@ -590,6 +593,7 @@ export class ControlBroker {
           ttl_ms: parsed.ttl_ms,
           max_messages: parsed.max_messages,
           expires_at: now + (parsed.expires_in_ms ?? DEFAULT_CONTROL_REQUEST_TTL_MS),
+          ...(parsed.actor_kind !== undefined ? { actor_kind: parsed.actor_kind } : {}),
           ...(parsed.reason !== undefined ? { reason: parsed.reason } : {}),
         },
       },
@@ -928,7 +932,7 @@ export class ControlBroker {
   private finishMessage(
     message_id: string,
     outcome: 'delivered' | 'failed',
-    opts: { capability?: ControlCapability; now?: number },
+    opts: { capability?: ControlCapability; now?: number; actor_kind?: ControlSenderKind },
     failReason?: string,
   ): ControlMessage {
     const now = opts.now ?? Date.now();
@@ -946,6 +950,9 @@ export class ControlBroker {
           payload: {
             message_id,
             ...(opts.capability !== undefined ? { capability: opts.capability } : {}),
+            // Who drove this transition (e.g. an llm pulling its mailbox via
+            // relay_inbox_read) — additive source badge for the event stream.
+            ...(opts.actor_kind !== undefined ? { actor_kind: opts.actor_kind } : {}),
             ...(outcome === 'failed' ? { reason: failReason ?? 'delivery failed' } : {}),
           },
         },
