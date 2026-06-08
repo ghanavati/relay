@@ -471,6 +471,9 @@ async function runSpawn(options: SessionCommandOptions, io: CliIO): Promise<numb
       command: args.command,
       ...(args.session_id !== undefined ? { sessionId: args.session_id } : {}),
       ...(args.workdir !== undefined ? { workdir: args.workdir } : {}),
+      // JSON mode is machine-readable: keep stdout clean for the result object.
+      // Human mode mirrors the child's live output to the terminal.
+      mirrorOutput: !options.json,
     },
     io,
   );
