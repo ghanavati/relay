@@ -458,3 +458,109 @@ describe('runCommandCentralCheck', () => {
     assert.match(check.message, /1 pending grant request/i, `pending request must be counted: ${check.message}`);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 08-09 — Command Central operator docs contract
+// ---------------------------------------------------------------------------
+// 08-05 already pinned the live-control framing + every `relay session`
+// subcommand (control-e2e.test.ts). This block adds the Command Central
+// operator surface: the keyboard palette, the human + model-requested UAT, the
+// terminal-native (no browser) guarantee, and the snapshot / pending-grant
+// diagnostics that verify and doctor now expose.
+describe('Command Central docs contract (08-09)', () => {
+  async function readRepoFile(rel: string): Promise<string> {
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const here = new URL('.', import.meta.url).pathname; // dist/cli/
+    const root = path.resolve(here, '..', '..'); // repo root
+    return fs.readFile(path.join(root, rel), 'utf-8');
+  }
+
+  /** Slice one markdown section out by a heading-text needle (to next same/higher heading). */
+  function section(doc: string, headingNeedle: string): string {
+    const lines = doc.split('\n');
+    const start = lines.findIndex(
+      (l) => /^#{1,3}\s/.test(l) && l.toLowerCase().includes(headingNeedle.toLowerCase()),
+    );
+    assert.ok(start >= 0, `heading containing "${headingNeedle}" not found`);
+    const level = (lines[start]!.match(/^#+/) ?? ['##'])[0].length;
+    let end = lines.length;
+    for (let i = start + 1; i < lines.length; i++) {
+      const m = lines[i]!.match(/^(#+)\s/);
+      if (m && m[1]!.length <= level) {
+        end = i;
+        break;
+      }
+    }
+    return lines.slice(start, end).join('\n');
+  }
+
+  const PALETTE_ACTIONS = [
+    'send', 'delegate', 'inspect', 'tail', 'grant', 'revoke', 'pause', 'resume', 'approve', 'deny',
+  ];
+
+  test('commands.md Command Central section documents every palette action', async () => {
+    const docs = await readRepoFile('docs/commands.md');
+    assert.match(docs, /Command Central/, 'commands.md names Command Central');
+    const cc = section(docs, 'relay tui');
+    assert.match(cc, /Command Central/, 'the relay tui section is the Command Central section');
+    assert.match(cc, /palette/i, 'documents the keyboard command palette');
+    for (const action of PALETTE_ACTIONS) {
+      assert.match(cc, new RegExp(`\\b${action}\\b`), `Command Central section documents palette action "${action}"`);
+    }
+    assert.match(cc, /\bspawn\b/, 'references relay session spawn (owned-process sessions)');
+  });
+
+  test('Command Central is terminal-native Ink — no doc claims a browser/web UI', async () => {
+    const commands = await readRepoFile('docs/commands.md');
+    const cc = section(commands, 'relay tui');
+    assert.match(cc, /terminal/i, 'states Command Central is terminal-native');
+    assert.match(cc, /\bInk\b/, 'names the Ink rendering layer');
+    for (const doc of [commands, await readRepoFile('README.md'), await readRepoFile('docs/architecture.md')]) {
+      assert.doesNotMatch(
+        doc,
+        /Command Central[\s\S]{0,160}\b(browser|web dashboard|web[- ]based|web ui|web app)\b/i,
+        'no doc may frame Command Central as a browser/web UI',
+      );
+    }
+  });
+
+  test('commands.md UAT covers human-driven AND model-requested control', async () => {
+    const cc = section(await readRepoFile('docs/commands.md'), 'relay tui');
+    assert.match(cc, /human/i, 'UAT covers human-driven control');
+    assert.match(cc, /model/i, 'UAT covers model-driven control');
+    // Model-requested grant lifecycle: request → approve/deny → deliver.
+    assert.match(cc, /request/i);
+    assert.match(cc, /approve/i);
+    assert.match(cc, /deny/i);
+    assert.match(cc, /deliver/i);
+    // A model can never approve its own request (D-14).
+    assert.match(cc, /(self-approval|cannot approve its own|approve its own)/i, 'documents self-approval is denied');
+  });
+
+  test('commands.md documents the snapshot + pending-grant diagnostics', async () => {
+    const docs = await readRepoFile('docs/commands.md');
+    assert.match(docs, /snapshot/i, 'documents the Command Central snapshot health check');
+    assert.match(docs, /pending grant/i, 'documents the pending grant-request queue depth check');
+  });
+
+  test('architecture.md frames Command Central as the terminal operator console over the broker', async () => {
+    const arch = await readRepoFile('docs/architecture.md');
+    assert.match(arch, /Command Central/, 'architecture names Command Central');
+    assert.match(arch, /ControlSnapshot/, 'ties it to the shared ControlSnapshot read model (D-12)');
+    assert.match(arch, /operator|operational/i, 'operator console, not a passive dashboard (D-15)');
+    assert.match(arch, /same broker/i, 'human + model actions use the same broker policy (D-13)');
+    assert.match(
+      arch,
+      /(cannot approve (its|their) own|self-approval|never approve (its|their) own|no self-grant)/i,
+      'models cannot self-escalate (D-14)',
+    );
+  });
+
+  test('README relay tui row presents it as Command Central', async () => {
+    const readme = await readRepoFile('README.md');
+    const tuiRow = readme.split('\n').find((l) => /`relay tui`/.test(l));
+    assert.ok(tuiRow, 'README has a relay tui row');
+    assert.match(tuiRow, /Command Central/, 'relay tui row describes Command Central, not a passive dashboard');
+  });
+});
