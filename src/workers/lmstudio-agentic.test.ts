@@ -98,18 +98,25 @@ describe('T1 — preconditions', () => {
     assert.equal(r.tool_call_count, 2);
   });
 
-  test('cmd-run.ts provider union includes "lmstudio-agentic"', async () => {
-    // Runtime check against the .ts source — type unions are erased in compiled JS.
-    // From the worktree root: src/cli/cmd-run.ts is the source of truth.
+  test('cmd-run.ts resolves "lmstudio-agentic" through the provider registry', async () => {
+    // Phase 9 (09-01): the closed provider union + HTTP_PROVIDERS set were
+    // replaced by registry resolution. The guard's intent is unchanged —
+    // lmstudio-agentic must stay dispatchable via relay run — but the
+    // mechanism is now the registry's builtin table.
     const src = await readSourceFile('src/cli/cmd-run.ts');
     assert.ok(
-      /'codex'\s*\|\s*'openrouter'\s*\|\s*'lmstudio'\s*\|\s*'anthropic'\s*\|\s*'lmstudio-agentic'/.test(src),
-      'RunCommandArgs.provider union must include lmstudio-agentic'
+      /resolveProvider/.test(src),
+      'cmd-run must resolve providers through the registry'
     );
     assert.ok(
-      /HTTP_PROVIDERS\s*=\s*new\s+Set\(\[[^\]]*'lmstudio-agentic'/.test(src),
-      'HTTP_PROVIDERS set must include lmstudio-agentic'
+      /provider === 'lmstudio-agentic'/.test(src),
+      'cmd-run must keep the lmstudio-agentic runner branch'
     );
+    const { listProviders } = await import('./provider-registry.js');
+    const agentic = listProviders({}).find((p) => p.name === 'lmstudio-agentic');
+    assert.ok(agentic, 'registry must list lmstudio-agentic as a builtin');
+    assert.equal(agentic.source, 'builtin');
+    assert.equal(agentic.agentic, true);
   });
 
   test('cmd-parallel.ts SpecTask provider union and validProviders include "lmstudio-agentic"', async () => {
@@ -905,11 +912,18 @@ describe('T7 — dispatch wiring smoke', () => {
     assert.match(src, /provider === 'lmstudio-agentic'/);
   });
 
-  test('cli.ts top-level dispatch validator accepts lmstudio-agentic', async () => {
+  test('cli.ts run dispatch forwards lmstudio-agentic to the registry (no closed validator)', async () => {
+    // Phase 9 (09-01): cli.ts no longer validates a closed provider list —
+    // names pass through dispatchRun to cmd-run's resolveProvider, so
+    // lmstudio-agentic and env-discovered providers share one path.
     const src = await readSourceFile('src/cli.ts');
-    assert.match(src, /'lmstudio-agentic'/);
-    // The validator array at line ~260 must include the new provider literal
-    assert.match(src, /\['codex',\s*'openrouter',\s*'lmstudio',\s*'anthropic',\s*'lmstudio-agentic'\]/);
+    assert.ok(
+      !/\['codex',\s*'openrouter',\s*'lmstudio',\s*'anthropic',\s*'lmstudio-agentic'\]/.test(src),
+      'closed provider validator array must be gone from cli.ts'
+    );
+    assert.match(src, /dispatchRun/);
+    const { resolveProvider } = await import('./provider-registry.js');
+    assert.equal(resolveProvider('lmstudio-agentic', {}).source, 'builtin');
   });
 });
 

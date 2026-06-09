@@ -190,6 +190,10 @@ ${c.cyan('DELEGATION COMMANDS')}
     [--max-concurrency <N>]                (default: 4)
     [--json]
 
+  relay providers [--json]                 List available providers: builtin +
+                                           RELAY_PROVIDER_<NAME>_URL|KEY|TYPE|HEADER_*
+                                           env-discovered (keys masked)
+
 ${c.cyan('SESSION COMMANDS')} (universal control layer)
   relay session list                       List registered control sessions
     [--provider claude-code|codex|lmstudio|openrouter|anthropic|fake]
@@ -285,11 +289,10 @@ async function dispatchRun(rest: readonly string[]): Promise<number> {
     io.stderr('relay run requires a task. Try: relay run "fix the failing test"\n');
     return 2;
   }
-  const provider = (lastOption(flags, 'provider') ?? 'codex') as 'codex' | 'openrouter' | 'lmstudio' | 'anthropic' | 'lmstudio-agentic';
-  if (!['codex', 'openrouter', 'lmstudio', 'anthropic', 'lmstudio-agentic'].includes(provider)) {
-    io.stderr(`unsupported --provider: ${provider}. Try codex / openrouter / lmstudio / anthropic / lmstudio-agentic.\n`);
-    return 2;
-  }
+  // Provider names resolve through the registry inside cmd-run (DISPATCH-02):
+  // builtins + RELAY_PROVIDER_* env-discovered. Unknown names error there
+  // with the available-provider list.
+  const provider = lastOption(flags, 'provider') ?? 'codex';
   const timeoutMsRaw = lastOption(flags, 'timeout-ms');
   const timeoutMs = timeoutMsRaw ? Number.parseInt(timeoutMsRaw, 10) : 300_000;
 
@@ -749,6 +752,11 @@ async function main(): Promise<number> {
   }
 
   if (cmd === 'run') return dispatchRun(rest);
+  if (cmd === 'providers') {
+    const flags = parseFlags(rest);
+    const { executeProvidersCommand } = await import('./cli/cmd-providers.js');
+    return executeProvidersCommand({ json: isBool(flags, 'json') }, io);
+  }
   if (cmd === 'session') return dispatchSession(rest);
   if (cmd === 'verify') return dispatchVerify(rest);
   if (cmd === 'doctor') {
