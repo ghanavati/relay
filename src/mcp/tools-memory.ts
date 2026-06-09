@@ -20,11 +20,22 @@
  * 04's server passes to McpServer.registerTool.
  */
 import { handleRecall } from '../tools/recall.js';
-import { RecallArgsSchema } from '../contracts/memory.js';
-import type { RecallArgs } from '../contracts/memory.js';
+import { handleRemember } from '../tools/remember.js';
+import { RecallArgsSchema, RememberArgsSchema } from '../contracts/memory.js';
+import type { RecallArgs, RememberArgs } from '../contracts/memory.js';
 import { relayErrorToMcpResult } from './result.js';
 import type { McpToolResult } from './result.js';
 import { redactSecrets } from '../security/redaction.js';
+import type { MemorySource } from '../memory/types.js';
+
+/**
+ * Memory source tag for MCP-client saves. The MemorySource union has no
+ * MCP-specific value; 'worker-mcp' is the existing worker-MCP-path tag and
+ * keeps the trust model right: non-human sources start unverified-by-default
+ * (computeTrustLevel), which is exactly the posture an external MCP client's
+ * write deserves.
+ */
+export const MCP_MEMORY_SOURCE: MemorySource = 'worker-mcp';
 
 /** One MCP tool registration: what Plan 04 hands to McpServer.registerTool. */
 export interface MemoryMcpTool<TSchema, TArgs> {
@@ -37,6 +48,7 @@ export interface MemoryMcpTool<TSchema, TArgs> {
 }
 
 export type RecallMcpTool = MemoryMcpTool<typeof RecallArgsSchema, RecallArgs>;
+export type SaveMcpTool = MemoryMcpTool<typeof RememberArgsSchema, RememberArgs>;
 
 /**
  * Boundary redaction for an envelope the handlers already built: redactSecrets
@@ -62,7 +74,15 @@ const RECALL_DESCRIPTION =
   'tokens returned; set it to what your context can afford. Pass workdir (absolute project ' +
   'path) to scope results to that project. Optional query, tags, and types narrow the search.';
 
-export function buildMemoryMcpTools(): readonly [RecallMcpTool] {
+const SAVE_DESCRIPTION =
+  "Persist a memory to Relay's cross-session store so future sessions and other tools can " +
+  'recall it. Pass workdir (absolute project path) to scope it to a project. memory_type ' +
+  'controls decay and retrieval priority: fact (durable knowledge), decision (what was ' +
+  'decided and why), lesson (mistakes and corrections), context (working state), state ' +
+  '(volatile current task), handoff (session continuity). Writes are deduplicated, ' +
+  'rate-limited, and redacted by the store.';
+
+export function buildMemoryMcpTools(): readonly [RecallMcpTool, SaveMcpTool] {
   const recall: RecallMcpTool = {
     name: 'relay_memory_recall',
     config: {
@@ -83,5 +103,24 @@ export function buildMemoryMcpTools(): readonly [RecallMcpTool] {
     },
   };
 
-  return [recall];
+  const save: SaveMcpTool = {
+    name: 'relay_memory_save',
+    config: {
+      description: SAVE_DESCRIPTION,
+      inputSchema: RememberArgsSchema,
+    },
+    handler: async (args: RememberArgs): Promise<McpToolResult> => {
+      try {
+        // handleRemember is synchronous (better-sqlite3) — no await on it;
+        // the async signature is the MCP handler contract, nothing more.
+        // Same MemoryStore gates as the CLI: workdir scoping, per-source
+        // write rate limit, 60s content dedup, redaction-on-save.
+        return redactEnvelope(handleRemember(args, MCP_MEMORY_SOURCE));
+      } catch (err) {
+        return relayErrorToMcpResult(err);
+      }
+    },
+  };
+
+  return [recall, save];
 }
