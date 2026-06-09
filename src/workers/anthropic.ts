@@ -4,6 +4,49 @@ import type { WorkerRunner } from "./runner.js";
 import type { ChatTurn, RunMessagesOptions } from "./generic-http-runner.js";
 
 /**
+ * Anthropic Messages API response shape (the slice Relay reads).
+ * Shared by AnthropicRunner and the parameterized GenericHttpRunner
+ * (anthropic-type dynamic providers) — single source of the wire code.
+ */
+export interface AnthropicResponseData {
+  content?: Array<{ type: string; text?: string }>;
+  usage?: { input_tokens?: number; output_tokens?: number };
+}
+
+/**
+ * Build a single-shot Messages API body. Anthropic uses a top-level `system`
+ * field, not a system role inside `messages`. When contextPrefix is set,
+ * callers MUST pass the bare task (NOT the concatenated finalTask).
+ */
+export function buildAnthropicBody(args: {
+  model: string;
+  task: string;
+  contextPrefix?: string | undefined;
+}): Record<string, unknown> {
+  return {
+    model: args.model,
+    max_tokens: 4096,
+    ...(args.contextPrefix ? { system: args.contextPrefix } : {}),
+    messages: [{ role: "user", content: args.task }],
+  };
+}
+
+export type AnthropicParseResult =
+  | { ok: true; output: string }
+  | { ok: false; raw: string };
+
+/** Extract the text content block; `ok: false` carries the raw JSON for the error output. */
+export function parseAnthropicResponse(
+  data: AnthropicResponseData
+): AnthropicParseResult {
+  const block = data.content?.[0];
+  if (!block || block.type !== "text" || typeof block.text !== "string") {
+    return { ok: false, raw: JSON.stringify(data) };
+  }
+  return { ok: true, output: block.text };
+}
+
+/**
  * Slim Anthropic Messages API runner. Text-only (no agentic tool-loop in v0.2).
  * For Claude with tool-use, route via OpenRouter using --model anthropic/claude-...
  */
@@ -100,15 +143,11 @@ export class AnthropicRunner implements WorkerRunner {
 
     return this.post(
       apiKey,
-      {
+      buildAnthropicBody({
         model: task.model,
-        max_tokens: 4096,
-        // Anthropic Messages API uses a top-level `system` field, not a system
-        // role inside `messages`. When contextPrefix is set, callers MUST pass
-        // the bare task in `task.task` (NOT the concatenated finalTask).
-        ...(task.contextPrefix ? { system: task.contextPrefix } : {}),
-        messages: [{ role: "user", content: task.task }],
-      },
+        task: task.task,
+        contextPrefix: task.contextPrefix,
+      }),
       task.timeout_ms
     );
   }
@@ -149,16 +188,13 @@ export class AnthropicRunner implements WorkerRunner {
         };
       }
 
-      const data = (await res.json()) as {
-        content?: Array<{ type: string; text?: string }>;
-        usage?: { input_tokens?: number; output_tokens?: number };
-      };
+      const data = (await res.json()) as AnthropicResponseData;
 
-      const block = data.content?.[0];
-      if (!block || block.type !== "text" || typeof block.text !== "string") {
+      const parsed = parseAnthropicResponse(data);
+      if (!parsed.ok) {
         return {
           status: "error",
-          output: JSON.stringify(data),
+          output: parsed.raw,
           duration_ms,
           exit_code: null,
           error: makeError("PROVIDER_ERROR", "Anthropic response missing text content block", true),
@@ -169,7 +205,7 @@ export class AnthropicRunner implements WorkerRunner {
       const outputTokens = data.usage?.output_tokens ?? 0;
       return {
         status: "success",
-        output: block.text,
+        output: parsed.output,
         duration_ms,
         exit_code: 0,
         token_usage: inputTokens + outputTokens,

@@ -206,6 +206,8 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
       duration_ms: result.duration_ms,
       exit_code: result.exit_code,
       token_usage: result.token_usage ?? null,
+      prompt_tokens: result.prompt_tokens ?? null,
+      completion_tokens: result.completion_tokens ?? null,
       error_code: result.error?.code ?? 'UNKNOWN',
       error_message: result.error?.message ?? '',
     });
@@ -217,6 +219,8 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
       duration_ms: result.duration_ms,
       exit_code: result.exit_code,
       token_usage: result.token_usage ?? null,
+      prompt_tokens: result.prompt_tokens ?? null,
+      completion_tokens: result.completion_tokens ?? null,
     });
   }
 
