@@ -19,3 +19,19 @@ Out-of-scope discoveries logged during execution. Not fixed by the discovering e
 **Not caused by 09-02 / 09-01:** `git diff HEAD~1 HEAD -- package-lock.json` outside the `@modelcontextprotocol` tree is 0 lines; `src/control/` untouched by both executors; failure mechanism is pure wall-clock arithmetic.
 
 **Suggested fix (for a follow-up fix plan, NOT this phase's scope):** derive the grant timestamps from `Date.now()` in the two grant-creating tests (or inject `now` through `registerControlTools` → `broker.sendMessage`), so grant validity is relative to test runtime, never a fixed epoch. The other 13 control-e2e tests pass; only the two grant-at-`T0` tests are affected.
+
+## [09-01] Confirms the control E2E failures pre-date this plan
+
+**Discovered during:** Plan 09-01 baseline full-suite run (2026-06-09 ~19:12 UTC, BEFORE any 09-01 change).
+Baseline: 1819 tests / 1817 pass / 2 fail — the same two grant-expiry tests documented above by 09-02. Final 09-01 state: 1858 tests / 1856 pass / same 2 fail. No change in the failure set across the plan.
+
+## [09-01] cmd-parallel.ts still carries its own closed provider union
+
+**Discovered during:** Plan 09-01 Task 3 (registry swap in the run path).
+**File:** `src/cli/cmd-parallel.ts` (`SpecTask.provider` union + `validProviders` + `httpProviders` sets), guarded by a source-grep test in `src/workers/lmstudio-agentic.test.ts` (T7).
+**Why deferred:** the plan's must-have kills the closed union in the RUN path only ("cmd-run.ts resolves provider names through the registry"). `relay parallel` is a separate dispatch path, outside files_modified. A follow-up could route cmd-parallel through `resolveProvider` the same way, making env-declared providers usable in parallel specs.
+
+## [09-01] `relay completion` PROVIDERS list is static
+
+**Discovered during:** Plan 09-01 Task 3 read of `src/cli/cmd-completion.ts:38`.
+**Detail:** `PROVIDERS = ['codex', 'lmstudio', 'openrouter', 'anthropic']` — already missing `lmstudio-agentic` before this plan; cannot know env-discovered names at completion-script generation time anyway. Tab completion still works for the listed builtins; dynamic provider names simply don't tab-complete. Cosmetic; out of scope.
