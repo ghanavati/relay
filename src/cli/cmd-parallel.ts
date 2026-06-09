@@ -1,14 +1,19 @@
 /**
  * `relay parallel <spec.json>` — dispatch N tasks concurrently with bounded concurrency.
+ *
+ * Spec providers resolve through src/workers/provider-registry.ts (09-01
+ * follow-up): the five builtins plus any RELAY_PROVIDER_<NAME>_* env-declared
+ * endpoint. Runners come from the shared ./runner-factory.js mapping.
  */
 
 import type { CliIO } from './commands.js';
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { RunStore } from '../runtime/store/run-store.js';
-import type { WorkerRunner } from '../workers/runner.js';
 import type { WorkerResult } from '../workers/types.js';
 import { AGENTIC_SANDBOX_ENV } from '../security/env-sanitize.js';
+import { resolveProvider, type ProviderConfig } from '../workers/provider-registry.js';
+import { runnerForProvider, type RunnerFactoryOpts } from './runner-factory.js';
 
 export interface ParallelArgs {
   specPath: string;
@@ -18,7 +23,8 @@ export interface ParallelArgs {
 
 interface SpecTask {
   task: string;
-  provider: 'codex' | 'lmstudio' | 'openrouter' | 'anthropic' | 'lmstudio-agentic';
+  /** Registry-resolved provider name (builtin or RELAY_PROVIDER_* env-declared). */
+  provider: string;
   model?: string;
   workdir?: string;
   timeout_ms?: number;
@@ -33,43 +39,6 @@ interface RunOutcome {
   error?: string;
   provider: string;
   model: string | null;
-}
-
-async function getRunner(provider: SpecTask['provider']): Promise<WorkerRunner> {
-  if (provider === 'codex') {
-    const { CodexRunner } = await import('../workers/codex.js');
-    return new CodexRunner();
-  }
-  if (provider === 'lmstudio') {
-    const { LmStudioRunner } = await import('../workers/lmstudio.js');
-    return new LmStudioRunner();
-  }
-  if (provider === 'openrouter') {
-    const { OpenRouterRunner } = await import('../workers/openrouter.js');
-    return new OpenRouterRunner();
-  }
-  if (provider === 'anthropic') {
-    const { AnthropicRunner } = await import('../workers/anthropic.js');
-    return new AnthropicRunner();
-  }
-  if (provider === 'lmstudio-agentic') {
-    const { LmStudioAgenticRunner } = await import('../workers/lmstudio-agentic.js');
-    // Phase 7 — env-gated Figma REST tools. Null when PAT absent (FIGMA-03 graceful).
-    const { registerFigmaTools } = await import('../tools/figma/index.js');
-    const { loadPat } = await import('../tools/figma/pat-loader.js');
-    const { homedir } = await import('node:os');
-    const figmaHandlers = registerFigmaTools(process.env, homedir());
-    const figmaPat = loadPat(process.env, homedir()) ?? '';
-    const extraToolHandlers = figmaHandlers
-      ? figmaHandlers.map((h) => ({
-          name: h.def.function.name,
-          pat: figmaPat,
-          handle: h.handle as (a: unknown, c: { workdir: string; pat: string }) => Promise<unknown>,
-        }))
-      : undefined;
-    return new LmStudioAgenticRunner(extraToolHandlers ? { extraToolHandlers } : {});
-  }
-  throw new Error(`unsupported provider: ${provider as string}`);
 }
 
 async function runWithLimit<T, R>(
@@ -120,12 +89,24 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
     return 2;
   }
 
-  const validProviders = new Set(['codex', 'lmstudio', 'openrouter', 'anthropic', 'lmstudio-agentic']);
-  const httpProviders = new Set(['lmstudio', 'openrouter', 'anthropic', 'lmstudio-agentic']);
+  // Resolve every spec provider through the registry BEFORE any run row
+  // exists (mirrors cmd-run, DISPATCH-02): unknown names fail with the
+  // available-provider list; builtin/env collisions error (D-04). The model
+  // gate keys on the resolved wire type — only subprocess (codex) is exempt.
+  const providerConfigs = new Map<string, ProviderConfig>();
   for (const [idx, t] of spec.tasks.entries()) {
     if (!t.task?.trim()) { io.stderr(`task[${idx}].task is empty\n`); return 2; }
-    if (!validProviders.has(t.provider)) { io.stderr(`task[${idx}].provider must be codex|lmstudio|openrouter|anthropic|lmstudio-agentic\n`); return 2; }
-    if (httpProviders.has(t.provider) && !t.model) { io.stderr(`task[${idx}].model required for provider=${t.provider}\n`); return 2; }
+    let config = providerConfigs.get(t.provider);
+    if (!config) {
+      try {
+        config = resolveProvider(t.provider);
+      } catch (err) {
+        io.stderr(`task[${idx}].provider: ${(err as Error).message}\n`);
+        return 2;
+      }
+      providerConfigs.set(t.provider, config);
+    }
+    if (config.type !== 'subprocess' && !t.model) { io.stderr(`task[${idx}].model required for provider=${t.provider}\n`); return 2; }
   }
 
   // 08-fix HIGH — if any task runs the agentic shell loop, mark this process as an
@@ -166,7 +147,25 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
       store.recordEvent(run.run_id, 'started', { provider: run.provider, model: run.model ?? null });
 
       try {
-        const runner = await getRunner(run.provider);
+        const config = providerConfigs.get(run.provider);
+        if (!config) throw new Error(`unresolved provider: ${run.provider}`); // unreachable — validated above
+        const factoryOpts: RunnerFactoryOpts = {};
+        if (run.provider === 'lmstudio-agentic') {
+          // Phase 7 — env-gated Figma REST tools. Null when PAT absent (FIGMA-03 graceful).
+          const { registerFigmaTools } = await import('../tools/figma/index.js');
+          const { loadPat } = await import('../tools/figma/pat-loader.js');
+          const { homedir } = await import('node:os');
+          const figmaHandlers = registerFigmaTools(process.env, homedir());
+          const figmaPat = loadPat(process.env, homedir()) ?? '';
+          if (figmaHandlers) {
+            factoryOpts.agenticExtraToolHandlers = figmaHandlers.map((h) => ({
+              name: h.def.function.name,
+              pat: figmaPat,
+              handle: h.handle as (a: unknown, c: { workdir: string; pat: string }) => Promise<unknown>,
+            }));
+          }
+        }
+        const runner = await runnerForProvider(config, factoryOpts);
         const { buildDelegatedTask } = await import('../context/layers.js');
         const built = await buildDelegatedTask({
           workdir: run.workdir,

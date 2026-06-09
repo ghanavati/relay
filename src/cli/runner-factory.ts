@@ -28,7 +28,33 @@ export async function runnerForProvider(
   config: ProviderConfig,
   opts: RunnerFactoryOpts = {}
 ): Promise<WorkerRunner> {
-  void config;
-  void opts;
-  throw new Error('not implemented — lands with the cmd-parallel registry refactor');
+  if (config.source === 'env') {
+    const { runnerFromProviderConfig } = await import('../workers/generic-http-runner.js');
+    return runnerFromProviderConfig(config);
+  }
+  if (config.name === 'codex') {
+    const { CodexRunner } = await import('../workers/codex.js');
+    return new CodexRunner();
+  }
+  if (config.name === 'lmstudio') {
+    const { LmStudioRunner } = await import('../workers/lmstudio.js');
+    return new LmStudioRunner();
+  }
+  if (config.name === 'openrouter') {
+    const { OpenRouterRunner } = await import('../workers/openrouter.js');
+    return new OpenRouterRunner();
+  }
+  if (config.name === 'anthropic') {
+    const { AnthropicRunner } = await import('../workers/anthropic.js');
+    return new AnthropicRunner();
+  }
+  if (config.name === 'lmstudio-agentic') {
+    const { LmStudioAgenticRunner } = await import('../workers/lmstudio-agentic.js');
+    return new LmStudioAgenticRunner(
+      opts.agenticExtraToolHandlers ? { extraToolHandlers: opts.agenticExtraToolHandlers } : {}
+    );
+  }
+  // Defensive: a builtin name this factory doesn't know means the registry's
+  // builtin table and this mapping drifted — fail loudly (mirrors cmd-run).
+  throw new Error(`unsupported provider: ${config.name}`);
 }
