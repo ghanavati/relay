@@ -1,75 +1,112 @@
-# Phase 9: Relay MCP Server - Context
+# Phase 9: v0.4 Lean Core — Agnostic Dispatch + MCP Memory Server - Context
 
-**Gathered:** 2026-06-09
-**Status:** Ready for planning
-**Source:** User request — "what would it take to make the relay system an MCP as well as CLI". Scoped by Claude (sensible defaults baked, open items flagged); maintainer to veto before execution.
+**Gathered:** 2026-06-09 (rescoped same day after the v0.4 scrutiny — see `.planning/RELAY-V04-SCOPE.md` and `.planning/LESSONS-FROM-RELAY-MCP.md`)
+**Status:** Ready for execution
+**Source:** Maintainer-driven scope cut. The original Phase 9 draft (6 plans) centered on exposing session-control over MCP; that scope is KILLED. What remains is the v0.4 lean core: model-agnostic dispatch + a thin stdio MCP server exposing memory only.
 
 <domain>
 ## Phase Boundary
 
-Expose Relay's existing memory and session-control capabilities to MCP-capable clients (Claude Code, Claude Desktop, other agents) through a stdio MCP server, started by a new `relay mcp` subcommand. The server is a THIN TRANSPORT LAYER over the handlers that already exist — `src/control/tools.ts` (session control) and the memory recall/save path. It must not reimplement business logic, and an MCP caller must not bypass the Phase 8 broker policy.
+Two deliverables, nothing else:
 
-This is additive. The `relay` CLI keeps working exactly as today. The MCP server is a second front door onto the same store, broker, and handlers.
+1. **Agnostic dispatch** — any OpenAI-compatible (or Anthropic-messages) endpoint becomes a `relay run` provider via `RELAY_PROVIDER_<NAME>_URL|KEY|TYPE|HEADER_*` env config. The closed provider unions die. The pattern is ported from the sunsetted relay-mcp predecessor (`src/config/providers.ts` + `registry.ts` there — pattern only, fresh code). Builtins (codex, openrouter, lmstudio, lmstudio-agentic, anthropic) keep working byte-identically. Run records keep the raw provider usage as a receipt — no price map, no dollar math.
 
-In scope: stdio MCP server, `relay mcp` command, memory tools, session-control tools (reuse), Zod→MCP schema mapping, RelayError→MCP-error mapping, redaction at the boundary, caller-as-llm-session policy, `.mcp.json` registration docs.
+2. **Thin stdio MCP server** — `relay mcp` exposes exactly two tools to MCP clients: `relay_memory_recall` and `relay_memory_save`, wrapping the existing handlers, schemas, store, and workdir scoping. SDK pinned + build-time verified. Stdout is protocol-only.
 
-Out of scope (this phase): HTTP/SSE transport (stdio only for v1); exposing `relay run`/worker dispatch over MCP (flagged open — heavier, side-effecting); MCP resources/prompts (tools only for v1); multi-user/hosted MCP.
+This is additive. The `relay` CLI keeps working exactly as today (plus two new commands: `mcp`, `providers`).
+
+### Memory subsystem: verified existing, NOT built here
+
+The v0.4 scope's memory requirements were inventoried against the codebase on 2026-06-09 — they already exist. No memory build work in this phase:
+
+| v0.4 memory requirement | Status | Evidence |
+|---|---|---|
+| Workspace scoping | EXISTS | `src/memory/types.ts:36` (workdir col), `memory-store.ts:1082` (scoped WHERE), `memory-store.ts:69-79` (RELAY_MEMORY_ALLOWED_WORKDIRS gate) |
+| entity_key wiki-upsert | EXISTS | `memory-store.ts:777-893` (upsert + supersession) |
+| Token-budgeted recall | EXISTS | `contracts/memory.ts:49-54`, `memory-engine.ts:243-309` (budgetedRecall) |
+| Unverified-default + outcome trust | EXISTS | `types.ts:19` (TrustLevel), `memory-store.ts:51-60` (computeTrustLevel), `memory-store.ts:1141-1177` (markRecallSuccess) |
+| Redaction on save | EXISTS | `memory-store.ts:62-66` (sanitizeContent → redactSecrets) |
+| FTS5 keyword recall | EXISTS | `db-migrations.ts:42-56` (fts5 vtable + triggers), `memory-store.ts:1027-1040` (MATCH/bm25) |
+| No RAG in v1 | CONFIRMED | optional lazy embeddings exist (`memory-store.ts:311-349`) but recall works without; no vector DB |
+
 </domain>
 
 <decisions>
-## Implementation Decisions (defaults — maintainer may veto)
+## Implementation Decisions
 
-### Transport
-- **D-01:** stdio MCP server only for v1. Standard for local single-user registration in Claude Code / Claude Desktop. HTTP/SSE deferred — no remote/multi-tenant need yet.
+### Dispatch
+- **D-01:** Env naming: `RELAY_PROVIDER_<NAME>_URL` (required for dynamic), `_KEY` (optional; configs store the env-var NAME, value resolved at request time), `_TYPE` (protocol adapter), `_HEADER_*` (extra headers). The relay-mcp adapter zoo (ADAPTER_TYPE/OPENCLAW/EXECUTABLE/INTEGRATION_LEVEL) is NOT ported — it served the predecessor's scope sprawl.
+- **D-02:** `_TYPE` enum v1 = `openai` (chat-completions wire, default) | `anthropic` (messages wire). `openai-responses` deferred: OpenAI still serves chat/completions and nearly all third parties are chat-completions-compatible. Revisit when a real endpoint needs it.
+- **D-03:** Dynamic providers are single-shot (non-agentic) in v1; the agentic tool_loop stays bound to lmstudio-agentic. Generalizing agentic to dynamic providers is a later, measured step.
+- **D-04:** Builtin names win. An env definition colliding with a builtin name is a RelayError, never a silent override.
+- **D-05:** Usage receipt only: prompt/completion/total tokens from the provider response, persisted on the run record uniformly for both wire shapes. No price map, no cost math (killed scope — provider dashboards own pricing; a drifting price map is a confident wrong number).
 
-### Surface (which tools)
-- **D-02:** Memory tools exposed: `relay_memory_recall` (token-budgeted recall for current workdir) and `relay_memory_save`. This is the highest-value Relay capability — persistent cross-session memory — and the reason an MCP client would mount Relay at all.
-- **D-03:** Session-control tools exposed by REUSING the existing `src/control/tools.ts` handlers: `relay_session_list`, `relay_session_inspect`, `relay_session_send`, `relay_inbox_read`, `relay_inbox_ack`, `relay_control_request_grant`. The MCP server registers these against the SDK; it does not duplicate their logic.
-- **D-04 (OPEN):** `relay run` / worker dispatch over MCP is DEFERRED from v1 unless the maintainer wants it. It is side-effecting (spawns workers, shell_exec) and deserves its own consent design. Flagged, not assumed.
+### MCP surface
+- **D-06:** stdio transport only for v1. Reach: any MCP-client app — Claude Desktop/Code, Cursor, Codex, Windsurf, and harnesses that run those agents (e.g. Conductor). v2 (deferred): remote HTTP transport + OAuth 2.1 DCR for ChatGPT/web, fronted by OpenAI's Secure MCP Tunnel so Relay stays local. Do NOT slide into hosting.
+- **D-07:** Tools exposed: `relay_memory_recall` + `relay_memory_save`. NOTHING else — no session-control tools, no dispatch/run tool, no shell surface. Memory is Relay's one genuinely unique value (persists across sessions AND tools); everything else over MCP duplicated host capabilities or expanded attack surface.
+- **D-08:** Single source of truth for schemas: the MCP inputSchema IS `RecallArgsSchema`/`RememberArgsSchema` from `src/contracts/memory.ts` (already exported — no new export work).
+- **D-09:** New code confined to `src/mcp/` + an `mcp` branch and a `providers` branch in `src/cli.ts`. Thin wrappers call existing handlers (`handleRecall`/`handleRemember`); no parallel implementation.
+- **D-10:** Workdir scoping (`RELAY_MEMORY_ALLOWED_WORKDIRS`) applies over MCP exactly as in the CLI (inherited from MemoryStore.assertWorkdirAllowed — wrap, don't bypass). Save consent = same gate as the CLI, no looser path (formerly O-03, now decided).
+- **D-11:** Redaction (`redactSecrets`) runs on every value crossing the MCP boundary — results AND error messages. RelayError maps to an MCP isError result; unknown throws map to a generic redacted result. Centralized in `src/mcp/result.ts`.
+- **D-12:** Official MCP TypeScript SDK, exact-pinned, name/maintainer/version verified before install (supply-chain gate), import surface verified against the installed package via `resolveMcpSdk` — never hardcoded from docs.
+- **D-13:** `relay mcp` is blocking, speaks MCP on stdin/stdout, logs to stderr only. Docs ship the `.mcp.json` registration block.
+- **D-14:** No per-connection control session. The earlier draft bound MCP connections to llm-kind control sessions; with control tools killed, that machinery is unnecessary for a memory server. Provenance = the memory source tag (unverified-by-default trust for non-human sources) + the store's own write gates (rate limit, dedup, redaction).
 
-### Reuse and schemas
-- **D-05:** Single source of truth for schemas. The MCP SDK's `registerTool` accepts a Zod object as `inputSchema`. Relay already validates tool input with Zod. The MCP layer imports and reuses those exact Zod schemas — no hand-maintained JSON Schema. If the existing handlers expose OpenAI-style `ToolDef` JSON rather than raw Zod, the plan must extract/share the underlying Zod schema so MCP and the agentic path validate against the same definition.
-- **D-06:** New code is confined to a `src/mcp/` module (e.g. `src/mcp/server.ts`, `src/mcp/tools.ts`) plus a `mcp` branch in `src/cli.ts`. Each MCP tool handler is a thin wrapper that calls the existing control/memory handler and shapes the result into the MCP `{ content: [...] }` envelope.
-
-### Security / policy (mirror Phase 8)
-- **D-07:** An MCP caller is an llm-kind control session. Cross-session sends are default-deny, require grants (TTL + budget), are loop-detected, and emit SQLite audit events — identical to the agentic path. No MCP tool may let a caller self-grant, raise its own budget, or bypass the broker.
-- **D-08:** Workdir scoping (`RELAY_MEMORY_ALLOWED_WORKDIRS`) applies to memory tools over MCP exactly as it does to the CLI.
-- **D-09:** Redaction (`REDACTION_PATTERNS`) runs before any value is returned across the MCP boundary — session content, memory text, errors. RelayError maps to an MCP tool-error result (isError), not a thrown exception that crashes the server.
-
-### SDK
-- **D-10:** Use the official Model Context Protocol TypeScript SDK. The exact published package name + import paths MUST be verified at build time against the installed version (the SDK has shifted between `@modelcontextprotocol/sdk` with `/server/mcp.js` + `/server/stdio.js` subpaths and a newer `@modelcontextprotocol/server` style). The executor runs `npm view <pkg> version` / checks the installed package before writing imports. Pin in package-lock. This is a new dependency — flagged for explicit install approval.
-
-### Packaging
-- **D-11:** `relay mcp` starts the stdio server (blocking, speaks MCP on stdin/stdout, logs to stderr only — stdout is the protocol channel, so nothing else may write to it). Docs show the `.mcp.json` entry for Claude Code/Desktop registration.
+### Resolved former open questions
+- **O-01 (dispatch over MCP):** RESOLVED — killed for v1 entirely (not just deferred from the tool list). Side-effecting dispatch over MCP needs its own consent design; nothing ships until that exists.
+- **O-02 (MCP session identity):** MOOT — no control session is created (D-14).
+- **O-03 (save consent):** RESOLVED — same workdir gate as the CLI (D-10).
 </decisions>
 
 <open_questions>
-## Open — maintainer decides (do not silently assume in plans)
-- **O-01:** Expose `relay run`/dispatch over MCP in v1, or defer? (D-04 default: defer.)
-- **O-02:** Should each MCP connection map to one ephemeral control session, or a persistent named session? Affects how `relay_session_send` identifies "self" and how audit attributes actions. (Lean: one session per MCP connection, id derived from client info, ended on disconnect.)
-- **O-03:** Memory `save` over MCP — auto-approved, or behind the same consent/allowlist the CLI uses? (Lean: same workdir consent as CLI; no looser path.)
+## Open — none
+
+All draft-phase open questions were resolved by the v0.4 rescope (see above).
 </open_questions>
 
 <canonical_refs>
-## Code References (MUST read before planning/implementing)
-- `src/control/tools.ts` — existing LLM-facing tool handlers to REUSE (relay_session_*). Source of truth for session-control behavior + Zod input validation.
-- `src/cli.ts` — command dispatcher; add a `mcp` branch (study existing branches like `session`, `tui`).
-- `src/cli/cmd-run.ts` — how the agentic path wires control tools + creates a control session per run (mirror for "MCP caller = session").
-- `src/control/broker.ts`, `src/control/session-store.ts` — broker policy + store the MCP caller is subject to.
-- `src/security/redaction.ts` (`REDACTION_PATTERNS`, `redactSecrets`) — run at the MCP boundary.
-- `src/errors.ts` — RelayError shape for the error-mapping.
-- Memory recall/save path — `src/cli/cmd-memory-ops.ts` / memory recall command (the handler the memory MCP tools wrap).
-- `package.json` — add the MCP SDK dep; `tsconfig.json` — ESM/module settings the new files must match.
+## Code References (MUST read before implementing)
+
+### Dispatch (Plan 01)
+- `src/cli/cmd-run.ts` — the five hardwired providers + closed union to replace with registry resolution.
+- `src/workers/generic-http-runner.ts`, `openrouter.ts`, `lmstudio.ts` — the HTTP runner base + subclasses to parameterize.
+- `src/workers/anthropic.ts` — messages-wire shaping to REUSE for anthropic-type dynamic providers.
+- `src/workers/runner.ts`, `types.ts` — WorkerResult fields (token_usage, prompt_tokens, completion_tokens).
+- `src/runtime/store/run-store.ts` — run records where the usage receipt persists.
+- `/Users/ghanavati/ai-stack/Projects/relay-mcp/src/config/providers.ts` — READ-ONLY pattern source for env discovery (port pattern, write fresh code).
+
+### MCP (Plans 02–05)
+- `src/tools/recall.ts`, `src/tools/remember.ts` — the handlers the MCP tools wrap (already emit the `{content}` envelope; do NOT redact — the wrapper does).
+- `src/contracts/memory.ts` — recallSchema/RecallArgsSchema, rememberSchema/RememberArgsSchema (already exported; the single source of truth).
+- `src/memory/memory-store.ts` — assertWorkdirAllowed (the scoping gate, ~lines 69-79), write rate limit, dedup.
+- `src/security/redaction.ts` — redactSecrets/REDACTION_PATTERNS (boundary redaction).
+- `src/errors.ts` — RelayError shape for the error mapping.
+- `src/cli.ts` — dispatcher; add `mcp` + `providers` branches (study session/tui branches).
+- `package.json`, `tsconfig.json` — ESM/module settings new files must match.
+
+### Scope guards
+- `.planning/RELAY-V04-SCOPE.md` — the build/kill/defer record this phase implements.
+- `.planning/LESSONS-FROM-RELAY-MCP.md` — why the kill list exists; the predecessor died of scope, not engineering.
 
 ## External
-- MCP TypeScript SDK (Context7 `/modelcontextprotocol/typescript-sdk`): `McpServer({name,version})`, `server.registerTool(name, {title?, description, inputSchema: <zodObject>, outputSchema?}, async handler)`, handler returns `{ content: [{type:'text', text}], structuredContent? }`; `StdioServerTransport` + `await server.connect(transport)`. Verify exact package/import at build time.
+- MCP TypeScript SDK (Context7 `/modelcontextprotocol/typescript-sdk`): `McpServer({name,version})`, `registerTool(name,{description,inputSchema:<zod>},handler)` → `{content:[{type:'text',text}], isError?}`; `StdioServerTransport` + `await server.connect(transport)`. Exact package/import verified at build time (D-12).
 </canonical_refs>
 
 <non_goals>
-## Out Of Scope
-- HTTP/SSE transport (stdio only v1).
-- `relay run`/worker dispatch over MCP (deferred unless O-01 says otherwise).
-- MCP resources and prompts (tools only v1).
-- Hosted/multi-user MCP, auth beyond the OS-user/stdio trust boundary.
-- Any change to the existing CLI behavior — additive only.
+## Out Of Scope (the v0.4 kill/defer list — enforced)
+
+KILLED (do not build, do not partially build):
+- Session-control tools over MCP / MCP-caller-as-control-session — the entire old 09-04 draft.
+- `relay run`/dispatch/shell over MCP.
+- Cost tracking / price maps / $ math (raw usage receipt only).
+- MCP-client bridge (Relay consuming other MCP servers).
+- Trader/finance/market features of any kind.
+- Berry/hallucination-check built-in (external tool only).
+- Command Central/TUI extensions.
+
+DEFERRED (post-v1, only if measured-needed):
+- RAG/embeddings beyond the existing optional lazy-embed path (FTS5 + scoping is the v1 recall story).
+- `openai-responses` wire type; agentic tool_loop for dynamic providers.
+- v2 remote MCP transport + OAuth 2.1 DCR (ChatGPT/web reach).
+- HTTP/SSE transports, MCP resources/prompts, multi-user/hosted anything.
 </non_goals>

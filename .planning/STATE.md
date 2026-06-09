@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-05-18)
 
 ## Current Position
 
-Phase: 8 (Universal LLM Control + Command Central, v0.3)
-Plan: 9 of 9 complete (08-01 through 08-09)
-Status: IMPLEMENTED + security-hardened on branch phase-8-control, full suite 1804/1804, all 17 CONTROL reqs met. Codex review: HIGH (shell_exec control bypass) mitigated + confirmed; 3 secret-leak edges fixed across re-review rounds (delimited env names, spawn_error, DSN-value credentials). Pending: maintainer merge decision (Codex loop stopped at diminishing returns — denylist secret detection is asymptotic; residuals documented in SECURITY.md).
-Last activity: 2026-06-08
+Phase: 9 (v0.4 Lean Core — Agnostic Dispatch + MCP Memory Server)
+Plan: 0 of 5 complete (09-01 through 09-05 written 2026-06-09, ready for execution)
+Status: PLANNED. Phase 8 MERGED to main 2026-06-08 (1804/1804, Codex-reviewed, security residuals in SECURITY.md). Phase 9 rescoped same week after the v0.4 scrutiny: original 6-plan session-control-over-MCP draft replaced by the lean set — agnostic provider dispatch (RELAY_PROVIDER_* env registry, port of the relay-mcp pattern) + thin stdio MCP server exposing exactly relay_memory_recall/save. Memory subsystem verified already-existing (no build). Kill/defer record: .planning/RELAY-V04-SCOPE.md; predecessor lessons: .planning/LESSONS-FROM-RELAY-MCP.md.
+Last activity: 2026-06-09
 
-Progress: [██████████] 100% (phase 8 plans) — security gate cleared; merge is maintainer's call
+Progress: [░░░░░░░░░░] 0% (phase 9 plans) — wave 1 = 09-01 ∥ 09-02 (09-02 needs maintainer approval for the SDK install)
 
 ## Performance Metrics
 
@@ -118,6 +118,6 @@ Top blast-radius pitfalls to enforce at gate (research §4):
 
 ## Session Continuity
 
-Last session: 2026-06-08 (orchestrated parallel wave execution, paused on user hold)
-Stopped at: 08-07 complete + verified — full suite 1718/1718. PAUSED before round 4. Next: {08-05 ∥ 08-08} parallel (write sets disjoint, build-lock protocol), then 08-09 close-out. Follow-up flagged: cmd-session.ts (970) + broker.ts (985) exceed 800-line cap — split in a refactor plan. User direction pending on terminal-vs-web Command Central emphasis; delegation-first framing (grants/audit are edge-gates, not the product).
+Last session: 2026-06-09 (v0.4 rescope: scrutiny killed cost/trader/Berry-builtin/MCP-bridge/control-over-MCP; Phase 9 plans rewritten to the lean set)
+Stopped at: Phase 9 plan set complete (09-01..05 + CONTEXT + RESEARCH rewritten; old 09-06/AUDIT deleted; REQUIREMENTS DISPATCH-01..04 + MCP-01..05). Next: execute wave 1 — 09-01 (dispatch) ∥ 09-02 (SDK pin, needs install approval). Carried follow-up: cmd-session.ts (970) + broker.ts (985) exceed 800-line cap — split in a future refactor plan.
 Resume file: None
