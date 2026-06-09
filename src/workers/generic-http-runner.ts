@@ -1,6 +1,7 @@
 import { makeError } from "../errors.js";
 import type { WorkerRunner } from "./runner.js";
 import type { WorkerTask, WorkerResult } from "./types.js";
+import type { ProviderConfig } from "./provider-registry.js";
 
 /**
  * Slim HTTP runner for solo Relay v0.1.0.
@@ -205,6 +206,29 @@ export class GenericHttpRunner implements WorkerRunner {
       clearTimeout(timer);
     }
   }
+}
+
+/** Uniform usage receipt (DISPATCH-04) — raw provider numbers only. */
+export interface UsageReceipt {
+  token_usage: number | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+}
+
+export type UsageWire = "openai" | "anthropic";
+
+export function extractUsageReceipt(
+  _json: Record<string, unknown>,
+  _wire: UsageWire
+): UsageReceipt {
+  throw new Error("not implemented");
+}
+
+export function runnerFromProviderConfig(
+  _config: ProviderConfig,
+  _env: NodeJS.ProcessEnv = process.env
+): GenericHttpRunner {
+  throw new Error("not implemented");
 }
 
 function extractOutputText(
