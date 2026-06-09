@@ -18,7 +18,7 @@ import { AGENTIC_SANDBOX_ENV } from '../security/env-sanitize.js';
 
 export interface RunCommandArgs {
   task: string;
-  provider: 'codex' | 'openrouter' | 'lmstudio' | 'anthropic' | 'lmstudio-agentic';
+  provider: string;
   model?: string;
   workdir: string;
   timeoutMs: number;
@@ -116,8 +116,6 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
       const controlNamed = toNamedToolHandlers(registerControlTools(run_id));
       runner = new LmStudioAgenticRunner({ extraToolHandlers: [...figmaNamed, ...controlNamed] });
     } else {
-      const exhaustive: never = args.provider;
-      void exhaustive;
       io.stderr(`unsupported provider: ${args.provider}\n`);
       runStore.recordError(run_id, {
         error_code: 'INVALID_ARGS',
