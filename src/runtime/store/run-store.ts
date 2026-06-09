@@ -17,6 +17,8 @@ export type RunRow = {
   output_size_chars?: number | null;
   exit_code?: number | null;
   token_usage?: number | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
   warnings_json?: string | null;
   files_changed_json?: string | null;
   error_code?: string | null;
@@ -143,6 +145,8 @@ export class RunStore {
       duration_ms?: number;
       exit_code?: number | null;
       token_usage?: number | null;
+      prompt_tokens?: number | null;
+      completion_tokens?: number | null;
       warnings?: string[];
       files_changed?: string[];
       error_code?: string;
@@ -159,6 +163,8 @@ export class RunStore {
       duration_ms: fields.duration_ms,
       exit_code: fields.exit_code,
       token_usage: fields.token_usage,
+      prompt_tokens: fields.prompt_tokens,
+      completion_tokens: fields.completion_tokens,
       warnings_json: fields.warnings != null ? JSON.stringify(fields.warnings) : undefined,
       files_changed_json:
         fields.files_changed != null ? JSON.stringify(fields.files_changed) : undefined,
