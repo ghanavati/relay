@@ -11,7 +11,7 @@ Milestone v0.2 layers agentic capability and memory upgrades onto Relay's v0.1.2
 - [x] **v0.1.2** — Codex wave-4 audit fixes (shipped 2026-05-11)
 - [ ] **v0.2** — Agentic capability + memory upgrades (Phases 1-7, in progress)
 - [ ] **v0.3** — Universal LLM control layer + Command Central (Phase 8, planned)
-- [ ] **v0.4** — Relay as MCP server (Phase 9, planned)
+- [ ] **v0.4** — Lean core: agnostic dispatch + stdio MCP memory server (Phase 9, planned; scope in `.planning/RELAY-V04-SCOPE.md`)
 
 ## Phases
 
@@ -29,7 +29,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 6: Delta Extraction** - Auto-extract diffs against existing memories, surfacing contradictions instead of re-extracting
 - [ ] **Phase 7: Figma REST Tools** - Local agentic runner can list Figma layers and update tokens via REST API
 - [ ] **Phase 8: Universal LLM Control + Command Central** - Bidirectional session bus plus a terminal-native operator console so humans and permitted models can inspect, message, grant, revoke, and coordinate supported LLM sessions through the same Relay policy path
-- [ ] **Phase 9: Relay MCP Server** - Expose Relay's memory + control surface to MCP-capable clients (Claude Code, Claude Desktop, other agents) over a stdio MCP server, as a thin transport layer reusing the existing CLI/control/memory handlers — additive, the CLI stays unchanged
+- [ ] **Phase 9: v0.4 Lean Core (Agnostic Dispatch + MCP Memory Server)** - Any OpenAI-compatible/Anthropic endpoint becomes a `relay run` provider via env config (no closed unions), and a thin stdio MCP server exposes memory recall/save to MCP clients — additive, the CLI stays unchanged; session-control-over-MCP killed per the v0.4 scrutiny
 
 ## Phase Details
 
@@ -129,25 +129,23 @@ Decimal phases appear between their surrounding integers in numeric order.
   8. Command Central stays fast under active sessions: bounded reads, cancellable refreshes, and no unbounded work on the Ink render path.
 **Plans**: `.planning/phases/08-universal-llm-control/08-01-PLAN.md`, `.planning/phases/08-universal-llm-control/08-02-PLAN.md`, `.planning/phases/08-universal-llm-control/08-03-PLAN.md`, `.planning/phases/08-universal-llm-control/08-04-PLAN.md`, `.planning/phases/08-universal-llm-control/08-05-PLAN.md`, `.planning/phases/08-universal-llm-control/08-06-PLAN.md`, `.planning/phases/08-universal-llm-control/08-07-PLAN.md`, `.planning/phases/08-universal-llm-control/08-08-PLAN.md`, `.planning/phases/08-universal-llm-control/08-09-PLAN.md`
 
-### Phase 9: Relay MCP Server
-**Goal**: MCP-capable clients (Claude Code, Claude Desktop, other agents) can use Relay's memory and session-control surface over a stdio MCP server started by `relay mcp`. The server is a thin transport layer that reuses the existing CLI/control/memory handlers and the existing Zod boundary schemas — no parallel implementation, no policy bypass. The `relay` CLI keeps working unchanged.
-**Depends on**: Phase 8 (control broker, session store, `src/control/tools.ts` handlers, security posture)
-**Requirements**: MCP-01, MCP-02, MCP-03, MCP-04, MCP-05, MCP-06, MCP-07
+### Phase 9: v0.4 Lean Core (Agnostic Dispatch + MCP Memory Server)
+**Goal**: Relay's two v0.4 deliverables land: (1) model-agnostic dispatch — any OpenAI-compatible or Anthropic-messages endpoint becomes a `relay run` provider through `RELAY_PROVIDER_<NAME>_*` env config, killing the closed provider unions, with the raw usage receipt persisted (no price math); (2) a thin stdio MCP server (`relay mcp`) exposing exactly `relay_memory_recall` + `relay_memory_save`, wrapping the existing handlers/schemas/store/scoping. Memory subsystem itself: verified already-existing (inventory in 09-CONTEXT.md), no build. Session-control-over-MCP from the original draft is KILLED (see `.planning/RELAY-V04-SCOPE.md`). The `relay` CLI keeps working unchanged (additive: `mcp`, `providers`).
+**Depends on**: Phase 8 (merged to main 2026-06-08 — baseline ~1804 tests)
+**Requirements**: DISPATCH-01, DISPATCH-02, DISPATCH-03, DISPATCH-04, MCP-01, MCP-02, MCP-03, MCP-04, MCP-05
 **Success Criteria** (what must be TRUE):
-  1. `relay mcp` starts a stdio MCP server that a client registers via `.mcp.json`; the client lists Relay's tools and calls them.
-  2. Memory tools (`relay_memory_recall`, `relay_memory_save`) work over MCP and hit the same memory store + workdir scoping as the CLI.
-  3. Session-control tools reuse the existing `src/control/tools.ts` handlers (list/inspect/send/inbox/grant) — an MCP caller is an llm-kind session subject to the same default-deny, grants, TTL/budget, loop detection, and audit events as the agentic path. No broker bypass.
-  4. MCP tool input schemas are the existing Zod schemas (single source of truth — no hand-maintained JSON Schema that can drift).
-  5. Errors map cleanly: RelayError → MCP tool error result; secrets redacted before crossing the MCP boundary.
-  6. The official `@modelcontextprotocol/sdk` is pinned in package-lock; the exact package name + import paths are verified against the installed version, not assumed.
-  7. Full existing suite stays green; the CLI surface is unchanged (additive only).
+  1. A user adds a new provider with env vars alone and `relay run --provider <name>` dispatches to it; the five builtins behave byte-identically; `relay providers` lists all with keys masked; unknown providers error with the available list.
+  2. Run records carry the raw provider usage receipt (prompt/completion/total) uniformly for both wire shapes — and no cost/price code exists anywhere.
+  3. `relay mcp` starts a stdio MCP server that a client registers via `.mcp.json`; the client enumerates exactly the two memory tools and calls them against the same store + workdir scoping as the CLI.
+  4. MCP inputSchemas ARE the contracts Zod schemas; RelayError → isError results; secrets redacted on everything crossing the boundary; stdout carries protocol only.
+  5. An automated integration test drives the REAL SDK client against the REAL server (enumeration + save→recall round-trip + scoping over the wire) — the anti-"green units, dead live surface" gate.
+  6. The MCP SDK is exact-pinned and its import surface verified against the installed package; full suite stays green; CLI additive-only.
 **Plans**:
-- [ ] 09-01-PLAN.md — Pin + verify the MCP SDK (supply-chain gate; resolveMcpSdk build-time surface probe)
-- [ ] 09-02-PLAN.md — Export control Zod schemas (single source of truth) + MCP result/redaction/error helpers
+- [ ] 09-01-PLAN.md — Agnostic provider registry + parameterized runner + usage receipt + `relay providers`
+- [ ] 09-02-PLAN.md — Pin + verify the MCP SDK (supply-chain gate; resolveMcpSdk) + MCP result/redaction/error helpers
 - [ ] 09-03-PLAN.md — Memory MCP tools (relay_memory_recall/save) over the existing handlers + workdir scoping
-- [ ] 09-04-PLAN.md — Session-control MCP tools reusing src/control/tools.ts + caller-as-llm-session under the broker
-- [ ] 09-05-PLAN.md — Server assembly + `relay mcp` CLI branch + stdout discipline
-- [ ] 09-06-PLAN.md — Docs + .mcp.json registration + CHANGELOG + MCP-07 final gate
+- [ ] 09-04-PLAN.md — Server assembly + `relay mcp` CLI branch + stdout discipline (two tools, zero control coupling)
+- [ ] 09-05-PLAN.md — Real-SDK-client integration test + docs/.mcp.json/SECURITY + MCP-05 final human gate
 
 ## Progress
 
@@ -164,8 +162,8 @@ Phases execute in numeric order within the active milestone. Phase 8 is the firs
 | 6. Delta Extraction | 0/TBD | Not started | - |
 | 7. Figma REST Tools | 0/TBD | Not started | - |
 | 8. Universal LLM Control + Command Central | 9/9 | Implemented (merged to main) |  |
-| 9. Relay MCP Server | 0/6 | Planned |  |
+| 9. v0.4 Lean Core (Dispatch + MCP) | 0/5 | Planned |  |
 
 ---
 
-Last updated: 2026-06-09 (planned Phase 9 Relay MCP Server — 6 plans across 4 waves)
+Last updated: 2026-06-09 (Phase 9 rescoped to v0.4 lean core — 5 plans across 4 waves; agnostic dispatch added, session-control-over-MCP killed)
