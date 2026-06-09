@@ -119,20 +119,30 @@ describe('T1 — preconditions', () => {
     assert.equal(agentic.agentic, true);
   });
 
-  test('cmd-parallel.ts SpecTask provider union and validProviders include "lmstudio-agentic"', async () => {
+  test('cmd-parallel.ts resolves "lmstudio-agentic" through the provider registry', async () => {
+    // Phase 9 (09-01 follow-up): cmd-parallel's closed provider union +
+    // validProviders/httpProviders sets were replaced by registry resolution
+    // and the shared runner factory. The guard's intent is unchanged —
+    // lmstudio-agentic must stay dispatchable via relay parallel — but the
+    // mechanism is now the registry's builtin table.
     const src = await readSourceFile('src/cli/cmd-parallel.ts');
     assert.ok(
-      /'codex'\s*\|\s*'lmstudio'\s*\|\s*'openrouter'\s*\|\s*'anthropic'\s*\|\s*'lmstudio-agentic'/.test(src),
-      'SpecTask.provider union must include lmstudio-agentic'
+      /resolveProvider/.test(src),
+      'cmd-parallel must resolve spec providers through the registry'
     );
     assert.ok(
-      /validProviders\s*=\s*new\s+Set\(\[[^\]]*'lmstudio-agentic'/.test(src),
-      'validProviders set must include lmstudio-agentic'
+      /provider === 'lmstudio-agentic'/.test(src),
+      'cmd-parallel must keep the lmstudio-agentic wiring branch'
     );
     assert.ok(
-      /httpProviders\s*=\s*new\s+Set\(\[[^\]]*'lmstudio-agentic'/.test(src),
-      'httpProviders set must include lmstudio-agentic'
+      /runnerForProvider/.test(src),
+      'cmd-parallel must construct runners via the shared factory'
     );
+    const { listProviders } = await import('./provider-registry.js');
+    const agentic = listProviders({}).find((p) => p.name === 'lmstudio-agentic');
+    assert.ok(agentic, 'registry must list lmstudio-agentic as a builtin');
+    assert.equal(agentic.source, 'builtin');
+    assert.equal(agentic.agentic, true);
   });
 });
 
@@ -852,12 +862,16 @@ describe('T7 — dispatch wiring smoke', () => {
     assert.match(src, /new LmStudioAgenticRunner\(/);
   });
 
-  test('cmd-parallel dispatch — provider literal "lmstudio-agentic" recognized in getRunner', async () => {
+  test('cmd-parallel dispatch — lmstudio-agentic routes through the shared runner factory', async () => {
+    // Phase 9 (09-01 follow-up): the private getRunner is gone; cmd-parallel
+    // calls runnerForProvider and the construction lives in runner-factory.ts.
     const src = await readSourceFile('src/cli/cmd-parallel.ts');
     assert.match(src, /provider === 'lmstudio-agentic'/);
-    assert.match(src, /import\(['"]\.\.\/workers\/lmstudio-agentic\.js['"]\)/);
-    // Constructor may accept opts (Phase 7: extraToolHandlers when FIGMA_API_TOKEN set).
-    assert.match(src, /return new LmStudioAgenticRunner\(/);
+    assert.match(src, /runnerForProvider\(/);
+    const factorySrc = await readSourceFile('src/cli/runner-factory.ts');
+    assert.match(factorySrc, /import\(['"]\.\.\/workers\/lmstudio-agentic\.js['"]\)/);
+    // Constructor may accept opts (Phase 7: extraToolHandlers when FIGMA PAT set).
+    assert.match(factorySrc, /return new LmStudioAgenticRunner\(/);
   });
 
   test('cmd-parallel rejects model-less lmstudio-agentic task', async () => {
