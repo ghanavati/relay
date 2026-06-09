@@ -141,7 +141,13 @@ Decimal phases appear between their surrounding integers in numeric order.
   5. Errors map cleanly: RelayError → MCP tool error result; secrets redacted before crossing the MCP boundary.
   6. The official `@modelcontextprotocol/sdk` is pinned in package-lock; the exact package name + import paths are verified against the installed version, not assumed.
   7. Full existing suite stays green; the CLI surface is unchanged (additive only).
-**Plans**: TBD (this planning run)
+**Plans**:
+- [ ] 09-01-PLAN.md — Pin + verify the MCP SDK (supply-chain gate; resolveMcpSdk build-time surface probe)
+- [ ] 09-02-PLAN.md — Export control Zod schemas (single source of truth) + MCP result/redaction/error helpers
+- [ ] 09-03-PLAN.md — Memory MCP tools (relay_memory_recall/save) over the existing handlers + workdir scoping
+- [ ] 09-04-PLAN.md — Session-control MCP tools reusing src/control/tools.ts + caller-as-llm-session under the broker
+- [ ] 09-05-PLAN.md — Server assembly + `relay mcp` CLI branch + stdout discipline
+- [ ] 09-06-PLAN.md — Docs + .mcp.json registration + CHANGELOG + MCP-07 final gate
 
 ## Progress
 
@@ -158,8 +164,8 @@ Phases execute in numeric order within the active milestone. Phase 8 is the firs
 | 6. Delta Extraction | 0/TBD | Not started | - |
 | 7. Figma REST Tools | 0/TBD | Not started | - |
 | 8. Universal LLM Control + Command Central | 9/9 | Implemented (merged to main) |  |
-| 9. Relay MCP Server | 0/TBD | Planning |  |
+| 9. Relay MCP Server | 0/6 | Planned |  |
 
 ---
 
-Last updated: 2026-06-07 (split v0.3 Phase 8 into subagent-ready broker, adapter, CLI, and Command Central work packets)
+Last updated: 2026-06-09 (planned Phase 9 Relay MCP Server — 6 plans across 4 waves)
