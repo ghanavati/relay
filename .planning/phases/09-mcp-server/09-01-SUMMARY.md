@@ -200,6 +200,17 @@ None beyond the plan's threat model. T-09-01 (key disclosure) mitigated by const
 
 All 5 claimed artifacts exist on disk; all 6 task commits (c1609b3, 2f5d326, 2362411, 7d74f68, 15e1bfd, 5e6a7d2) present in git history.
 
+## Follow-up: cmd-parallel
+
+BACKLOG item closed (2026-06-09): `relay parallel` now rides the registry too.
+
+- `SpecTask.provider` closed union → `string`; spec validation resolves each provider via `resolveProvider` before any run row exists. Unknown names exit 2 with the available-provider list; the model gate keys on `config.type !== 'subprocess'` (codex exempt) instead of the hardcoded `httpProviders` set.
+- Private `getRunner` deleted. The 09-01 factory was inline in cmd-run.ts (not exported), so per the follow-up's fallback it now lives in a new shared module `src/cli/runner-factory.ts` (`runnerForProvider`): builtin map + `runnerFromProviderConfig` for env sources. Agentic extra tool handlers are caller-supplied — parallel wires Figma only; the run-bound relay_* control tools stay cmd-run-only. cmd-run.ts itself untouched (owned by parallel executors); adopting the shared factory there is a later mechanical swap.
+- Behavior preserved byte-identically: figma tool injection + DEFAULT_AGENTIC_TOOLS on lmstudio-agentic, AGENTIC_SANDBOX_ENV marker (still name-keyed, NOT `config.agentic` — codex is agentic:true in the registry and must not set the marker), run-store record fields, output formatting, exit codes, model-required message text.
+- Tests: `src/cli/cmd-parallel.test.ts` (12, new) — env-provider dispatch through the factory seam, registry-driven unknown-provider error, four builtin wire-parity guards, type-driven model gate, agentic tools + sandbox marker guard (incl. no-control-tools divergence), factory instanceof parity + drift guard.
+- Deviation (mirrors this plan's deviation #4): two stale source-grep guards in `src/workers/lmstudio-agentic.test.ts` asserted the deleted union/`validProviders`/`getRunner` literals; updated to assert the registry + factory mechanism, intent unchanged.
+- Commits: `ff2b91f` (test, RED — 6 fail / 6 parity guards green) + `5600c6e` (refactor, GREEN — 12/12, typecheck clean, full suite adds no failures beyond the 2 pre-existing control-e2e time bombs).
+
 ---
 *Phase: 09-mcp-server*
 *Completed: 2026-06-09*
