@@ -1,19 +1,23 @@
 /**
- * `relay run <task>` — single-task delegation to codex / openrouter / lmstudio.
+ * `relay run <task>` — single-task delegation.
  *
  * Flow:
- *   1. Validate args (task non-empty, provider known, model required for HTTP providers)
+ *   1. Validate args (task non-empty, provider resolved through the registry,
+ *      model required for HTTP-wire providers)
  *   2. Generate run_id, insert pending run row
  *   3. Dispatch to the matching worker
  *   4. Capture WorkerResult, complete/error the run row
  *   5. Emit JSON or human-readable output
  *
- * Supported providers in v0.1.0: codex, openrouter, lmstudio.
- * Anthropic deferred (no tool-loop in slim distro).
+ * Providers resolve through src/workers/provider-registry.ts (DISPATCH-02):
+ * the five builtins map to their existing runner classes; any
+ * RELAY_PROVIDER_<NAME>_* env-declared endpoint rides the parameterized
+ * GenericHttpRunner (single-shot in v1).
  */
 
 import { randomUUID } from 'node:crypto';
 import type { CliIO } from './commands.js';
+import type { ProviderConfig } from '../workers/provider-registry.js';
 import { AGENTIC_SANDBOX_ENV } from '../security/env-sanitize.js';
 
 export interface RunCommandArgs {
@@ -26,15 +30,24 @@ export interface RunCommandArgs {
   json: boolean;
 }
 
-const HTTP_PROVIDERS = new Set(['openrouter', 'lmstudio', 'anthropic', 'lmstudio-agentic']);
-
 export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promise<number> {
   // 1. Validate
   if (!args.task.trim()) {
     io.stderr('relay run requires a non-empty task\n');
     return 2;
   }
-  if (HTTP_PROVIDERS.has(args.provider) && !args.model) {
+  // Resolve through the registry BEFORE any run row exists — unknown names
+  // fail with the available-provider list; builtin/env collisions error (D-04).
+  const { resolveProvider } = await import('../workers/provider-registry.js');
+  let providerConfig: ProviderConfig;
+  try {
+    providerConfig = resolveProvider(args.provider);
+  } catch (err) {
+    io.stderr(`${(err as Error).message}\n`);
+    return 2;
+  }
+  // Every HTTP-wire provider needs --model; only subprocess (codex) does not.
+  if (providerConfig.type !== 'subprocess' && !args.model) {
     io.stderr(`relay run requires --model when --provider is ${args.provider}\n`);
     return 2;
   }
@@ -64,10 +77,15 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
 
   const started_at = Date.now();
 
-  // 3. Get the worker
+  // 3. Get the worker — builtin names keep their existing runner classes
+  //    (behavior parity, DISPATCH-02); env-sourced configs ride the
+  //    parameterized GenericHttpRunner (DISPATCH-01).
   let runner;
   try {
-    if (args.provider === 'codex') {
+    if (providerConfig.source === 'env') {
+      const { runnerFromProviderConfig } = await import('../workers/generic-http-runner.js');
+      runner = runnerFromProviderConfig(providerConfig);
+    } else if (args.provider === 'codex') {
       const { CodexRunner } = await import('../workers/codex.js');
       runner = new CodexRunner();
     } else if (args.provider === 'lmstudio') {
@@ -116,6 +134,8 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
       const controlNamed = toNamedToolHandlers(registerControlTools(run_id));
       runner = new LmStudioAgenticRunner({ extraToolHandlers: [...figmaNamed, ...controlNamed] });
     } else {
+      // Defensive: a builtin name this factory doesn't know means the
+      // registry's builtin table and this mapping drifted — fail loudly.
       io.stderr(`unsupported provider: ${args.provider}\n`);
       runStore.recordError(run_id, {
         error_code: 'INVALID_ARGS',

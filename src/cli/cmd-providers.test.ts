@@ -120,11 +120,22 @@ describe('executeRunCommand — registry resolution (Tests 1-3)', () => {
       input: unknown,
       init?: { headers?: Record<string, string>; body?: unknown }
     ) => {
+      const url = String(input);
       captured.push({
-        url: String(input),
+        url,
         headers: (init?.headers ?? {}) as Record<string, string>,
         body: JSON.parse(String(init?.body ?? '{}')),
       });
+      // lmstudio-agentic probes /v1/models (and /api/v0/models) for the
+      // model's tool_use capability before the chat POST — answer it.
+      if (url.includes('/models')) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: [{ id: 'test-model', capabilities: ['tool_use'] }],
+          }),
+        } as unknown as Response;
+      }
       return {
         ok: true,
         json: async () => ({
@@ -217,9 +228,12 @@ describe('executeRunCommand — registry resolution (Tests 1-3)', () => {
   test('Test 3e: lmstudio-agentic still routes to LmStudioAgenticRunner', async () => {
     const { io } = makeIO();
     await executeRunCommand(runArgs('lmstudio-agentic'), io);
-    assert.ok(captured.length >= 1, 'agentic runner must POST to LM Studio');
-    assert.strictEqual(captured[0]!.url, 'http://localhost:1234/v1/chat/completions');
-    const body = captured[0]!.body as { tools?: unknown[] };
+    // The agentic runner probes /v1/models first, then POSTs the tool loop.
+    const chatPost = captured.find((c) =>
+      c.url === 'http://localhost:1234/v1/chat/completions'
+    );
+    assert.ok(chatPost, `agentic runner must POST to LM Studio (saw: ${captured.map((c) => c.url).join(', ')})`);
+    const body = chatPost.body as { tools?: unknown[] };
     assert.ok(Array.isArray(body.tools) && body.tools.length > 0, 'agentic run offers tools');
   });
 });
