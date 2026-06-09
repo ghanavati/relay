@@ -70,6 +70,14 @@ Active requirements scoped to this milestone. REQ-IDs use category prefix + numb
   - [x] **CONTROL-15**: Models can request Command Central-equivalent actions through Relay tools, but cannot grant themselves new capabilities, raise budgets, bypass loop detection, or approve destructive actions without policy/human approval.
   - [x] **CONTROL-16**: Command Central remains fast under active sessions: bounded reads, cancellable refreshes, no unbounded operations on the Ink render path, and graceful degradation when providers are offline.
   - [x] **CONTROL-17**: Command Central follows a Herdr-inspired terminal control-surface shape: compact panes, workspace/session rail, agent state rollups, keyboard-first commands, and real operational controls rather than a marketing dashboard.
+- Relay as MCP server (MCP), v0.4 / Phase 9:
+  - [ ] **MCP-01**: `relay mcp` starts an MCP server over stdio that an MCP client (Claude Code, Claude Desktop) registers via `.mcp.json` and whose tool list it can enumerate.
+  - [ ] **MCP-02**: Memory tools (`relay_memory_recall`, `relay_memory_save`) are exposed over MCP and operate on the same SQLite memory store + workdir scoping (`RELAY_MEMORY_ALLOWED_WORKDIRS`) as the CLI.
+  - [ ] **MCP-03**: Session-control tools reuse the existing `src/control/tools.ts` handlers (list/inspect/send/inbox-read/inbox-ack/request-grant) — the MCP server registers them, it does not reimplement them.
+  - [ ] **MCP-04**: An MCP caller is treated as an llm-kind control session subject to the same broker policy as the agentic path: default-deny cross-session sends, grants with TTL + budget, loop detection, and SQLite audit events. No path lets an MCP caller bypass the broker or self-escalate.
+  - [ ] **MCP-05**: MCP tool input schemas are derived from the existing Zod boundary schemas (single source of truth) — no separately-maintained JSON Schema that can drift from the validators.
+  - [ ] **MCP-06**: Errors and secrets cross the boundary safely — RelayError maps to an MCP tool error result, and `REDACTION_PATTERNS` runs before any value is returned to the MCP client.
+  - [ ] **MCP-07**: The official `@modelcontextprotocol/sdk` (or its current published package) is pinned in `package-lock.json`; the exact package name and import paths are verified against the installed version at build time, not assumed. The full existing test suite stays green and the `relay` CLI surface is unchanged (additive only).
 - Skill packs (slim), `relay run --pipe`, `relay queue cron`, `relay watch <dir>`, brew formula
 - Figma Plugin API bridge (get_selection, create_component) — WebSocket on port 9223
 - LM Studio agentic streaming (currently stream:false for v0.2)
