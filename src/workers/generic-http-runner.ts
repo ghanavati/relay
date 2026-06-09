@@ -1,16 +1,23 @@
-import { makeError } from "../errors.js";
+import { makeError, toRelayException, type RelayError } from "../errors.js";
 import type { WorkerRunner } from "./runner.js";
 import type { WorkerTask, WorkerResult } from "./types.js";
 import type { ProviderConfig } from "./provider-registry.js";
+import {
+  buildAnthropicBody,
+  parseAnthropicResponse,
+  type AnthropicResponseData,
+} from "./anthropic.js";
 
 /**
- * Slim HTTP runner for solo Relay v0.1.0.
+ * Slim HTTP runner for solo Relay.
  *
- * Posts a single chat-completions (or OpenAI Responses) request and returns
- * the model's text. No agentic tool-loop, no MCP attachment fetching, no
- * Anthropic-specific path. The relay-mcp parent project keeps the rich version.
+ * Posts a single request and returns the model's text. Wire shapes:
+ * chat-completions (default), OpenAI Responses, and — Phase 9 — Anthropic
+ * messages (anthropic-type dynamic providers, sharing anthropic.ts wire code).
+ * No agentic tool-loop, no MCP attachment fetching.
  *
- * Subclasses (LmStudioRunner, OpenRouterRunner) provide endpoint + headers.
+ * Subclasses (LmStudioRunner, OpenRouterRunner) provide endpoint + headers;
+ * env-declared providers construct via runnerFromProviderConfig.
  */
 
 export interface GenericHttpProviderConfig {
@@ -18,8 +25,13 @@ export interface GenericHttpProviderConfig {
   getUrl: () => string;
   getHeaders: (model: string) => Record<string, string>;
   requiresModel: boolean;
-  requestFormat?: "chat-completions" | "responses";
+  requestFormat?: "chat-completions" | "responses" | "anthropic-messages";
   fetchFailureMessage?: (err: unknown, url: string) => string;
+  /**
+   * Optional gate run before any network call (e.g. required key env var
+   * missing). Returning a RelayError short-circuits run()/runMessages().
+   */
+  preflight?: () => RelayError | null;
 }
 
 /**
@@ -52,6 +64,16 @@ export class GenericHttpRunner implements WorkerRunner {
     messages: readonly ChatTurn[],
     opts: RunMessagesOptions
   ): Promise<WorkerResult> {
+    const preflightError = this.config.preflight?.();
+    if (preflightError) {
+      return {
+        status: "error",
+        output: "",
+        duration_ms: 0,
+        exit_code: null,
+        error: preflightError,
+      };
+    }
     const model = opts.model.trim();
     if (!model) {
       return {
@@ -62,6 +84,21 @@ export class GenericHttpRunner implements WorkerRunner {
         error: makeError(
           "INVALID_ARGS",
           `model is required for ${this.config.providerName} transcript continuation — no hardcoded fallbacks.`,
+          false
+        ),
+      };
+    }
+    if (this.config.requestFormat === "anthropic-messages") {
+      // Dynamic providers are single-shot in v1 (D-03); builtin anthropic
+      // transcript continuation lives in AnthropicRunner.runMessages.
+      return {
+        status: "error",
+        output: "",
+        duration_ms: 0,
+        exit_code: null,
+        error: makeError(
+          "UNSUPPORTED",
+          `${this.config.providerName} uses the anthropic-messages request format, which has no multi-turn transcript body in this runner.`,
           false
         ),
       };
@@ -89,6 +126,16 @@ export class GenericHttpRunner implements WorkerRunner {
   }
 
   async run(task: WorkerTask): Promise<WorkerResult> {
+    const preflightError = this.config.preflight?.();
+    if (preflightError) {
+      return {
+        status: "error",
+        output: "",
+        duration_ms: 0,
+        exit_code: null,
+        error: preflightError,
+      };
+    }
     const model = task.model?.trim();
     if (this.config.requiresModel && !model) {
       return {
@@ -102,6 +149,17 @@ export class GenericHttpRunner implements WorkerRunner {
           false
         ),
       };
+    }
+
+    if (this.config.requestFormat === "anthropic-messages") {
+      // Messages wire (shared with AnthropicRunner): top-level system field,
+      // single user message. contextPrefix rule matches chat-completions.
+      const body = buildAnthropicBody({
+        model: model ?? "",
+        task: task.task,
+        contextPrefix: task.contextPrefix,
+      });
+      return this.dispatch(body, model ?? "", task.timeout_ms);
     }
 
     // When contextPrefix is set, callers MUST pass the bare task in `task.task`
@@ -169,17 +227,39 @@ export class GenericHttpRunner implements WorkerRunner {
       }
 
       const json = (await res.json()) as Record<string, unknown>;
+
+      if (this.config.requestFormat === "anthropic-messages") {
+        const parsed = parseAnthropicResponse(json as AnthropicResponseData);
+        if (!parsed.ok) {
+          return {
+            status: "error",
+            output: parsed.raw,
+            duration_ms,
+            exit_code: null,
+            error: makeError(
+              "PROVIDER_ERROR",
+              `${this.config.providerName} response missing text content block`,
+              true
+            ),
+          };
+        }
+        return {
+          status: "success",
+          output: parsed.output,
+          duration_ms,
+          exit_code: 0,
+          ...extractUsageReceipt(json, "anthropic"),
+        };
+      }
+
       const output = extractOutputText(json, this.config.requestFormat);
-      const usage = json["usage"] as Record<string, number> | undefined;
 
       return {
         status: "success",
         output,
         duration_ms,
         exit_code: 0,
-        token_usage: usage?.["total_tokens"] ?? null,
-        prompt_tokens: usage?.["prompt_tokens"] ?? null,
-        completion_tokens: usage?.["completion_tokens"] ?? null,
+        ...extractUsageReceipt(json, "openai"),
       };
     } catch (err) {
       const duration_ms = Date.now() - startedAt;
@@ -217,18 +297,110 @@ export interface UsageReceipt {
 
 export type UsageWire = "openai" | "anthropic";
 
+/**
+ * Normalize a provider response's usage block into the uniform receipt.
+ *
+ * openai wire:    usage.prompt_tokens / completion_tokens / total_tokens
+ *                 (token_usage prefers total, falls back to the sum)
+ * anthropic wire: usage.input_tokens / output_tokens (token_usage = sum)
+ *
+ * Absent usage → all null. A receipt is never invented (D-05).
+ */
 export function extractUsageReceipt(
-  _json: Record<string, unknown>,
-  _wire: UsageWire
+  json: Record<string, unknown>,
+  wire: UsageWire
 ): UsageReceipt {
-  throw new Error("not implemented");
+  const usage = json["usage"];
+  if (typeof usage !== "object" || usage === null) {
+    return { token_usage: null, prompt_tokens: null, completion_tokens: null };
+  }
+  const u = usage as Record<string, unknown>;
+  const num = (v: unknown): number | null =>
+    typeof v === "number" && Number.isFinite(v) ? v : null;
+
+  const prompt_tokens = num(wire === "anthropic" ? u["input_tokens"] : u["prompt_tokens"]);
+  const completion_tokens = num(
+    wire === "anthropic" ? u["output_tokens"] : u["completion_tokens"]
+  );
+  const total = wire === "anthropic" ? null : num(u["total_tokens"]);
+  const token_usage =
+    total ??
+    (prompt_tokens !== null || completion_tokens !== null
+      ? (prompt_tokens ?? 0) + (completion_tokens ?? 0)
+      : null);
+
+  return { token_usage, prompt_tokens, completion_tokens };
 }
 
+/**
+ * Construct a runner for an env-declared provider (DISPATCH-01).
+ *
+ * The key VALUE is resolved from config.keyEnvVar at request time (closures
+ * over `env`), never stored on the config (T-09-01). A keyed config whose env
+ * var is unset fails preflight with PROVIDER_NOT_CONFIGURED before any
+ * network call; keyless configs (keyEnvVar null) send no auth header.
+ */
 export function runnerFromProviderConfig(
-  _config: ProviderConfig,
-  _env: NodeJS.ProcessEnv = process.env
+  config: ProviderConfig,
+  env: NodeJS.ProcessEnv = process.env
 ): GenericHttpRunner {
-  throw new Error("not implemented");
+  const url = config.url;
+  if (!url) {
+    throw toRelayException(
+      makeError(
+        "PROVIDER_NOT_CONFIGURED",
+        `provider "${config.name}" has no URL configured`,
+        false
+      )
+    );
+  }
+
+  const resolveKey = (): string | null =>
+    config.keyEnvVar ? env[config.keyEnvVar]?.trim() || null : null;
+
+  const preflight = (): RelayError | null => {
+    if (config.keyEnvVar && !resolveKey()) {
+      return makeError(
+        "PROVIDER_NOT_CONFIGURED",
+        `${config.keyEnvVar} is not set (required for provider "${config.name}")`,
+        false
+      );
+    }
+    return null;
+  };
+
+  if (config.type === "anthropic") {
+    return new GenericHttpRunner({
+      providerName: config.name,
+      getUrl: () => url,
+      getHeaders: (_model) => {
+        const key = resolveKey();
+        return {
+          ...(key ? { "x-api-key": key } : {}),
+          "anthropic-version": "2023-06-01",
+          ...config.headers,
+        };
+      },
+      requiresModel: true,
+      requestFormat: "anthropic-messages",
+      preflight,
+    });
+  }
+
+  return new GenericHttpRunner({
+    providerName: config.name,
+    getUrl: () => url,
+    getHeaders: (_model) => {
+      const key = resolveKey();
+      return {
+        ...(key ? { Authorization: `Bearer ${key}` } : {}),
+        ...config.headers,
+      };
+    },
+    requiresModel: true,
+    requestFormat: "chat-completions",
+    preflight,
+  });
 }
 
 function extractOutputText(

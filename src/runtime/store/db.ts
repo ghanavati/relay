@@ -268,6 +268,7 @@ export function applySchema(db: Database.Database): void {
   migrateRunEventsTraceFields(db);
   migrateRunsRecalledMemories(db);
   migrateRunsThinkingBlocks(db);
+  migrateRunsUsageReceipt(db);
   migrateAuthTables(db);
   // 4) v0.2 cleanup — drop 11 orphan tables (idempotent; no-op once v=2 is set).
   migrateDropOrphansV02(db);
@@ -431,6 +432,23 @@ function migrateRunsThinkingBlocks(db: Database.Database): void {
   }
   if (!cols.has('tool_retry_count')) {
     db.prepare('ALTER TABLE runs ADD COLUMN tool_retry_count INTEGER').run();
+  }
+}
+
+/**
+ * Phase 9 (DISPATCH-04) — uniform usage receipt. prompt_tokens and
+ * completion_tokens persist alongside token_usage on runs, fed identically by
+ * the openai and anthropic wire shapes. Additive, nullable — raw provider
+ * numbers only, no price map, no cost math (v0.4 kill list).
+ */
+function migrateRunsUsageReceipt(db: Database.Database): void {
+  const info = db.prepare('PRAGMA table_info(runs)').all() as { name: string }[];
+  const cols = new Set(info.map(r => r.name));
+  if (!cols.has('prompt_tokens')) {
+    db.prepare('ALTER TABLE runs ADD COLUMN prompt_tokens INTEGER').run();
+  }
+  if (!cols.has('completion_tokens')) {
+    db.prepare('ALTER TABLE runs ADD COLUMN completion_tokens INTEGER').run();
   }
 }
 
