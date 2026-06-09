@@ -229,6 +229,10 @@ ${c.cyan('SESSION COMMANDS')} (universal control layer)
   relay diff <run_id> [--json]             Show files_changed + diffs for a run
   relay compare <run_a> <run_b> [--json]   Side-by-side diff of two runs
 
+${c.cyan('MCP SERVER')}
+  relay mcp                                Start the stdio MCP server exposing memory
+                                           recall/save to MCP clients (logs on stderr)
+
 ${c.cyan('PROJECT')} (per-project privacy controls)
   relay project disable [--yes] [--json]   Write .relayignore, opt out of extract/recall/hook/share
   relay project enable [--yes] [--json]    Remove .relayignore (re-enable defaults)
@@ -857,6 +861,10 @@ async function main(): Promise<number> {
     const flags = parseFlags(rest);
     const { executeTuiCommand } = await import('./cli/cmd-tui.js');
     return executeTuiCommand({ json: isBool(flags, 'json'), cwd: io.cwd, version: VERSION }, io);
+  }
+  if (cmd === 'mcp') {
+    const { executeMcpCommand } = await import('./cli/cmd-mcp.js');
+    return executeMcpCommand({ version: VERSION }, io);
   }
   if (cmd === 'compare') {
     const flags = parseFlags(rest);
