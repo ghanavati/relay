@@ -11,6 +11,7 @@ Milestone v0.2 layers agentic capability and memory upgrades onto Relay's v0.1.2
 - [x] **v0.1.2** — Codex wave-4 audit fixes (shipped 2026-05-11)
 - [ ] **v0.2** — Agentic capability + memory upgrades (Phases 1-7, in progress)
 - [ ] **v0.3** — Universal LLM control layer + Command Central (Phase 8, planned)
+- [ ] **v0.4** — Relay as MCP server (Phase 9, planned)
 
 ## Phases
 
@@ -28,6 +29,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 6: Delta Extraction** - Auto-extract diffs against existing memories, surfacing contradictions instead of re-extracting
 - [ ] **Phase 7: Figma REST Tools** - Local agentic runner can list Figma layers and update tokens via REST API
 - [ ] **Phase 8: Universal LLM Control + Command Central** - Bidirectional session bus plus a terminal-native operator console so humans and permitted models can inspect, message, grant, revoke, and coordinate supported LLM sessions through the same Relay policy path
+- [ ] **Phase 9: Relay MCP Server** - Expose Relay's memory + control surface to MCP-capable clients (Claude Code, Claude Desktop, other agents) over a stdio MCP server, as a thin transport layer reusing the existing CLI/control/memory handlers — additive, the CLI stays unchanged
 
 ## Phase Details
 
@@ -127,6 +129,20 @@ Decimal phases appear between their surrounding integers in numeric order.
   8. Command Central stays fast under active sessions: bounded reads, cancellable refreshes, and no unbounded work on the Ink render path.
 **Plans**: `.planning/phases/08-universal-llm-control/08-01-PLAN.md`, `.planning/phases/08-universal-llm-control/08-02-PLAN.md`, `.planning/phases/08-universal-llm-control/08-03-PLAN.md`, `.planning/phases/08-universal-llm-control/08-04-PLAN.md`, `.planning/phases/08-universal-llm-control/08-05-PLAN.md`, `.planning/phases/08-universal-llm-control/08-06-PLAN.md`, `.planning/phases/08-universal-llm-control/08-07-PLAN.md`, `.planning/phases/08-universal-llm-control/08-08-PLAN.md`, `.planning/phases/08-universal-llm-control/08-09-PLAN.md`
 
+### Phase 9: Relay MCP Server
+**Goal**: MCP-capable clients (Claude Code, Claude Desktop, other agents) can use Relay's memory and session-control surface over a stdio MCP server started by `relay mcp`. The server is a thin transport layer that reuses the existing CLI/control/memory handlers and the existing Zod boundary schemas — no parallel implementation, no policy bypass. The `relay` CLI keeps working unchanged.
+**Depends on**: Phase 8 (control broker, session store, `src/control/tools.ts` handlers, security posture)
+**Requirements**: MCP-01, MCP-02, MCP-03, MCP-04, MCP-05, MCP-06, MCP-07
+**Success Criteria** (what must be TRUE):
+  1. `relay mcp` starts a stdio MCP server that a client registers via `.mcp.json`; the client lists Relay's tools and calls them.
+  2. Memory tools (`relay_memory_recall`, `relay_memory_save`) work over MCP and hit the same memory store + workdir scoping as the CLI.
+  3. Session-control tools reuse the existing `src/control/tools.ts` handlers (list/inspect/send/inbox/grant) — an MCP caller is an llm-kind session subject to the same default-deny, grants, TTL/budget, loop detection, and audit events as the agentic path. No broker bypass.
+  4. MCP tool input schemas are the existing Zod schemas (single source of truth — no hand-maintained JSON Schema that can drift).
+  5. Errors map cleanly: RelayError → MCP tool error result; secrets redacted before crossing the MCP boundary.
+  6. The official `@modelcontextprotocol/sdk` is pinned in package-lock; the exact package name + import paths are verified against the installed version, not assumed.
+  7. Full existing suite stays green; the CLI surface is unchanged (additive only).
+**Plans**: TBD (this planning run)
+
 ## Progress
 
 **Execution Order:**
@@ -141,7 +157,8 @@ Phases execute in numeric order within the active milestone. Phase 8 is the firs
 | 5. Conflict Detection | 0/TBD | Not started | - |
 | 6. Delta Extraction | 0/TBD | Not started | - |
 | 7. Figma REST Tools | 0/TBD | Not started | - |
-| 8. Universal LLM Control + Command Central | 9/9 | Implemented (branch, pending Codex review + merge) |  |
+| 8. Universal LLM Control + Command Central | 9/9 | Implemented (merged to main) |  |
+| 9. Relay MCP Server | 0/TBD | Planning |  |
 
 ---
 
