@@ -23,7 +23,7 @@ delete process.env['RELAY_EMBEDDING_MODEL'];
 import { describe, test, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { buildMemoryMcpTools } from './tools-memory.js';
-import { RecallArgsSchema } from '../contracts/memory.js';
+import { RecallArgsSchema, RememberArgsSchema } from '../contracts/memory.js';
 import { MemoryStore } from '../memory/memory-store.js';
 import { getDb } from '../runtime/store/db.js';
 
@@ -130,5 +130,115 @@ describe('relay_memory_recall', () => {
     const text = result.content[0].text;
     assert.ok(!text.includes(secret), 'raw secret must not cross the MCP boundary');
     assert.ok(text.includes('[REDACTED:FIGMA_PAT]'), `expected placeholder in: ${text}`);
+  });
+});
+
+describe('relay_memory_save', () => {
+  test('persists through the same SQLite store with the worker-mcp source (Test 1)', async () => {
+    const [, save] = buildMemoryMcpTools();
+    const result = await save.handler(
+      RememberArgsSchema.parse({
+        content: 'relay mcp save persistence proof nonce-7f3a',
+        memory_type: 'decision',
+        workdir: WORKDIR,
+      })
+    );
+
+    assert.notStrictEqual(result.isError, true);
+    const parsed = JSON.parse(result.content[0].text) as {
+      memory_id: string;
+      memory_type: string;
+      store_stats: { total_memories: number; total_tokens: number };
+    };
+    assert.ok(parsed.memory_id.length > 0, 'save must return the new memory_id');
+    assert.strictEqual(parsed.memory_type, 'decision');
+
+    // Same SQLite store the CLI uses: read the row back through the shared
+    // getDb() connection, and pin the MCP provenance + trust contract.
+    const row = getDb()
+      .prepare(
+        'SELECT content, memory_source, trust_level, workdir FROM memories WHERE memory_id = ?'
+      )
+      .get(parsed.memory_id) as
+      | { content: string; memory_source: string; trust_level: string; workdir: string }
+      | undefined;
+    assert.ok(row, 'saved row must exist in the shared store');
+    assert.ok(row.content.includes('nonce-7f3a'));
+    assert.strictEqual(row.workdir, WORKDIR);
+    // Pins MCP_MEMORY_SOURCE's literal value: no MCP-specific MemorySource
+    // exists, so saves carry the closest worker-mcp tag — and the trust model
+    // keeps non-human sources unverified-by-default.
+    assert.strictEqual(row.memory_source, 'worker-mcp');
+    assert.strictEqual(row.trust_level, 'unverified');
+  });
+
+  test('inputSchema IS RememberArgsSchema from contracts/memory.ts — same object (Test 2)', () => {
+    const [, save] = buildMemoryMcpTools();
+    assert.strictEqual(save.name, 'relay_memory_save');
+    assert.strictEqual(save.config.inputSchema, RememberArgsSchema);
+  });
+
+  test('forbidden workdir → isError MEMORY_WORKDIR_FORBIDDEN, write rejected (Test 3)', async () => {
+    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = ALLOWED_ONLY;
+    const countBefore = (
+      getDb().prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number }
+    ).n;
+
+    const [, save] = buildMemoryMcpTools();
+    const result = await save.handler(
+      RememberArgsSchema.parse({
+        content: 'this write must be rejected by the workdir gate',
+        memory_type: 'fact',
+        workdir: WORKDIR,
+      })
+    );
+
+    assert.strictEqual(result.isError, true);
+    const parsed = JSON.parse(result.content[0].text) as { ok: boolean; code: string };
+    assert.strictEqual(parsed.ok, false);
+    assert.strictEqual(parsed.code, 'MEMORY_WORKDIR_FORBIDDEN');
+
+    const countAfter = (
+      getDb().prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number }
+    ).n;
+    assert.strictEqual(countAfter, countBefore, 'a forbidden save must not insert a row');
+  });
+
+  test('success result is redacted at the MCP boundary (Test 4)', async () => {
+    // handleRemember echoes args.tags into its response — a secret-shaped tag
+    // is the input field that round-trips into the success envelope, proving
+    // the wrapper redacts the SUCCESS path (the handler itself does not).
+    const secret = figmaSecret();
+    const [, save] = buildMemoryMcpTools();
+    const result = await save.handler(
+      RememberArgsSchema.parse({
+        content: 'memory whose tag carries a secret-shaped token nonce-9c1d',
+        memory_type: 'fact',
+        tags: [secret],
+        workdir: WORKDIR,
+      })
+    );
+
+    assert.notStrictEqual(result.isError, true);
+    const text = result.content[0].text;
+    assert.ok(!text.includes(secret), 'raw secret must not cross the MCP boundary');
+    assert.ok(text.includes('[REDACTED:FIGMA_PAT]'), `expected placeholder in: ${text}`);
+  });
+});
+
+describe('buildMemoryMcpTools surface', () => {
+  test('exposes exactly relay_memory_recall and relay_memory_save, in order (Test 5)', () => {
+    const tools = buildMemoryMcpTools();
+    assert.strictEqual(tools.length, 2);
+    assert.deepStrictEqual(
+      tools.map(t => t.name),
+      ['relay_memory_recall', 'relay_memory_save']
+    );
+    // The killed scope stays killed: no control tools, no dispatch tool,
+    // no shell surface — and every registration is client-ready.
+    for (const tool of tools) {
+      assert.strictEqual(typeof tool.handler, 'function');
+      assert.ok(tool.config.description.length > 0, `${tool.name} needs a description`);
+    }
   });
 });
