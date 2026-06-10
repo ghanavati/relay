@@ -86,6 +86,22 @@ This is mitigation, not a security boundary. A determined or prompt-injected loc
 
 The env-name sanitizer is delimiter-aware: it strips `_`-delimited credential names such as `AWS_ACCESS_KEY_ID`, `GOOGLE_APPLICATION_CREDENTIALS`, `SSH_AUTH_SOCK`, and `MYSQL_PWD`, not only names with a trailing keyword. Connection-string credentials live in the value rather than the name (a `DATABASE_URL` whose value embeds a user and password inside the URL userinfo), so a child can still inherit such a var to function; the redactor strips the userinfo credentials before any value reaches a stored event. Name-based stripping is necessarily incomplete — treat a secret printed by an owned child as redacted-in-storage, not as never-having-existed in the child's memory.
 
+## MCP server (relay mcp)
+
+`relay mcp` runs a stdio MCP server exposing exactly two tools — `relay_memory_recall` and `relay_memory_save` — to the client that launched it (Claude Code, Claude Desktop, Cursor, etc., registered via `.mcp.json`; see [docs/mcp.md](docs/mcp.md)).
+
+Trust model: stdio inherits the OS-user boundary. The server reads requests from stdin and answers on stdout; any local process that can spawn `relay mcp` or pipe into its stdin acts as you, exactly like any other local CLI. There is no authentication layer in v1 — the operating system's process and user isolation IS the boundary (consistent with "What's NOT in scope": an attacker who already has local shell access).
+
+What bounds an MCP client's reach:
+
+- **Workdir scoping** — `RELAY_MEMORY_ALLOWED_WORKDIRS` applies to MCP calls exactly as to CLI calls (the same store gate, not a parallel check). Requests for a workdir outside the allowlist get a `MEMORY_WORKDIR_FORBIDDEN` error. Set the env var in the client's server registration so one project's session cannot read another project's memory.
+- **Boundary redaction** — every value the server returns (results and error messages) passes through the secret redactor before crossing to the client. This is a second layer over the store's redact-on-save; it also covers rows written before a redaction pattern existed.
+- **Stdout discipline** — stdout carries only MCP protocol framing; all diagnostics go to stderr. A log line cannot be smuggled into, or corrupt, the protocol stream.
+- **No dispatch, shell, or session control** — the server registers the two memory tools and nothing else. Task dispatch, shell execution, and the control layer are structurally absent from the MCP surface (not present-but-gated), so a prompt-injected client cannot reach them through this door.
+- **Writes are tagged** — memories saved over MCP carry the `worker-mcp` source and start at `unverified` trust, with the store's normal dedup and rate limits.
+
+Remote transports (HTTP/streamable) and authentication (OAuth) are explicitly out of scope until v2 — `relay mcp` binds no port and serves only the process that spawned it.
+
 ## Workdir isolation
 
 The `RELAY_MEMORY_ALLOWED_WORKDIRS` env var allows you to restrict which workdirs can write memory. Set it for multi-project setups where you don't want one project's writes affecting another.
