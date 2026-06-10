@@ -34,6 +34,12 @@ export interface ProviderJsonEntry {
   readonly key_env_var: string | null;
   readonly key_set: boolean;
   readonly agentic: boolean;
+  /**
+   * true on an env definition whose name collides with a builtin (review
+   * fix 5): the builtin wins and `relay run` refuses the name — this row
+   * shows which env config is being ignored.
+   */
+  readonly conflict: boolean;
 }
 
 const NAME_W = 18;
@@ -79,6 +85,7 @@ export async function executeProvidersCommand(
       key_env_var: p.keyEnvVar,
       key_set: p.keyEnvVar ? Boolean(env[p.keyEnvVar]?.trim()) : false,
       agentic: p.agentic,
+      conflict: p.conflict === true,
     }));
   } catch (err) {
     io.stderr(`${(err as Error).message}\n`);
@@ -98,9 +105,13 @@ export async function executeProvidersCommand(
     const key = e.key_env_var
       ? `${e.key_env_var} (${e.key_set ? 'set' : 'unset'})`
       : '-';
+    const conflictNote = e.conflict
+      ? `  ${c.red('CONFLICT — builtin name wins; rename or unset the env var')}`
+      : '';
     io.stdout(
       `${e.name.padEnd(NAME_W)}  ${c.cyan(e.source.padEnd(SOURCE_W))}  ` +
-        `${c.yellow(e.type.padEnd(TYPE_W))}  ${(e.url ?? 'n/a').padEnd(URL_W)}  ${c.gray(key)}\n`
+        `${c.yellow(e.type.padEnd(TYPE_W))}  ${(e.url ?? 'n/a').padEnd(URL_W)}  ${c.gray(key)}` +
+        `${conflictNote}\n`
     );
   }
   return 0;

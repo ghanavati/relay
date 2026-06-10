@@ -142,10 +142,31 @@ describe("provider-registry — resolveProvider (env discovery)", () => {
         return true;
       }
     );
-    // The inventory still shows the builtin exactly once — no silent override.
+    // Review fix 5: the inventory shows BOTH sides of the collision — the
+    // builtin (which wins) and the env definition flagged as a conflict —
+    // instead of silently hiding the env var that resolve will refuse.
     const entries = listProviders(e).filter((p) => p.name === "lmstudio");
-    assert.strictEqual(entries.length, 1);
-    assert.strictEqual(entries[0]!.source, "builtin");
+    assert.strictEqual(entries.length, 2, "builtin + flagged env row");
+    const builtin = entries.find((p) => p.source === "builtin");
+    assert.ok(builtin, "the builtin row stays");
+    assert.notStrictEqual(builtin.conflict, true, "the builtin itself is not the conflict");
+    const envRow = entries.find((p) => p.source === "env");
+    assert.ok(envRow, "the colliding env definition must be listed");
+    assert.strictEqual(envRow.conflict, true, "…flagged as a conflict");
+    assert.strictEqual(
+      envRow.url,
+      "http://elsewhere.example:9999/chat/completions",
+      "the row shows what the env var points at"
+    );
+  });
+
+  test("Test 6b: non-colliding env providers carry no conflict flag (review fix 5)", () => {
+    const e = env({
+      RELAY_PROVIDER_GROQ_URL: "https://api.groq.com/openai/v1",
+    });
+    for (const p of listProviders(e)) {
+      assert.notStrictEqual(p.conflict, true, `${p.name} must not be flagged`);
+    }
   });
 });
 
