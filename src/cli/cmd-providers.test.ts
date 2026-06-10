@@ -168,6 +168,41 @@ describe('executeProvidersCommand — builtin/env collision rendering (review fi
   });
 });
 
+describe('executeProvidersCommand — collision with invalid _TYPE (Codex round 2)', () => {
+  function bogusCollisionEnv(): NodeJS.ProcessEnv {
+    return {
+      RELAY_PROVIDER_LMSTUDIO_URL: 'http://elsewhere.example:9999',
+      RELAY_PROVIDER_LMSTUDIO_TYPE: 'bogus',
+    };
+  }
+
+  test('exit 0; table renders the CONFLICT row with an error note instead of crashing', async () => {
+    const { io, stdout, stderr } = makeIO();
+    const code = await executeProvidersCommand({ json: false, env: bogusCollisionEnv() }, io);
+    assert.strictEqual(code, 0, `listing must not fail (stderr: ${stderr.join('')})`);
+    const out = stdout.join('');
+    assert.match(out, /CONFLICT/, 'the collision must stay visible');
+    assert.match(out, /RELAY_PROVIDER_LMSTUDIO_TYPE/, 'the error note names the offending var');
+    const lmstudioRows = out.split('\n').filter((l) => l.startsWith('lmstudio '));
+    assert.strictEqual(lmstudioRows.length, 2, `builtin + conflict row (got: ${JSON.stringify(lmstudioRows)})`);
+  });
+
+  test('--json carries conflict:true plus the error note for the row', async () => {
+    const { io, stdout } = makeIO();
+    const code = await executeProvidersCommand({ json: true, env: bogusCollisionEnv() }, io);
+    assert.strictEqual(code, 0);
+    const entries = JSON.parse(stdout.join('')) as ProviderJsonEntry[];
+    const envRow = entries.find((e) => e.name === 'lmstudio' && e.source === 'env');
+    assert.ok(envRow, 'the colliding env row must be present');
+    assert.strictEqual(envRow.conflict, true);
+    assert.match(envRow.error ?? '', /RELAY_PROVIDER_LMSTUDIO_TYPE/);
+    // Healthy rows carry an explicit null — the field is part of the schema.
+    const builtin = entries.find((e) => e.name === 'lmstudio' && e.source === 'builtin');
+    assert.ok(builtin);
+    assert.strictEqual(builtin.error, null);
+  });
+});
+
 describe('executeRunCommand — registry resolution (Tests 1-3)', () => {
   const ENV_KEYS = [
     'RELAY_PROVIDER_GROQ_URL',

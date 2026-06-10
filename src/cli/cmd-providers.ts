@@ -12,7 +12,9 @@
  *   Default — fixed-width columns: name | source | type | url | key
  *   --json  — structured array (key_env_var + key_set boolean, no values)
  *
- * Exit codes: 0 on success, 1 on provider config errors (e.g. invalid _TYPE).
+ * Exit codes: 0 on success — invalid env definitions (e.g. bad _TYPE) render
+ * as flagged rows with an error note instead of failing the listing (Codex
+ * round 2); 1 only on unexpected listing errors.
  */
 
 import type { CliIO } from './commands.js';
@@ -40,6 +42,12 @@ export interface ProviderJsonEntry {
    * shows which env config is being ignored.
    */
   readonly conflict: boolean;
+  /**
+   * Non-null when the env definition failed to resolve (e.g. invalid _TYPE,
+   * Codex round 2) — the row still renders with this note instead of the
+   * whole listing crashing.
+   */
+  readonly error: string | null;
 }
 
 const NAME_W = 18;
@@ -86,6 +94,7 @@ export async function executeProvidersCommand(
       key_set: p.keyEnvVar ? Boolean(env[p.keyEnvVar]?.trim()) : false,
       agentic: p.agentic,
       conflict: p.conflict === true,
+      error: p.error ?? null,
     }));
   } catch (err) {
     io.stderr(`${(err as Error).message}\n`);
@@ -108,10 +117,13 @@ export async function executeProvidersCommand(
     const conflictNote = e.conflict
       ? `  ${c.red('CONFLICT — builtin name wins; rename or unset the env var')}`
       : '';
+    // Codex round 2: a row whose env definition failed to resolve (e.g.
+    // invalid _TYPE) renders with the error appended instead of crashing.
+    const errorNote = e.error ? `  ${c.red(`ERROR — ${e.error}`)}` : '';
     io.stdout(
       `${e.name.padEnd(NAME_W)}  ${c.cyan(e.source.padEnd(SOURCE_W))}  ` +
         `${c.yellow(e.type.padEnd(TYPE_W))}  ${(e.url ?? 'n/a').padEnd(URL_W)}  ${c.gray(key)}` +
-        `${conflictNote}\n`
+        `${conflictNote}${errorNote}\n`
     );
   }
   return 0;

@@ -168,6 +168,55 @@ describe("provider-registry — resolveProvider (env discovery)", () => {
       assert.notStrictEqual(p.conflict, true, `${p.name} must not be flagged`);
     }
   });
+
+  test("Test 6c: collision + invalid _TYPE — listProviders renders the row instead of throwing (Codex round 2)", () => {
+    const e = env({
+      RELAY_PROVIDER_LMSTUDIO_URL: "http://elsewhere.example:9999",
+      RELAY_PROVIDER_LMSTUDIO_TYPE: "bogus",
+    });
+    // The LISTING path must not throw — the whole point of the inventory is
+    // showing the user what is misconfigured.
+    const entries = listProviders(e).filter((p) => p.name === "lmstudio");
+    assert.strictEqual(entries.length, 2, "builtin + flagged env row");
+    const builtin = entries.find((p) => p.source === "builtin");
+    assert.ok(builtin, "the builtin row stays");
+    assert.notStrictEqual(builtin.conflict, true);
+    const envRow = entries.find((p) => p.source === "env");
+    assert.ok(envRow, "the colliding env definition must still be listed");
+    assert.strictEqual(envRow.conflict, true, "…flagged as a conflict");
+    assert.match(
+      envRow.error ?? "",
+      /RELAY_PROVIDER_LMSTUDIO_TYPE/,
+      "the error note names the offending env var"
+    );
+    // resolveProvider keeps throwing exactly as today: builtin name collision
+    // wins over the (also invalid) env definition.
+    assert.throws(
+      () => resolveProvider("lmstudio", e),
+      (err: RelayErrorish) => {
+        assert.strictEqual(err.code, "PROVIDER_NAME_CONFLICT");
+        return true;
+      }
+    );
+  });
+
+  test("Test 6d: non-colliding invalid _TYPE — listed with error note, resolveProvider still throws CONFIG_ERROR (Codex round 2)", () => {
+    const e = env({
+      RELAY_PROVIDER_FOO_URL: "https://foo.example",
+      RELAY_PROVIDER_FOO_TYPE: "bogus",
+    });
+    const foo = listProviders(e).find((p) => p.name === "foo");
+    assert.ok(foo, "the misconfigured provider must still be listed");
+    assert.notStrictEqual(foo.conflict, true, "no builtin collision here");
+    assert.match(foo.error ?? "", /RELAY_PROVIDER_FOO_TYPE/);
+    assert.throws(
+      () => resolveProvider("foo", e),
+      (err: RelayErrorish) => {
+        assert.strictEqual(err.code, "CONFIG_ERROR");
+        return true;
+      }
+    );
+  });
 });
 
 describe("provider-registry — request URL suffixing (Test 7)", () => {
