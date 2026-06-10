@@ -84,6 +84,51 @@ function redactEnvelope(envelope: {
   };
 }
 
+/**
+ * Allowed workdir roots from RELAY_MEMORY_ALLOWED_WORKDIRS — the same split
+ * MemoryStore.assertWorkdirAllowed applies (colon-separated, trimmed, empties
+ * dropped). Read lazily at call time, like the store's gate.
+ */
+function allowedWorkdirRoots(): readonly string[] {
+  const raw = process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'];
+  if (!raw) return [];
+  return raw
+    .split(':')
+    .map(p => p.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Desktop ergonomics: MCP clients often launch the server with a junk cwd and
+ * omit workdir. When the allow-list is configured, an omitted workdir means
+ * "the configured project" — the FIRST allowed root — instead of falling
+ * through to a cwd-based default the gate would reject. With no allow-list
+ * the args pass through untouched (existing cwd/global behavior downstream).
+ * MCP-handler-only: the CLI path and contracts schemas are not involved.
+ */
+function applyWorkdirDefault<T extends { readonly workdir?: string | undefined }>(args: T): T {
+  if (args.workdir !== undefined) return args;
+  const first = allowedWorkdirRoots()[0];
+  return first === undefined ? args : { ...args, workdir: first };
+}
+
+/**
+ * When the workdir gate still rejects a call, name the allowed roots in the
+ * error so the client model can retry with a valid path instead of asking
+ * the user. Roots come straight from the env var the user configured — no
+ * other paths are disclosed. Non-gate errors pass through untouched.
+ */
+function enrichForbiddenWorkdir(err: unknown): unknown {
+  const code = (err as { code?: unknown } | null | undefined)?.code;
+  if (code !== 'MEMORY_WORKDIR_FORBIDDEN') return err;
+  const roots = allowedWorkdirRoots();
+  if (roots.length === 0) return err;
+  const message = err instanceof Error ? err.message : String(err);
+  const enriched = new Error(`${message}. Allowed workdirs: ${roots.join(', ')}`);
+  (enriched as Error & { code?: string }).code = 'MEMORY_WORKDIR_FORBIDDEN';
+  return enriched;
+}
+
 const RECALL_DESCRIPTION =
   'Recall persistent Relay memories (facts, decisions, lessons, context) for a project. ' +
   'Memory persists across sessions and across tools — anything saved earlier by the CLI, ' +
@@ -110,12 +155,12 @@ export function buildMemoryMcpTools(): readonly [RecallMcpTool, SaveMcpTool] {
       try {
         // handleRecall is async (semantic-similarity embedding) and already
         // returns the { content } envelope — redact it, do not re-wrap.
-        return redactEnvelope(await handleRecall(args));
+        return redactEnvelope(await handleRecall(applyWorkdirDefault(args)));
       } catch (err) {
         // e.g. MEMORY_WORKDIR_FORBIDDEN thrown by MemoryStore's
-        // assertWorkdirAllowed gate — code preserved, message redacted,
-        // stack never crosses.
-        return relayErrorToMcpResult(err);
+        // assertWorkdirAllowed gate — code preserved, message redacted
+        // (and gate errors name the allowed roots), stack never crosses.
+        return relayErrorToMcpResult(enrichForbiddenWorkdir(err));
       }
     },
   };
@@ -136,7 +181,7 @@ export function buildMemoryMcpTools(): readonly [RecallMcpTool, SaveMcpTool] {
         // Field-by-field whitelist (review fix 4): pinned is forced false
         // and source_run_id never set, even if a client smuggled them past
         // the omitted schema — defense in depth on top of McpSaveArgsSchema.
-        const constrained: RememberArgs = {
+        const constrained: RememberArgs = applyWorkdirDefault({
           content: args.content,
           memory_type: args.memory_type,
           tags: args.tags,
@@ -145,10 +190,10 @@ export function buildMemoryMcpTools(): readonly [RecallMcpTool, SaveMcpTool] {
           ...(args.expires_in_hours !== undefined
             ? { expires_in_hours: args.expires_in_hours }
             : {}),
-        };
+        });
         return redactEnvelope(handleRemember(constrained, MCP_MEMORY_SOURCE));
       } catch (err) {
-        return relayErrorToMcpResult(err);
+        return relayErrorToMcpResult(enrichForbiddenWorkdir(err));
       }
     },
   };
