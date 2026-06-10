@@ -204,6 +204,9 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
           duration_ms: result.duration_ms,
           exit_code: result.exit_code,
           token_usage: result.token_usage ?? null,
+          // Review fix 3: full uniform usage receipt, matching cmd-run (DISPATCH-04).
+          prompt_tokens: result.prompt_tokens ?? null,
+          completion_tokens: result.completion_tokens ?? null,
           ...(result.error ? { error_code: result.error.code, error_message: result.error.message } : {}),
         });
         if (!args.json) {

@@ -166,6 +166,24 @@ describe('executeParallelCommand — registry-resolved spec providers', () => {
     assert.strictEqual(process.env[AGENTIC_SANDBOX_ENV], undefined);
   });
 
+  test('(a2) run row carries the full uniform usage receipt — token_usage + prompt/completion (review fix 3)', async () => {
+    // The fetch stub answers with usage { prompt_tokens: 1, completion_tokens: 1,
+    // total_tokens: 2 }; the run record must persist all three receipt fields,
+    // matching cmd-run's uniform receipt (DISPATCH-04).
+    const specPath = await writeSpec([{ task: 'receipt check', provider: 'lmstudio', model: 'test-model' }]);
+    const { io, stdout, stderr } = makeIO();
+    const code = await executeParallelCommand({ specPath, maxConcurrency: 1, json: true }, io);
+    assert.strictEqual(code, 0, `stderr: ${stderr.join('')}`);
+
+    const payload = JSON.parse(stdout.join('')) as ParallelJson;
+    const store = new RunStore();
+    const row = store.getRun(payload.runs[0]!.run_id);
+    assert.ok(row);
+    assert.strictEqual(row.token_usage, 2);
+    assert.strictEqual(row.prompt_tokens, 1);
+    assert.strictEqual(row.completion_tokens, 1);
+  });
+
   test('(b) unknown provider exits 2 with the registry available-provider list, before any dispatch', async () => {
     process.env['RELAY_PROVIDER_GROQ_URL'] = 'https://api.groq.com/openai/v1';
     const specPath = await writeSpec([
