@@ -4,7 +4,9 @@
  * Lists builtin + RELAY_PROVIDER_<NAME>_* env-discovered providers with their
  * source, protocol type, request URL, and key env-var name. Keys are masked
  * by construction: ProviderConfig carries env-var NAMES, never values
- * (T-09-01) — this command cannot print a secret.
+ * (T-09-01) — this command cannot print a secret. URLs are rendered through
+ * redactDisplayUrl so credentials embedded IN the URL (userinfo, ?api_key=)
+ * never reach the table or --json output either.
  *
  * Output:
  *   Default — fixed-width columns: name | source | type | url | key
@@ -15,6 +17,7 @@
 
 import type { CliIO } from './commands.js';
 import { c } from './colors.js';
+import { redactSecrets } from '../security/redaction.js';
 
 export interface ProvidersCommandOptions {
   readonly json: boolean;
@@ -38,6 +41,27 @@ const SOURCE_W = 8;
 const TYPE_W = 11;
 const URL_W = 50;
 
+/**
+ * Display-only URL scrub (review fix 1): a RELAY_PROVIDER_*_URL may embed
+ * credentials (`https://user:pass@host/v1?api_key=...`) that the key-column
+ * masking cannot catch. Two passes:
+ *   1. targeted query-param scrub — any param whose NAME suggests a secret
+ *      (key/token/secret/password/pwd/credential) loses its value, regardless
+ *      of value shape or length (redactSecrets' value patterns need ≥20 chars
+ *      or a known prefix; a short `?key=abc` would slip through them)
+ *   2. redactSecrets — covers `user:pass@` userinfo (dsn_credentials) plus
+ *      every known secret-shaped value anywhere else in the string
+ * Over-redaction is acceptable here: this string is for human display only;
+ * dispatch derives its own URL from the raw config.
+ */
+export function redactDisplayUrl(url: string): string {
+  const paramScrubbed = url.replace(
+    /([?&][^=&#]*(?:key|token|secret|password|pwd|credential)[^=&#]*=)[^&#\s]*/gi,
+    '$1[REDACTED]'
+  );
+  return redactSecrets(paramScrubbed);
+}
+
 export async function executeProvidersCommand(
   opts: ProvidersCommandOptions,
   io: CliIO
@@ -51,7 +75,7 @@ export async function executeProvidersCommand(
       name: p.name,
       source: p.source,
       type: p.type,
-      url: p.url,
+      url: p.url === null ? null : redactDisplayUrl(p.url),
       key_env_var: p.keyEnvVar,
       key_set: p.keyEnvVar ? Boolean(env[p.keyEnvVar]?.trim()) : false,
       agentic: p.agentic,

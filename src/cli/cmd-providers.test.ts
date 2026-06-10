@@ -93,6 +93,45 @@ describe('executeProvidersCommand — key-safe inventory (Test 4)', () => {
   });
 });
 
+describe('executeProvidersCommand — URL credential redaction (review fix 1)', () => {
+  // Runtime-built secrets (result.test.ts idiom) — no literal credential in source.
+  const urlPassword = (): string => ['hunter', '2-url-pass'].join('');
+  const urlApiKey = (): string => 'sk-' + 'urlparam0123456789abcdef0123';
+  const credUrl = (): string =>
+    `https://relay-user:${urlPassword()}@demo.example/v1?api_key=${urlApiKey()}`;
+
+  function demoEnv(): NodeJS.ProcessEnv {
+    return { RELAY_PROVIDER_DEMO_URL: credUrl() };
+  }
+
+  test('table never prints userinfo password or query api_key value', async () => {
+    const { io, stdout } = makeIO();
+    const code = await executeProvidersCommand({ json: false, env: demoEnv() }, io);
+    assert.strictEqual(code, 0);
+    const out = stdout.join('');
+    assert.match(out, /demo/, 'the provider itself must still be listed');
+    assert.ok(!out.includes(urlPassword()), 'userinfo password must never be printed');
+    assert.ok(!out.includes(urlApiKey()), 'query api_key value must never be printed');
+    assert.ok(!out.includes(`relay-user:${urlPassword()}`), 'userinfo must be scrubbed');
+    assert.match(out, /\[REDACTED/, 'redaction placeholder must mark the scrubbed URL');
+    assert.match(out, /demo\.example/, 'host stays visible so the listing is useful');
+  });
+
+  test('--json carries the redacted display URL — never raw credentials', async () => {
+    const { io, stdout } = makeIO();
+    const code = await executeProvidersCommand({ json: true, env: demoEnv() }, io);
+    assert.strictEqual(code, 0);
+    const raw = stdout.join('');
+    assert.ok(!raw.includes(urlPassword()), 'JSON must never contain the userinfo password');
+    assert.ok(!raw.includes(urlApiKey()), 'JSON must never contain the query api_key value');
+    const entries = JSON.parse(raw) as ProviderJsonEntry[];
+    const demo = entries.find((e) => e.name === 'demo');
+    assert.ok(demo?.url, 'demo entry must keep a url');
+    assert.match(demo.url, /\[REDACTED/);
+    assert.match(demo.url, /demo\.example/, 'host preserved in the display URL');
+  });
+});
+
 describe('executeRunCommand — registry resolution (Tests 1-3)', () => {
   const ENV_KEYS = [
     'RELAY_PROVIDER_GROQ_URL',
