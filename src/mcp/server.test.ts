@@ -255,6 +255,35 @@ describe('startMcpServer — clean shutdown (Test 4)', () => {
     assert.ok(serverInstances[0]!.closeCalls >= 1, 'server.close() drives the shutdown');
   });
 
+  test("close() throwing the SDK's 'Not connected' is swallowed — shutdown resolves (review fix 6)", async () => {
+    const { sdk, serverInstances } = makeFakeSdk();
+    const transport = new (sdk.StdioServerTransport)() as FakeTransportShape;
+    const handle = await startMcpServer({ sdk, transport });
+
+    // The SDK 1.29.0 already-closed signal (shared/protocol.js literal).
+    serverInstances[0]!.close = async () => {
+      throw new Error('Not connected');
+    };
+
+    await handle.shutdown(); // must NOT reject
+    await handle.closed; // must resolve — no dangling
+  });
+
+  test('close() throwing a real error rejects shutdown() but still resolves closed (review fix 6)', async () => {
+    const { sdk, serverInstances } = makeFakeSdk();
+    const transport = new (sdk.StdioServerTransport)() as FakeTransportShape;
+    const handle = await startMcpServer({ sdk, transport });
+
+    serverInstances[0]!.close = async () => {
+      throw new Error('EPIPE: stream destroyed');
+    };
+
+    await assert.rejects(handle.shutdown(), /EPIPE: stream destroyed/);
+    await handle.closed; // the error travels via the rejection — closed never dangles
+    // Idempotent: a second shutdown() after the failed first stays clean.
+    await handle.shutdown();
+  });
+
   test('installs no process signal listeners (signal handling is the CLI command layer)', async () => {
     const sigintBefore = process.listenerCount('SIGINT');
     const sigtermBefore = process.listenerCount('SIGTERM');
