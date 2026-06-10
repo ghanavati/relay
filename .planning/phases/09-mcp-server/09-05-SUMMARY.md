@@ -168,6 +168,21 @@ No new threat surface introduced (test + docs + test-fixture fix only).
 - Plan Task 2 verify gate (relocated path): PASS
 - Full suite re-confirmed at completion: 1897/1897
 
+## Review fixes (Codex round 1)
+
+Six Codex code-review findings fixed on `phase-9-v04`, one atomic commit per finding, TDD (failing test first) for each behavior change. Suite went 1897 → 1915, all green.
+
+| # | Severity | Finding | Fix | Commit |
+|---|----------|---------|-----|--------|
+| 1 | HIGH | `relay providers` printed `p.url` raw (table + `--json`) — userinfo / secret-named query params leaked despite key-column masking | `redactDisplayUrl` in `cmd-providers.ts`: targeted scrub of secret-named query params + `redactSecrets` (userinfo via `dsn_credentials`). Display-only | `9f9545a` |
+| 2 | HIGH | `generic-http-runner.ts` returned provider error bodies raw as `output` and embedded raw in `error.message` — echoed auth headers leaked into CLI output and persisted via run-record `error_message` | `redactSecrets` on non-OK bodies, missing-text-block raw bodies, and fetch-failure messages (default + custom). Same pattern also fixed in `anthropic.ts` (same-pattern sweep). Success-path output stays byte-identical (pinned by test) | `f0ec0b9` |
+| 3 | MEDIUM | `cmd-parallel.ts` `store.complete()` passed only `token_usage`, dropping `prompt_tokens`/`completion_tokens` of the uniform receipt (DISPATCH-04) | Both fields added; parallel run rows now match cmd-run's receipt | `3b90ff0` |
+| 4 | MEDIUM | MCP `relay_memory_save` reused the full remember schema — clients could set `pinned:true` (score boost + GC/conflict protection) and spoof `source_run_id`, amplifying memory poisoning | Save schema derived via `RememberArgsSchema.omit({pinned, source_run_id})` (single-source kept by reference) + handler field whitelist forcing `pinned:false`. Verified against real SDK 1.29.0. `docs/mcp.md` posture updated | `b0921f9` |
+| 5 | LOW | `listProviders()` silently filtered env providers colliding with builtin names while `resolveProvider` throws `PROVIDER_NAME_CONFLICT` — inconsistent | Colliding env definitions listed as own row with `conflict:true`; `relay providers` renders a red CONFLICT row (exit stays 0); resolve still throws | `b626921` |
+| 6 | LOW | `mcp/server.ts` `shutdown()` swallowed ALL `server.close()` errors | Only the SDK 1.29.0 already-closed signal (`Error('Not connected')`) is swallowed; real failures reject `shutdown()` (`closed` still resolves), `cmd-mcp` prints to stderr and exits 1 | `564b729` |
+
+Verification: `npm run build && npm test` → 1915/1915 green. Live smoke: `relay providers` with a synthetic credentialed `RELAY_PROVIDER_DEMO_URL` shows `[REDACTED:DSN]@` + redacted query param in table and `--json`; builtin-name collision renders the CONFLICT row with exit 0.
+
 ---
 *Phase: 09-mcp-server*
 *Completed: 2026-06-10*
