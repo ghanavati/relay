@@ -183,6 +183,17 @@ Six Codex code-review findings fixed on `phase-9-v04`, one atomic commit per fin
 
 Verification: `npm run build && npm test` → 1915/1915 green. Live smoke: `relay providers` with a synthetic credentialed `RELAY_PROVIDER_DEMO_URL` shows `[REDACTED:DSN]@` + redacted query param in table and `--json`; builtin-name collision renders the CONFLICT row with exit 0.
 
+## Review fixes (Codex round 2)
+
+Two Codex round-2 findings fixed on `phase-9-v04`, one atomic commit per fix, TDD (failing test first) for both. Suite went 1915 → 1935, all green.
+
+| # | Severity | Finding | Fix | Commit |
+|---|----------|---------|-----|--------|
+| 1 | HIGH (residual) | Worker error paths redacted provider error bodies with pattern matching only (`redactSecrets`) — a provider/proxy echoing request headers leaks secrets whose VALUES match no pattern: arbitrary `RELAY_PROVIDER_<NAME>_HEADER_*` values, short x-api-key strings in JSON echoes like `"x-api-key":"short-secret"` | `scrubKnownValues(text, values)` in `redaction.ts` (≥4-char guard, escaped literal match, longest value first, `[REDACTED:KNOWN]`). Runners scrub the exact values they sent — resolved key + custom header values via `getSensitiveValues` in `runnerFromProviderConfig`, `apiKey` in `AnthropicRunner.post` — BEFORE pattern redaction (a pattern can partially consume a value and leave a fragment) on all four error paths: non-OK bodies, parse-failure raw bodies, fetch-failure messages, `error.message`. Success-path output stays byte-identical (pinned by test) | `418e1ac` |
+| 2 | LOW (regression) | `listProviders()` called `envProviderConfig()` unguarded for builtin-colliding names — an invalid `RELAY_PROVIDER_<NAME>_TYPE` threw CONFIG_ERROR and crashed `relay providers` instead of rendering the CONFLICT row | Listing path wraps per-name resolution; on error the entry carries safe fallbacks + an `error` note naming the offending var (conflict flag preserved). `relay providers` renders the row with an appended ERROR note and exits 0; `--json` carries `error` (null on healthy rows). `resolveProvider()` unchanged — still throws PROVIDER_NAME_CONFLICT / CONFIG_ERROR | `46eb66b` |
+
+Verification: `npm run build && npm test` → 1935/1935 green (baseline 1915 + 20 new tests). Live smoke: `RELAY_PROVIDER_LMSTUDIO_URL=http://elsewhere.example:9999 RELAY_PROVIDER_LMSTUDIO_TYPE=bogus relay providers` exits 0 and renders the lmstudio env row with both the CONFLICT and ERROR notes.
+
 ---
 *Phase: 09-mcp-server*
 *Completed: 2026-06-10*
