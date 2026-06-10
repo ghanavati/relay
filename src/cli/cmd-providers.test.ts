@@ -132,6 +132,42 @@ describe('executeProvidersCommand — URL credential redaction (review fix 1)', 
   });
 });
 
+describe('executeProvidersCommand — builtin/env collision rendering (review fix 5)', () => {
+  function collisionEnv(): NodeJS.ProcessEnv {
+    return { RELAY_PROVIDER_LMSTUDIO_URL: 'http://elsewhere.example:9999' };
+  }
+
+  test('table shows the colliding env definition as an explicit CONFLICT row — exit stays 0', async () => {
+    const { io, stdout } = makeIO();
+    const code = await executeProvidersCommand({ json: false, env: collisionEnv() }, io);
+    assert.strictEqual(code, 0, 'listing is not an error');
+    const out = stdout.join('');
+    assert.match(out, /CONFLICT/, 'the collision must be visible in the table');
+    assert.match(out, /elsewhere\.example/, 'the conflicting URL is shown so the user sees what is ignored');
+    // The builtin row survives untouched alongside the flagged env row.
+    const lmstudioRows = out.split('\n').filter((l) => l.startsWith('lmstudio '));
+    assert.strictEqual(lmstudioRows.length, 2, `builtin + conflict row (got: ${JSON.stringify(lmstudioRows)})`);
+  });
+
+  test('--json marks the colliding row with conflict:true; builtin row stays unflagged', async () => {
+    const { io, stdout } = makeIO();
+    const code = await executeProvidersCommand({ json: true, env: collisionEnv() }, io);
+    assert.strictEqual(code, 0);
+    const entries = JSON.parse(stdout.join('')) as ProviderJsonEntry[];
+    const lmstudio = entries.filter((e) => e.name === 'lmstudio');
+    assert.strictEqual(lmstudio.length, 2);
+    const builtin = lmstudio.find((e) => e.source === 'builtin');
+    const envRow = lmstudio.find((e) => e.source === 'env');
+    assert.ok(builtin && envRow);
+    assert.strictEqual(builtin.conflict, false);
+    assert.strictEqual(envRow.conflict, true);
+    // Every non-colliding entry is explicitly unflagged.
+    for (const e of entries.filter((x) => x.name !== 'lmstudio')) {
+      assert.strictEqual(e.conflict, false, `${e.name} must not be flagged`);
+    }
+  });
+});
+
 describe('executeRunCommand — registry resolution (Tests 1-3)', () => {
   const ENV_KEYS = [
     'RELAY_PROVIDER_GROQ_URL',

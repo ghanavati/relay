@@ -49,6 +49,13 @@ export interface ProviderConfig {
   keyEnvVar: string | null;
   headers: Record<string, string>;
   agentic: boolean;
+  /**
+   * Set on env-discovered entries whose name collides with a builtin
+   * (review fix 5): the builtin wins, resolveProvider refuses the name with
+   * PROVIDER_NAME_CONFLICT, and the listing surfaces the ignored env
+   * definition explicitly instead of silently filtering it.
+   */
+  conflict?: true;
 }
 
 const DYNAMIC_TYPES = ["openai", "anthropic"] as const;
@@ -200,17 +207,22 @@ function envProviderConfig(name: string, env: NodeJS.ProcessEnv): ProviderConfig
 
 /**
  * Inventory of all available providers: builtins first, then env-discovered
- * (sorted by name). An env definition colliding with a builtin name is NOT
- * listed as a separate entry — builtin wins; resolveProvider errors on it.
+ * (sorted by name). An env definition colliding with a builtin name is
+ * listed as its own row with `conflict: true` (review fix 5) — consistent
+ * with resolveProvider, which refuses the name with PROVIDER_NAME_CONFLICT.
+ * The builtin still wins; the flagged row exists so `relay providers` shows
+ * the user which env definition is being ignored instead of hiding it.
  */
 export function listProviders(
   env: NodeJS.ProcessEnv = process.env
 ): ProviderConfig[] {
   const builtins = builtinProviders(env);
   const builtinNames = new Set(builtins.map((p) => p.name));
-  const dynamic = discoverEnvProviderNames(env)
-    .filter((name) => !builtinNames.has(name))
-    .map((name) => envProviderConfig(name, env));
+  const dynamic = discoverEnvProviderNames(env).map((name) =>
+    builtinNames.has(name)
+      ? { ...envProviderConfig(name, env), conflict: true as const }
+      : envProviderConfig(name, env)
+  );
   return [...builtins, ...dynamic];
 }
 
