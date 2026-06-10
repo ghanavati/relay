@@ -50,6 +50,8 @@ Items live here ONLY with a why and a build-trigger. No trigger fired = no build
 
 **Trigger:** observed recall ordering complaint where global memories outrank more-relevant project ones. One-line-ish change in memory-engine scoring; measure before/after.
 
+**Evidence log (2026-06-10):** query "what did we agree relay scope bloat" at token_budget 300 returned an adjacent-topic pinned global fact (0.674, 240 tokens — ate the whole budget) ahead of the exact-topic pinned project decision. At budget 800 the decision surfaces. Two candidate levers when triggered: exact-workdir boost; consider content-match weight vs pinned bonus at small budgets. Trigger is now half-fired — one more real complaint and this builds.
+
 ## Explicitly NOT backlog (assessed and rejected, 2026-06-09)
 
 - **Channel bridging (Telegram/Slack control of agents)** — ai-devkit ships it; their auth is first-Telegram-user-wins = whole-terminal access on one leaked token. New product surface + remote-control risk class. Relay stays local-first; v2 remote MCP is the only sanctioned remote door.
