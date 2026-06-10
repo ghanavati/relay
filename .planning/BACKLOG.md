@@ -14,6 +14,12 @@ Items live here ONLY with a why and a build-trigger. No trigger fired = no build
 
 **Why Relay:** dispatch-core, not scope sprawl. Nothing in the surveyed field ships this (ai-devkit manages a handful of interactive sessions; no queue/retry there either). Closest thing to a real differentiator next to memory.
 
+**Port sources (verified WIRED in relay-mcp, 2026-06-10 read — pattern-port fresh code, same as the registry):**
+- Dependency-wave scheduler with cycle detection + output injection: `relay-mcp/src/tools/delegate_parallel.ts:183-215, 387-406` (+ its 3 deps/waves test files).
+- Git worktree isolation per worker (symlinked dep dirs, merge-back with conflict list, idempotent cleanup): `relay-mcp/src/git/worktree.ts:36-149`.
+- Mutex-with-drain (per-workdir, timeout + orphan drain): `relay-mcp/src/concurrency/index.ts:16-63`.
+- Run-store OCC (`version` column) + append-only run_events + immutability triggers for concurrent-writer safety: `relay-mcp/src/runtime/store/db.ts:25-53,152-162`, `run-store.ts:119-171`.
+
 **Trigger:** first real swarm run >20 tasks, or a failed/crashed batch that hurt.
 
 ## B-02: claude-code headless worker runner (OAuth lane #2)
@@ -67,3 +73,17 @@ Items live here ONLY with a why and a build-trigger. No trigger fired = no build
 **What it buys:** detection of out-of-band edits (memory-poisoning forensics, "did this row change behind my back"), integrity for the Phase 8 audit trail. What it does NOT buy: protection — file-access attacker rewrites the whole chain unless root hashes export elsewhere. Supersession history + memory diff/rollback already cover normal change tracking.
 
 **Trigger:** first real memory-integrity dispute, a poisoning incident, or any multi-actor deployment. Solo-local value is thin; do not pre-build.
+
+## B-07: SSRF + private-IP guard on provider URLs (relay-mcp port)
+
+**What:** Outbound-URL guard for dynamic providers: block RFC1918/loopback/link-local/CGNAT targets unless explicitly allowed (`RELAY_ALLOW_INTERNAL=1` style escape for lmstudio/localhost), plus the workdir denylist with realpath resolution. Verified WIRED in `relay-mcp/src/security/middleware.ts:8-128` (29 tests).
+
+**Why parked, not shipped:** Phase 9's threat model ACCEPTED user-set provider URLs as user trust (T-09-03) — the env var is the user's own config, same trust as editing a file. Localhost is also the NORMAL case here (LM Studio), so naive SSRF blocking would break the primary local workflow.
+
+**Trigger:** provider URLs ever come from anywhere other than the user's own env (config files from repos, MCP-writable config, team sync), or Relay gains any surface where a model can influence the URL.
+
+## B-08: context_mode minimal + input-token preflight cap (relay-mcp port)
+
+**What:** Per-dispatch `context_mode: full|minimal` (minimal injects only worker constraints, saving ~10K tokens per dispatch) + `RELAY_INPUT_TOKEN_CAP` preflight rejection. Verified WIRED in `relay-mcp/src/context/layers.ts:336-354` + delegate preflight. The free cost lever that needs no price map.
+
+**Trigger:** measured context bloat — a real dispatch where injected context dwarfs the task, or swarm runs (B-01) where 10K × N tasks = real waste. Likely lands WITH B-01.
