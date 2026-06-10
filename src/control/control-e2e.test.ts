@@ -130,7 +130,10 @@ describe('control E2E', () => {
     const target = uid('tgt');
     register(store, lm, ['register', 'observe', 'tail', 'mailbox', 'tool_call'], 'lmstudio');
     register(store, target, ['register', 'observe', 'mailbox']);
-    store.grant({ source_session_id: lm, target_session_id: target, ttl_ms: 600_000, max_messages: 10 }, T0);
+    // Grant expiry is checked against the real clock (broker checkGrant uses
+    // Date.now()), so creation time must be runtime-relative — a pinned epoch
+    // makes the grant expire permanently once wall time passes T0 + ttl.
+    store.grant({ source_session_id: lm, target_session_id: target, ttl_ms: 600_000, max_messages: 10 }, Date.now());
 
     const result = await callSend(store, broker, lm, target, 'run the smoke suite');
     assert.equal(result.ok, true, 'granted llm send is allowed');
@@ -177,7 +180,8 @@ describe('control E2E', () => {
     const target = uid('tgt');
     register(store, lm, ['register', 'observe', 'mailbox', 'tool_call'], 'lmstudio');
     register(store, target, ['register', 'observe', 'mailbox']);
-    store.grant({ source_session_id: lm, target_session_id: target, ttl_ms: 600_000, max_messages: 50 }, T0);
+    // Runtime-relative for the same reason as the granted-send test above.
+    store.grant({ source_session_id: lm, target_session_id: target, ttl_ms: 600_000, max_messages: 50 }, Date.now());
 
     // Threshold is 3 identical messages in the window; the 4th trips loop detection.
     for (let i = 0; i < 3; i++) {
