@@ -50,7 +50,7 @@ interface FakeServerKit {
   disconnect: () => void;
 }
 
-function makeFakeServer(): FakeServerKit {
+function makeFakeServer(opts: { shutdownError?: Error } = {}): FakeServerKit {
   const wire: string[] = [];
   const startCalls: StartMcpServerDeps[] = [];
   let shutdowns = 0;
@@ -64,7 +64,10 @@ function makeFakeServer(): FakeServerKit {
     closed,
     shutdown: async () => {
       shutdowns++;
+      // Mirrors the real handle contract (review fix 6): closed ALWAYS
+      // resolves; a real close failure travels via the rejection.
       resolveClosed();
+      if (opts.shutdownError) throw opts.shutdownError;
     },
   };
   const start: McpStartFn = async (deps?: StartMcpServerDeps) => {
@@ -158,6 +161,41 @@ describe('executeMcpCommand — SIGINT/SIGTERM graceful shutdown', () => {
     assert.strictEqual(code, 0);
     assert.strictEqual(fake.shutdownCalls(), 1);
     assert.strictEqual(signals.listenerCount('SIGTERM'), 0);
+  });
+
+  test('a failing shutdown surfaces on stderr and exits 1 — never silently swallowed (review fix 6)', async () => {
+    const { io, stdout, stderr } = makeIO();
+    const fake = makeFakeServer({ shutdownError: new Error('EPIPE: stream destroyed') });
+    const signals = new EventEmitter();
+
+    const pending = executeMcpCommand({ version: '1.2.3', start: fake.start, signals }, io);
+    await tick();
+    signals.emit('SIGINT');
+    const code = await pending;
+
+    assert.strictEqual(code, 1, 'a real close failure must be a nonzero exit');
+    assert.strictEqual(stdout.length, 0, 'stdout stays protocol-only even on failure');
+    const errText = stderr.join('');
+    assert.match(errText, /shutdown failed/);
+    assert.match(errText, /EPIPE: stream destroyed/);
+    assert.strictEqual(signals.listenerCount('SIGINT'), 0, 'listeners still removed');
+    assert.strictEqual(signals.listenerCount('SIGTERM'), 0);
+  });
+
+  test('a second signal during a failing shutdown does not double-report (review fix 6)', async () => {
+    const { io, stderr } = makeIO();
+    const fake = makeFakeServer({ shutdownError: new Error('EPIPE: stream destroyed') });
+    const signals = new EventEmitter();
+
+    const pending = executeMcpCommand({ version: '1.2.3', start: fake.start, signals }, io);
+    await tick();
+    signals.emit('SIGINT');
+    signals.emit('SIGTERM');
+    const code = await pending;
+
+    assert.strictEqual(code, 1);
+    const reports = stderr.join('').match(/shutdown failed/g) ?? [];
+    assert.strictEqual(reports.length, 1, 'exactly one failure report');
   });
 });
 

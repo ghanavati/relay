@@ -60,8 +60,23 @@ export interface McpServerHandle {
   readonly toolNames: readonly string[];
   /** Resolves when the connection closes — client disconnect or shutdown(). */
   readonly closed: Promise<void>;
-  /** Proactively close the server. Idempotent; resolves once closed. */
+  /**
+   * Proactively close the server. Idempotent. Rejects when the SDK close
+   * fails for a real reason (review fix 6); an already-closed connection
+   * (the SDK's 'Not connected') is swallowed. `closed` resolves either way
+   * — the failure travels via this rejection, never as a dangling promise.
+   */
   readonly shutdown: () => Promise<void>;
+}
+
+/**
+ * The SDK's only "already gone" signal: @modelcontextprotocol/sdk@1.29.0
+ * raises Error('Not connected') from its protocol layer when the transport
+ * is already detached (shared/protocol.js literal — verified against the
+ * installed package). Anything else is a real close failure.
+ */
+function isAlreadyClosedError(err: unknown): boolean {
+  return err instanceof Error && /not connected/i.test(err.message);
 }
 
 /**
@@ -137,7 +152,14 @@ export async function startMcpServer(deps: StartMcpServerDeps = {}): Promise<Mcp
       shutdownStarted = true;
       try {
         await server.close();
-      } catch {
+      } catch (err) {
+        if (!isAlreadyClosedError(err)) {
+          // Review fix 6: a real close failure must surface, not vanish —
+          // but `closed` resolves regardless so callers blocking on it
+          // never dangle; the error travels via this rejection.
+          resolveClosed();
+          throw err;
+        }
         // Already closed (e.g. the client disconnected first) — fine.
       }
       // Belt and suspenders: never leave `closed` dangling even if an SDK

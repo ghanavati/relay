@@ -36,7 +36,9 @@ export interface McpCommandArgs {
 /**
  * Start the stdio MCP server and block until it closes. Exit codes:
  * 0 = clean close (client disconnect or signal-driven graceful shutdown),
- * 1 = the server failed to start (e.g. SDK surface unresolved).
+ * 1 = the server failed to start (e.g. SDK surface unresolved) OR a
+ *     signal-driven shutdown failed for a real reason (review fix 6 — an
+ *     already-closed connection is swallowed by the handle, not here).
  */
 export async function executeMcpCommand(args: McpCommandArgs, io: CliIO): Promise<number> {
   const start = args.start ?? (await import('../mcp/server.js')).startMcpServer;
@@ -56,9 +58,16 @@ export async function executeMcpCommand(args: McpCommandArgs, io: CliIO): Promis
       `${handle.toolNames.join(', ')}. Diagnostics on stderr; the protocol owns the wire.\n`
   );
 
+  let shutdownResult: Promise<void> | undefined;
   const onSignal = (): void => {
     // Idempotent: a second signal while shutdown is in flight is a no-op.
-    void handle.shutdown();
+    if (!shutdownResult) {
+      shutdownResult = handle.shutdown();
+      // Sink the rejection HERE so it can never become an unhandled-rejection
+      // crash between the signal and `closed` resolving; the original promise
+      // is re-awaited below, where the failure maps to stderr + exit 1.
+      shutdownResult.catch(() => {});
+    }
   };
   signals.on('SIGINT', onSignal);
   signals.on('SIGTERM', onSignal);
@@ -67,6 +76,17 @@ export async function executeMcpCommand(args: McpCommandArgs, io: CliIO): Promis
   } finally {
     signals.removeListener('SIGINT', onSignal);
     signals.removeListener('SIGTERM', onSignal);
+  }
+  if (shutdownResult) {
+    try {
+      await shutdownResult;
+    } catch (err) {
+      // Review fix 6: a real close failure (the handle already swallowed the
+      // benign already-closed case) surfaces on stderr with a nonzero exit.
+      const message = err instanceof Error ? err.message : String(err);
+      io.stderr(`relay mcp: shutdown failed — ${message}\n`);
+      return 1;
+    }
   }
   return 0;
 }
