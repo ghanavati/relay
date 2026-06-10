@@ -172,10 +172,65 @@ describe('relay_memory_save', () => {
     assert.strictEqual(row.trust_level, 'unverified');
   });
 
-  test('inputSchema IS RememberArgsSchema from contracts/memory.ts — same object (Test 2)', () => {
+  test('inputSchema derives from RememberArgsSchema minus pinned/source_run_id (Test 2, review fix 4)', () => {
     const [, save] = buildMemoryMcpTools();
     assert.strictEqual(save.name, 'relay_memory_save');
-    assert.strictEqual(save.config.inputSchema, RememberArgsSchema);
+    // The advertised MCP surface must not offer pinning or run attribution:
+    // pinned rows gain score boost + GC/conflict protection — an external
+    // client setting pinned would amplify memory poisoning.
+    const shape = save.config.inputSchema.shape as Record<string, unknown>;
+    assert.ok(!('pinned' in shape), 'pinned must not be client-settable over MCP');
+    assert.ok(!('source_run_id' in shape), 'source_run_id must not be client-settable over MCP');
+    // Single-source: every remaining field is the SAME schema object as the
+    // contracts definition (zod .omit reuses shape entries by reference).
+    for (const key of Object.keys(shape)) {
+      assert.strictEqual(
+        shape[key],
+        RememberArgsSchema.shape[key as keyof typeof RememberArgsSchema.shape],
+        `${key} must be the contracts schema object by identity`
+      );
+    }
+    assert.deepStrictEqual(
+      Object.keys(shape).sort(),
+      Object.keys(RememberArgsSchema.shape)
+        .filter(k => k !== 'pinned' && k !== 'source_run_id')
+        .sort(),
+      'exactly pinned + source_run_id are omitted — nothing else'
+    );
+  });
+
+  test('pinned:true and source_run_id from a client persist as UNpinned, unattributed (review fix 4)', async () => {
+    const [recall, save] = buildMemoryMcpTools();
+    // Worst case: a client smuggles the fields past schema validation and the
+    // handler receives them anyway — the store must still see pinned=false
+    // and no source_run_id.
+    const smuggled = RememberArgsSchema.parse({
+      content: 'mcp client attempting a pinned write nonce-4b8e',
+      memory_type: 'fact',
+      pinned: true,
+      source_run_id: 'spoofed-run-id-1234',
+      workdir: WORKDIR,
+    });
+    const result = await save.handler(smuggled);
+
+    assert.notStrictEqual(result.isError, true);
+    const parsed = JSON.parse(result.content[0].text) as { memory_id: string };
+    const row = getDb()
+      .prepare('SELECT pinned, source_run_id FROM memories WHERE memory_id = ?')
+      .get(parsed.memory_id) as { pinned: number; source_run_id: string | null } | undefined;
+    assert.ok(row, 'the save itself must succeed (write allowed, flags stripped)');
+    assert.strictEqual(row.pinned, 0, 'MCP saves can never be pinned');
+    assert.strictEqual(row.source_run_id, null, 'MCP saves can never claim run attribution');
+
+    // Recall confirms the row landed as a normal unpinned memory.
+    const recalled = await recall.handler(
+      RecallArgsSchema.parse({ token_budget: 2000, query: 'nonce-4b8e', workdir: WORKDIR })
+    );
+    assert.notStrictEqual(recalled.isError, true);
+    assert.ok(
+      recalled.content[0].text.includes('nonce-4b8e'),
+      'the unpinned row must be recallable'
+    );
   });
 
   test('forbidden workdir → isError MEMORY_WORKDIR_FORBIDDEN, write rejected (Test 3)', async () => {
