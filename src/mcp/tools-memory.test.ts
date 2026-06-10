@@ -281,6 +281,110 @@ describe('relay_memory_save', () => {
   });
 });
 
+describe('workdir default from RELAY_MEMORY_ALLOWED_WORKDIRS (Desktop ergonomics)', () => {
+  // Claude Desktop launches the server with a junk cwd and its model often
+  // omits workdir. With the allow-list configured, an omitted workdir must
+  // mean "the configured project" (FIRST entry), never FORBIDDEN-by-default.
+  const ROOT_A = '/tmp/relay-mcp-tools-test/allowed-root-a';
+  const ROOT_B = '/tmp/relay-mcp-tools-test/allowed-root-b';
+
+  test('omitted workdir on save lands in the FIRST allowed root', async () => {
+    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = `${ROOT_A}:${ROOT_B}`;
+    const [, save] = buildMemoryMcpTools();
+    const result = await save.handler(
+      RememberArgsSchema.parse({
+        content: 'omitted workdir must default to the first allowed root nonce-e5d2',
+        memory_type: 'fact',
+      })
+    );
+
+    assert.notStrictEqual(result.isError, true, result.content[0].text);
+    const parsed = JSON.parse(result.content[0].text) as { memory_id: string };
+    const row = getDb()
+      .prepare('SELECT workdir FROM memories WHERE memory_id = ?')
+      .get(parsed.memory_id) as { workdir: string | null } | undefined;
+    assert.ok(row, 'the defaulted save must insert a row');
+    assert.strictEqual(row.workdir, ROOT_A, 'omitted workdir = FIRST entry of the allow-list');
+  });
+
+  test('omitted workdir on recall scopes to the FIRST allowed root', async () => {
+    // Seed one row per allowed root while the gate is open, then close it:
+    // an omitted workdir must read as ROOT_A scope — never ROOT_B's rows.
+    const store = new MemoryStore();
+    store.remember({
+      content: 'aurora flux memo for the first allowed root nonce-b7c4',
+      memory_type: 'fact',
+      workdir: ROOT_A,
+    });
+    store.remember({
+      content: 'umbra drift memo for the second allowed root nonce-d913',
+      memory_type: 'fact',
+      workdir: ROOT_B,
+    });
+    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = `${ROOT_A}:${ROOT_B}`;
+
+    const [recall] = buildMemoryMcpTools();
+    const result = await recall.handler(RecallArgsSchema.parse({ token_budget: 5000 }));
+
+    assert.notStrictEqual(result.isError, true, result.content[0].text);
+    const text = result.content[0].text;
+    assert.ok(text.includes('nonce-b7c4'), `first-root memory must be in scope: ${text}`);
+    assert.ok(!text.includes('nonce-d913'), 'second-root memory must NOT be in scope');
+  });
+
+  test('omitted workdir with the env var unset keeps the existing default path', async () => {
+    // Env is unset (file preamble + afterEach). Today an MCP save without a
+    // workdir persists as a global row (workdir NULL) — that must not change.
+    const [, save] = buildMemoryMcpTools();
+    const result = await save.handler(
+      RememberArgsSchema.parse({
+        content: 'no allow-list configured so the save keeps the old path nonce-90af',
+        memory_type: 'fact',
+      })
+    );
+
+    assert.notStrictEqual(result.isError, true, result.content[0].text);
+    const parsed = JSON.parse(result.content[0].text) as { memory_id: string };
+    const row = getDb()
+      .prepare('SELECT workdir FROM memories WHERE memory_id = ?')
+      .get(parsed.memory_id) as { workdir: string | null } | undefined;
+    assert.ok(row, 'the save must insert a row');
+    assert.strictEqual(row.workdir, null, 'env unset → the handler must not invent a workdir');
+  });
+
+  test('forbidden workdir error names the allowed roots so the model can self-correct', async () => {
+    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = `${ROOT_A}:${ROOT_B}`;
+    const forbidden = '/tmp/relay-mcp-tools-test/not-on-the-list';
+    const [recall, save] = buildMemoryMcpTools();
+
+    const recalled = await recall.handler(
+      RecallArgsSchema.parse({ token_budget: 2000, workdir: forbidden })
+    );
+    assert.strictEqual(recalled.isError, true);
+    const recallText = recalled.content[0].text;
+    const recallParsed = JSON.parse(recallText) as { ok: boolean; code: string };
+    assert.strictEqual(recallParsed.code, 'MEMORY_WORKDIR_FORBIDDEN');
+    assert.ok(recallText.includes(ROOT_A), `recall error must list root A: ${recallText}`);
+    assert.ok(recallText.includes(ROOT_B), `recall error must list root B: ${recallText}`);
+
+    const saved = await save.handler(
+      RememberArgsSchema.parse({
+        content: 'write aimed at a forbidden workdir nonce-77aa',
+        memory_type: 'fact',
+        workdir: forbidden,
+      })
+    );
+    assert.strictEqual(saved.isError, true);
+    const saveText = saved.content[0].text;
+    const saveParsed = JSON.parse(saveText) as { ok: boolean; code: string };
+    assert.strictEqual(saveParsed.code, 'MEMORY_WORKDIR_FORBIDDEN');
+    assert.ok(
+      saveText.includes(ROOT_A) && saveText.includes(ROOT_B),
+      `save error must list the allowed roots: ${saveText}`
+    );
+  });
+});
+
 describe('buildMemoryMcpTools surface', () => {
   test('exposes exactly relay_memory_recall and relay_memory_save, in order (Test 5)', () => {
     const tools = buildMemoryMcpTools();
