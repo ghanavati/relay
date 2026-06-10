@@ -112,3 +112,54 @@ describe("AnthropicRunner — contextPrefix injection", () => {
     );
   });
 });
+
+describe("AnthropicRunner — error-path redaction (review fix 2)", () => {
+  let savedFetch: typeof fetch | undefined;
+  let savedKey: string | undefined;
+
+  // Runtime-built secret — no literal credential in source.
+  const leakedKey = (): string => 'sk-' + 'ant-leak0123456789abcdef012345';
+
+  beforeEach(() => {
+    savedFetch = (globalThis as { fetch?: typeof fetch }).fetch;
+    savedKey = process.env["ANTHROPIC_API_KEY"];
+    process.env["ANTHROPIC_API_KEY"] = "test-key";
+  });
+
+  afterEach(() => {
+    if (savedFetch) (globalThis as { fetch?: typeof fetch }).fetch = savedFetch;
+    if (savedKey === undefined) delete process.env["ANTHROPIC_API_KEY"];
+    else process.env["ANTHROPIC_API_KEY"] = savedKey;
+  });
+
+  test("non-OK body echoing the api key is redacted in output AND error.message", async () => {
+    const echoedBody = `{"error":"invalid_request","echo":{"x-api-key":"${leakedKey()}"}}`;
+    (globalThis as { fetch?: typeof fetch }).fetch = (async () => ({
+      ok: false,
+      status: 400,
+      text: async () => echoedBody,
+    })) as unknown as typeof fetch;
+
+    const result = await new AnthropicRunner().run(makeTask());
+
+    assert.strictEqual(result.status, "error");
+    assert.ok(!result.output.includes(leakedKey()), "output must not carry the raw key");
+    assert.ok(
+      !result.error!.message.includes(leakedKey()),
+      "error.message must not carry the raw key"
+    );
+    assert.match(result.error!.message, /returned 400/, "status code stays useful");
+  });
+
+  test("missing-text-block error path redacts the raw body", async () => {
+    (globalThis as { fetch?: typeof fetch }).fetch = (async () => ({
+      ok: true,
+      json: async () => ({ debug_echo: { "x-api-key": leakedKey() }, content: [] }),
+    })) as unknown as typeof fetch;
+
+    const result = await new AnthropicRunner().run(makeTask());
+
+    assert.strictEqual(result.status, "error");
+    assert.ok(!result.output.includes(leakedKey()), "raw error-path body must be redacted");
+  });
+});

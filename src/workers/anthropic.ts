@@ -1,5 +1,6 @@
 import type { WorkerTask, WorkerResult } from "./types.js";
 import { makeError } from "../errors.js";
+import { redactSecrets } from "../security/redaction.js";
 import type { WorkerRunner } from "./runner.js";
 import type { ChatTurn, RunMessagesOptions } from "./generic-http-runner.js";
 
@@ -178,7 +179,9 @@ export class AnthropicRunner implements WorkerRunner {
       const duration_ms = Date.now() - startedAt;
 
       if (!res.ok) {
-        const text = await res.text().catch(() => "");
+        // Review fix 2: error bodies can echo request headers (x-api-key)
+        // verbatim — redact before CLI output / run-record persistence.
+        const text = redactSecrets(await res.text().catch(() => ""));
         return {
           status: "error",
           output: text,
@@ -194,7 +197,8 @@ export class AnthropicRunner implements WorkerRunner {
       if (!parsed.ok) {
         return {
           status: "error",
-          output: parsed.raw,
+          // Error-path response text — redacted; success output stays raw.
+          output: redactSecrets(parsed.raw),
           duration_ms,
           exit_code: null,
           error: makeError("PROVIDER_ERROR", "Anthropic response missing text content block", true),
@@ -229,7 +233,12 @@ export class AnthropicRunner implements WorkerRunner {
         output: "",
         duration_ms,
         exit_code: null,
-        error: makeError("PROVIDER_ERROR", err instanceof Error ? err.message : String(err), true),
+        // Review fix 2: fetch failures can embed secrets — redact the message.
+        error: makeError(
+          "PROVIDER_ERROR",
+          redactSecrets(err instanceof Error ? err.message : String(err)),
+          true
+        ),
       };
     }
   }

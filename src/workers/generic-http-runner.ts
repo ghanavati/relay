@@ -1,4 +1,5 @@
 import { makeError, toRelayException, type RelayError } from "../errors.js";
+import { redactSecrets } from "../security/redaction.js";
 import type { WorkerRunner } from "./runner.js";
 import type { WorkerTask, WorkerResult } from "./types.js";
 import type { ProviderConfig } from "./provider-registry.js";
@@ -212,7 +213,10 @@ export class GenericHttpRunner implements WorkerRunner {
       const duration_ms = Date.now() - startedAt;
 
       if (!res.ok) {
-        const text = await res.text().catch(() => "");
+        // Review fix 2: provider error bodies can echo request headers
+        // (Authorization/x-api-key) back verbatim — redact before the text
+        // reaches CLI output or persists via run-record error_message.
+        const text = redactSecrets(await res.text().catch(() => ""));
         return {
           status: "error",
           output: text,
@@ -233,7 +237,10 @@ export class GenericHttpRunner implements WorkerRunner {
         if (!parsed.ok) {
           return {
             status: "error",
-            output: parsed.raw,
+            // Error-path response text — redacted like every other error body.
+            // (Success-path output below stays untouched: model content is
+            // the product; redaction there is the memory/MCP layers' job.)
+            output: redactSecrets(parsed.raw),
             duration_ms,
             exit_code: null,
             error: makeError(
@@ -272,9 +279,13 @@ export class GenericHttpRunner implements WorkerRunner {
           error: makeError("TIMEOUT", `${this.config.providerName} timed out after ${timeout_ms}ms`, true),
         };
       }
-      const message = this.config.fetchFailureMessage
-        ? this.config.fetchFailureMessage(err, url)
-        : `${this.config.providerName} fetch failed: ${String(err)}`;
+      // Review fix 2: fetch failures can embed secrets (URL userinfo, proxy
+      // errors echoing headers) — redact the final message either way.
+      const message = redactSecrets(
+        this.config.fetchFailureMessage
+          ? this.config.fetchFailureMessage(err, url)
+          : `${this.config.providerName} fetch failed: ${String(err)}`
+      );
       return {
         status: "error",
         output: "",

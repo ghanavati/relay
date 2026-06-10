@@ -434,6 +434,111 @@ describe("runnerFromProviderConfig — dynamic anthropic-type", () => {
   });
 });
 
+describe("GenericHttpRunner — error-path redaction (review fix 2)", () => {
+  let savedFetch: typeof fetch | undefined;
+
+  // Runtime-built secret (result.test.ts idiom) — no literal credential in
+  // source. Shaped to trip both the bearer and openai_key patterns.
+  const leakedToken = (): string => 'sk-' + 'leak0123456789abcdef0123456789';
+  const leakedBearer = (): string => ['Bearer', leakedToken()].join(' ');
+
+  beforeEach(() => {
+    savedFetch = (globalThis as { fetch?: typeof fetch }).fetch;
+  });
+
+  afterEach(() => {
+    if (savedFetch) (globalThis as { fetch?: typeof fetch }).fetch = savedFetch;
+  });
+
+  function makeRunner(overrides: Partial<ConstructorParameters<typeof GenericHttpRunner>[0]> = {}) {
+    return new GenericHttpRunner({
+      providerName: "test",
+      getUrl: () => "http://localhost:9999/v1/chat/completions",
+      getHeaders: () => ({}),
+      requiresModel: true,
+      ...overrides,
+    });
+  }
+
+  test("non-OK body echoing an auth header is redacted in output AND error.message", async () => {
+    const echoedBody = `{"error":"unauthorized","echo":{"Authorization":"${leakedBearer()}"}}`;
+    (globalThis as { fetch?: typeof fetch }).fetch = (async () => ({
+      ok: false,
+      status: 401,
+      text: async () => echoedBody,
+    })) as unknown as typeof fetch;
+
+    const result = await makeRunner().run(makeTask());
+
+    assert.strictEqual(result.status, "error");
+    assert.ok(!result.output.includes(leakedToken()), "output must not carry the raw token");
+    assert.match(result.output, /\[REDACTED/, "output keeps a redaction marker");
+    assert.ok(
+      !result.error!.message.includes(leakedToken()),
+      "error.message must not carry the raw token"
+    );
+    assert.match(result.error!.message, /returned 401/, "status code stays useful");
+  });
+
+  test("fetch-throw message embedding a secret is redacted", async () => {
+    (globalThis as { fetch?: typeof fetch }).fetch = (async () => {
+      throw new Error(`proxy refused request with header ${leakedBearer()}`);
+    }) as unknown as typeof fetch;
+
+    const result = await makeRunner().run(makeTask());
+
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(result.error?.code, "PROVIDER_ERROR");
+    assert.ok(
+      !result.error.message.includes(leakedToken()),
+      "fetch-failure message must not carry the raw token"
+    );
+    assert.match(result.error.message, /\[REDACTED/);
+  });
+
+  test("custom fetchFailureMessage output is redacted too", async () => {
+    (globalThis as { fetch?: typeof fetch }).fetch = (async () => {
+      throw new Error("ECONNREFUSED");
+    }) as unknown as typeof fetch;
+
+    const result = await makeRunner({
+      fetchFailureMessage: (err, url) => `${url} with ${leakedBearer()} failed: ${String(err)}`,
+    }).run(makeTask());
+
+    assert.strictEqual(result.status, "error");
+    assert.ok(
+      !result.error!.message.includes(leakedToken()),
+      "configured failure message must pass through redaction"
+    );
+    assert.match(result.error!.message, /ECONNREFUSED/, "the useful part survives");
+  });
+
+  test("anthropic-messages missing-text-block error path redacts the raw body", async () => {
+    (globalThis as { fetch?: typeof fetch }).fetch = (async () => ({
+      ok: true,
+      json: async () => ({ debug_echo: { authorization: leakedBearer() }, content: [] }),
+    })) as unknown as typeof fetch;
+
+    const result = await makeRunner({ requestFormat: "anthropic-messages" }).run(makeTask());
+
+    assert.strictEqual(result.status, "error");
+    assert.ok(!result.output.includes(leakedToken()), "raw error-path body must be redacted");
+  });
+
+  test("success-path model output stays untouched — redaction is the memory/MCP layers' job", async () => {
+    const modelText = `here is your token: ${leakedBearer()}`;
+    (globalThis as { fetch?: typeof fetch }).fetch = (async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: modelText } }] }),
+    })) as unknown as typeof fetch;
+
+    const result = await makeRunner().run(makeTask());
+
+    assert.strictEqual(result.status, "success");
+    assert.strictEqual(result.output, modelText, "success output is the product — byte-identical");
+  });
+});
+
 describe("extractUsageReceipt — uniform across wire shapes", () => {
   test("openai wire: prompt/completion/total", () => {
     assert.deepStrictEqual(
