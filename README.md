@@ -165,6 +165,7 @@ Pre-release `0.2.0`. **1371 tests** passing, four worker backends (Codex, LM Stu
 - [Config schema](docs/config-schema.md) — typed shape of the config file.
 - [Providers](docs/providers.md) — Codex, OpenRouter, LM Studio, Anthropic setup and quirks.
 - [Memory](docs/memory.md) — memory model, trust tiers, FTS5 recall, lint/gc.
+- [MCP server](docs/mcp.md) — mount Relay's memory in any MCP client via `relay mcp`: registration recipe, the two tools, security posture.
 - [Parallel dispatch](docs/parallel.md) — concurrency rules, worktree isolation, spec format.
 - [Architecture](docs/architecture.md) — codebase layout, data flows, invariants.
 - [Cookbook](docs/cookbook.md) — verified per-LLM recipes (CC, Codex, LM Studio, OpenRouter, Anthropic, multi-LLM).
