@@ -59,3 +59,11 @@ Items live here ONLY with a why and a build-trigger. No trigger fired = no build
 ## Phase 9 follow-up (not backlog — committed scope)
 
 - `relay parallel` through the 09-01 provider registry: cmd-parallel.ts still carries its own closed 5-provider union + duplicated getRunner (lines 21, 38-73, 123). Mechanical swap to resolveProvider + the runner factory once 09-01 lands. Do before phase close.
+
+## B-06: Hash-chained memory/audit ledger (Berry pattern)
+
+**What:** Tamper-EVIDENT (not tamper-proof) SQLite: each memory write / audit event row stores sha256(prev_row_hash + canonical(row)); `relay doctor --verify-chain` walks and flags breaks. Pattern from Berry/hallbayes's audit ledger (read 2026-06-09).
+
+**What it buys:** detection of out-of-band edits (memory-poisoning forensics, "did this row change behind my back"), integrity for the Phase 8 audit trail. What it does NOT buy: protection — file-access attacker rewrites the whole chain unless root hashes export elsewhere. Supersession history + memory diff/rollback already cover normal change tracking.
+
+**Trigger:** first real memory-integrity dispute, a poisoning incident, or any multi-actor deployment. Solo-local value is thin; do not pre-build.
