@@ -41,6 +41,14 @@ Saves arriving over MCP carry the `worker-mcp` source tag and start at `unverifi
 
 There is no dispatch tool, no shell tool, and no session-control surface over MCP. Memory is the whole v1 surface.
 
+## Getting Claude to use the tools automatically
+
+Models call tools whose descriptions say when to call them. Both tool descriptions carry that trigger language — recall before answering anything about past decisions, agreements, lessons, or project history; save when the user states or confirms something durable — so a client model reaches for memory without being told.
+
+Set `RELAY_MEMORY_ALLOWED_WORKDIRS` in the server's `env` (`.mcp.json` or `claude_desktop_config.json`, as above). With it set, a call that omits `workdir` defaults to the first allowed root — important for Claude Desktop, which launches the server from a junk cwd — and a forbidden-workdir error names the allowed roots so the model can retry with a valid path.
+
+For Claude Desktop there is also an optional skill at [docs/skills/relay-memory/](skills/relay-memory/) that teaches the model the recall-first habit.
+
 ## Reach
 
 stdio reaches any app that is an MCP client: Claude Desktop, Claude Code, Cursor, Codex, Windsurf — and harnesses that run those agents (Conductor and the like) when MCP config passes through to the agent layer.
