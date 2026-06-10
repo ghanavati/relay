@@ -162,7 +162,7 @@ Phases execute in numeric order within the active milestone. Phase 8 is the firs
 | 6. Delta Extraction | 0/TBD | Not started | - |
 | 7. Figma REST Tools | 0/TBD | Not started | - |
 | 8. Universal LLM Control + Command Central | 9/9 | Implemented (merged to main) |  |
-| 9. v0.4 Lean Core (Dispatch + MCP) | 0/5 | Planned |  |
+| 9. v0.4 Lean Core (Dispatch + MCP) | 5/5 | Executed on phase-9-v04 (pending human gate + merge) |  |
 
 ---
 

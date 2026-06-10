@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-05-18)
 ## Current Position
 
 Phase: 9 (v0.4 Lean Core — Agnostic Dispatch + MCP Memory Server)
-Plan: 0 of 5 complete (09-01 through 09-05 written 2026-06-09, ready for execution)
-Status: PLANNED. Phase 8 MERGED to main 2026-06-08 (1804/1804, Codex-reviewed, security residuals in SECURITY.md). Phase 9 rescoped same week after the v0.4 scrutiny: original 6-plan session-control-over-MCP draft replaced by the lean set — agnostic provider dispatch (RELAY_PROVIDER_* env registry, port of the relay-mcp pattern) + thin stdio MCP server exposing exactly relay_memory_recall/save. Memory subsystem verified already-existing (no build). Kill/defer record: .planning/RELAY-V04-SCOPE.md; predecessor lessons: .planning/LESSONS-FROM-RELAY-MCP.md.
-Last activity: 2026-06-09
+Plan: 5 of 5 executed on branch phase-9-v04 (+ cmd-parallel registry follow-up)
+Status: EXECUTED — awaiting the MCP-05 human gate (live .mcp.json round-trip) + Codex review, then merge decision. Suite 1897/1897 all green (Phase 8 time-bomb fixtures defused in f9e502e). Shipped: agnostic provider registry (RELAY_PROVIDER_* env discovery, closed unions deleted from run + parallel paths, shared runner-factory), uniform raw usage receipt columns, `relay providers`, MCP SDK 1.29.0 exact-pinned + surface probe, boundary helpers, the two memory MCP tools, `relay mcp` stdio server (two tools, zero control coupling, stdout discipline), real-SDK-client integration test, docs (docs/mcp.md + .mcp.json recipe, commands/README/CHANGELOG/SECURITY). REQUIREMENTS check-offs deferred until gate approval.
+Last activity: 2026-06-10
 
-Progress: [░░░░░░░░░░] 0% (phase 9 plans) — wave 1 = 09-01 ∥ 09-02 (09-02 needs maintainer approval for the SDK install)
+Progress: [█████████░] 95% (phase 9) — human gate + Codex review + merge remain
 
 ## Performance Metrics
 
