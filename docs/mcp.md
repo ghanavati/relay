@@ -37,7 +37,7 @@ Exactly two tools, both thin wrappers over the same handlers the CLI uses:
 | `relay_memory_recall` | Search memories (facts, decisions, lessons, context) for a project within a hard token budget. FTS5 keyword search with recency fallback. |
 | `relay_memory_save` | Persist a memory to the shared store so future sessions and other tools can recall it. Writes are deduplicated, rate-limited, and redacted by the store. |
 
-Saves arriving over MCP carry the `worker-mcp` source tag and start at `unverified` trust — the same trust model as every other non-human write.
+Saves arriving over MCP carry the `worker-mcp` source tag and start at `unverified` trust — the same trust model as every other non-human write. MCP clients cannot set `pinned` or `source_run_id`: the save schema omits both, and the handler forces `pinned: false` regardless. Pinning (which protects a row from decay, GC, and conflict resolution) stays a CLI/human action.
 
 There is no dispatch tool, no shell tool, and no session-control surface over MCP. Memory is the whole v1 surface.
 
@@ -50,6 +50,7 @@ ChatGPT and web clients need a remote transport plus OAuth; that is deferred to 
 ## Security posture
 
 - **Workdir scoping** — `RELAY_MEMORY_ALLOWED_WORKDIRS` applies over MCP exactly as in the CLI. A recall or save for a workdir outside the allowlist returns a `MEMORY_WORKDIR_FORBIDDEN` error, never data.
+- **No pinning over MCP** — `relay_memory_save` strips `pinned` and `source_run_id` (schema omission + handler force). An external client can never give its writes the score boost and GC/conflict protection pinned rows get, or claim run provenance.
 - **Boundary redaction** — every value crossing the MCP boundary (results and error messages) passes through the secret redactor on the way out.
 - **stderr-only logs** — diagnostics go to stderr; stdout carries only protocol framing, so a log line can never corrupt the client connection.
 - **stdio trusts the OS user** — any local process that can pipe into `relay mcp` stdin acts as you. That is the stdio trust model; see [SECURITY.md](../SECURITY.md).

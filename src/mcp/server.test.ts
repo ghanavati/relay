@@ -154,11 +154,19 @@ describe('startMcpServer — tool surface (Test 1)', () => {
     );
 
     // The registration carries Plan 03's contract: contracts Zod schema by
-    // identity, a client-facing description, and a live handler function.
+    // identity (recall), a client-facing description, and a live handler.
+    // Save advertises the DERIVED schema (review fix 4): RememberArgsSchema
+    // minus pinned/source_run_id — MCP clients can never pin a memory.
     const recall = srv.registered.find((r) => r.name === 'relay_memory_recall')!;
     const save = srv.registered.find((r) => r.name === 'relay_memory_save')!;
     assert.strictEqual(recall.config.inputSchema, RecallArgsSchema);
-    assert.strictEqual(save.config.inputSchema, RememberArgsSchema);
+    const saveShape = (save.config.inputSchema as typeof RememberArgsSchema).shape as Record<
+      string,
+      unknown
+    >;
+    assert.ok(!('pinned' in saveShape), 'pinned must not be client-settable over MCP');
+    assert.ok(!('source_run_id' in saveShape), 'source_run_id must not be client-settable over MCP');
+    assert.strictEqual(saveShape['content'], RememberArgsSchema.shape.content, 'single-source shape');
     for (const reg of [recall, save]) {
       assert.strictEqual(typeof reg.config.description, 'string');
       assert.ok((reg.config.description ?? '').length > 0);
