@@ -56,6 +56,13 @@ export interface ProviderConfig {
    * definition explicitly instead of silently filtering it.
    */
   conflict?: true;
+  /**
+   * Listing-only (Codex round 2): set when the env definition failed to
+   * resolve (e.g. invalid RELAY_PROVIDER_<NAME>_TYPE) so `relay providers`
+   * can render the row with a note instead of crashing the whole inventory.
+   * resolveProvider still throws for this name exactly as before.
+   */
+  error?: string;
 }
 
 const DYNAMIC_TYPES = ["openai", "anthropic"] as const;
@@ -218,11 +225,29 @@ export function listProviders(
 ): ProviderConfig[] {
   const builtins = builtinProviders(env);
   const builtinNames = new Set(builtins.map((p) => p.name));
-  const dynamic = discoverEnvProviderNames(env).map((name) =>
-    builtinNames.has(name)
-      ? { ...envProviderConfig(name, env), conflict: true as const }
-      : envProviderConfig(name, env)
-  );
+  const dynamic = discoverEnvProviderNames(env).map((name) => {
+    const conflict = builtinNames.has(name);
+    let config: ProviderConfig;
+    try {
+      config = envProviderConfig(name, env);
+    } catch (err) {
+      // LISTING-only fallback (Codex round 2): an invalid _TYPE must not
+      // crash the inventory — the whole point of `relay providers` is to
+      // show the user what is misconfigured. Safe display defaults; the
+      // error note carries the real problem. resolveProvider still throws.
+      config = {
+        name,
+        source: "env",
+        type: "openai",
+        url: null,
+        keyEnvVar: null,
+        headers: {},
+        agentic: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    return conflict ? { ...config, conflict: true as const } : config;
+  });
   return [...builtins, ...dynamic];
 }
 
