@@ -4,14 +4,16 @@
 
 > Git records what code changed. Relay records what the agent did — tasks given, models used, context injected, retries, failures, and lessons.
 
-You probably use Claude Code one day, Cursor or Codex the next, an LM Studio model after that. None of them remember what you decided yesterday and none of them let you supervise their work the way you'd supervise a human. Relay sits between you and any LLM tool: it carries memory across sessions, dispatches tasks to whichever provider you want (local LM Studio for free, paid when you need to), and makes agent sessions addressable and steerable — `list`, `inspect`, `tail`, `send`, `delegate`, `spawn`.
+You probably use Claude Code one day, Cursor or Codex the next, an LM Studio model after that. None of them remember what you decided yesterday — and a day of heavy agent work floods every context window with stale errors, dead ends, and superseded decisions. Context pollution is the quiet failure mode of AI-assisted development.
 
-For AI-heavy developers, tech leads supervising parallel agent work, and teams adopting autonomous coding workflows. Solo install today, multi-user-ready surface.
+Relay's answer is deterministic context engineering, not another vector database. Keyword recall (SQLite FTS5) with per-type time decay, so volatile state fades in a day while durable facts persist. A hard token budget on every recall. Trust that must be earned: machine-written memories start unverified and rise only through proven recalls, so noise can't outrank knowledge. Contradictions get flagged at write time and shown side by side, never silently merged. Relay sits between you and any LLM tool: it carries memory across sessions and tools (CLI and MCP server), dispatches tasks to whichever provider you want (local for free, paid when you need to), and makes agent sessions addressable and steerable — `list`, `inspect`, `tail`, `send`, `delegate`, `spawn`.
+
+Built for one AI-heavy developer working across many tools. Local-first, no accounts, one SQLite file you own.
 
 [![Status](https://img.shields.io/badge/status-pre--release-yellow)](#status)
 [![Version](https://img.shields.io/badge/version-0.2.0-blue)](CHANGELOG.md)
 [![Node](https://img.shields.io/badge/node-20%20%7C%2022-brightgreen)](#install)
-[![Tests](https://img.shields.io/badge/tests-1371%20passing-brightgreen)](.github/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-1897%20passing-brightgreen)](.github/workflows/test.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 
 ## Install
