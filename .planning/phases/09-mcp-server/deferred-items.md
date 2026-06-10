@@ -20,6 +20,8 @@ Out-of-scope discoveries logged during execution. Not fixed by the discovering e
 
 **Suggested fix (for a follow-up fix plan, NOT this phase's scope):** derive the grant timestamps from `Date.now()` in the two grant-creating tests (or inject `now` through `registerControlTools` → `broker.sendMessage`), so grant validity is relative to test runtime, never a fixed epoch. The other 13 control-e2e tests pass; only the two grant-at-`T0` tests are affected.
 
+**RESOLVED (09-05 housekeeping, 2026-06-10, commit f9e502e):** both grant-creating tests now pass `Date.now()` as the grant creation time — fixture timestamps only, no logic changes. Full suite back to green: 1897/1897.
+
 ## [09-01] Confirms the control E2E failures pre-date this plan
 
 **Discovered during:** Plan 09-01 baseline full-suite run (2026-06-09 ~19:12 UTC, BEFORE any 09-01 change).
