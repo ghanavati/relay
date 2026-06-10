@@ -1,6 +1,6 @@
 import type { WorkerTask, WorkerResult } from "./types.js";
 import { makeError } from "../errors.js";
-import { redactSecrets } from "../security/redaction.js";
+import { redactSecrets, scrubKnownValues } from "../security/redaction.js";
 import type { WorkerRunner } from "./runner.js";
 import type { ChatTurn, RunMessagesOptions } from "./generic-http-runner.js";
 
@@ -160,6 +160,12 @@ export class AnthropicRunner implements WorkerRunner {
     timeout_ms: number
   ): Promise<WorkerResult> {
     const startedAt = Date.now();
+    // Codex round 2: scrub the exact key value we sent FIRST (a JSON echo
+    // like `"x-api-key":"short-secret"` matches no redaction pattern, and a
+    // pattern can partially consume the key and leave a fragment), then run
+    // pattern redaction for everything else.
+    const scrubText = (text: string): string =>
+      redactSecrets(scrubKnownValues(text, [apiKey]));
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout_ms);
 
@@ -181,7 +187,7 @@ export class AnthropicRunner implements WorkerRunner {
       if (!res.ok) {
         // Review fix 2: error bodies can echo request headers (x-api-key)
         // verbatim — redact before CLI output / run-record persistence.
-        const text = redactSecrets(await res.text().catch(() => ""));
+        const text = scrubText(await res.text().catch(() => ""));
         return {
           status: "error",
           output: text,
@@ -198,7 +204,7 @@ export class AnthropicRunner implements WorkerRunner {
         return {
           status: "error",
           // Error-path response text — redacted; success output stays raw.
-          output: redactSecrets(parsed.raw),
+          output: scrubText(parsed.raw),
           duration_ms,
           exit_code: null,
           error: makeError("PROVIDER_ERROR", "Anthropic response missing text content block", true),
@@ -236,7 +242,7 @@ export class AnthropicRunner implements WorkerRunner {
         // Review fix 2: fetch failures can embed secrets — redact the message.
         error: makeError(
           "PROVIDER_ERROR",
-          redactSecrets(err instanceof Error ? err.message : String(err)),
+          scrubText(err instanceof Error ? err.message : String(err)),
           true
         ),
       };

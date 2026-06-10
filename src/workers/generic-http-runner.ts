@@ -1,5 +1,5 @@
 import { makeError, toRelayException, type RelayError } from "../errors.js";
-import { redactSecrets } from "../security/redaction.js";
+import { redactSecrets, scrubKnownValues } from "../security/redaction.js";
 import type { WorkerRunner } from "./runner.js";
 import type { WorkerTask, WorkerResult } from "./types.js";
 import type { ProviderConfig } from "./provider-registry.js";
@@ -33,6 +33,14 @@ export interface GenericHttpProviderConfig {
    * missing). Returning a RelayError short-circuits run()/runMessages().
    */
   preflight?: () => RelayError | null;
+  /**
+   * Sensitive request values actually sent (resolved API key value + custom
+   * header VALUES — header names are fine). Error-path text is scrubbed of
+   * these verbatim in addition to pattern redaction, because a provider or
+   * proxy echoing request headers can leak values that match no redaction
+   * pattern (Codex round 2). Resolved per dispatch, like getHeaders.
+   */
+  getSensitiveValues?: () => readonly string[];
 }
 
 /**
@@ -198,6 +206,14 @@ export class GenericHttpRunner implements WorkerRunner {
     const startedAt = Date.now();
     const url = this.config.getUrl();
     const headers = this.config.getHeaders(model);
+    // Codex round 2: pattern redaction alone misses echoed values that don't
+    // LOOK like secrets. The runner knows exactly which sensitive values it
+    // sent — scrub those verbatim FIRST (a pattern can partially consume a
+    // value and leave a fragment the exact match would miss), then run
+    // pattern redaction for everything else.
+    const sensitiveValues = this.config.getSensitiveValues?.() ?? [];
+    const scrubText = (text: string): string =>
+      redactSecrets(scrubKnownValues(text, sensitiveValues));
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout_ms);
@@ -216,7 +232,7 @@ export class GenericHttpRunner implements WorkerRunner {
         // Review fix 2: provider error bodies can echo request headers
         // (Authorization/x-api-key) back verbatim — redact before the text
         // reaches CLI output or persists via run-record error_message.
-        const text = redactSecrets(await res.text().catch(() => ""));
+        const text = scrubText(await res.text().catch(() => ""));
         return {
           status: "error",
           output: text,
@@ -240,7 +256,7 @@ export class GenericHttpRunner implements WorkerRunner {
             // Error-path response text — redacted like every other error body.
             // (Success-path output below stays untouched: model content is
             // the product; redaction there is the memory/MCP layers' job.)
-            output: redactSecrets(parsed.raw),
+            output: scrubText(parsed.raw),
             duration_ms,
             exit_code: null,
             error: makeError(
@@ -281,7 +297,7 @@ export class GenericHttpRunner implements WorkerRunner {
       }
       // Review fix 2: fetch failures can embed secrets (URL userinfo, proxy
       // errors echoing headers) — redact the final message either way.
-      const message = redactSecrets(
+      const message = scrubText(
         this.config.fetchFailureMessage
           ? this.config.fetchFailureMessage(err, url)
           : `${this.config.providerName} fetch failed: ${String(err)}`
@@ -380,6 +396,15 @@ export function runnerFromProviderConfig(
     return null;
   };
 
+  // Codex round 2: the exact sensitive values this runner sends — resolved
+  // key value + custom header VALUES (names stay printable). dispatch()
+  // scrubs error-path text of these verbatim; pattern redaction cannot catch
+  // arbitrary RELAY_PROVIDER_<NAME>_HEADER_* values echoed by the provider.
+  const getSensitiveValues = (): readonly string[] => {
+    const key = resolveKey();
+    return [...(key ? [key] : []), ...Object.values(config.headers)];
+  };
+
   if (config.type === "anthropic") {
     return new GenericHttpRunner({
       providerName: config.name,
@@ -395,6 +420,7 @@ export function runnerFromProviderConfig(
       requiresModel: true,
       requestFormat: "anthropic-messages",
       preflight,
+      getSensitiveValues,
     });
   }
 
@@ -411,6 +437,7 @@ export function runnerFromProviderConfig(
     requiresModel: true,
     requestFormat: "chat-completions",
     preflight,
+    getSensitiveValues,
   });
 }
 

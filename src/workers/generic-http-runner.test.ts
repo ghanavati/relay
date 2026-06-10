@@ -539,6 +539,153 @@ describe("GenericHttpRunner — error-path redaction (review fix 2)", () => {
   });
 });
 
+describe("GenericHttpRunner — known-value scrubbing (Codex round 2)", () => {
+  let savedFetch: typeof fetch | undefined;
+
+  // Runtime-built fixtures (result.test.ts idiom). Both values deliberately
+  // match NO redaction pattern — pattern-based redactSecrets alone would
+  // leak them; only value-based scrubbing of the values the runner actually
+  // sent can catch the echo.
+  const headerSecret = (): string => ["plain", "header", "secret"].join("-");
+  const shortKey = (): string => ["shrt", "k3y"].join("-"); // 8 chars, no sk-/Bearer shape
+
+  beforeEach(() => {
+    savedFetch = (globalThis as { fetch?: typeof fetch }).fetch;
+  });
+
+  afterEach(() => {
+    if (savedFetch) (globalThis as { fetch?: typeof fetch }).fetch = savedFetch;
+  });
+
+  function scrubConfig(overrides: Partial<ProviderConfig> = {}): ProviderConfig {
+    return groqConfig({
+      name: "scrubbed",
+      keyEnvVar: "RELAY_PROVIDER_SCRUBBED_KEY",
+      headers: { "x-custom-auth": headerSecret() },
+      ...overrides,
+    });
+  }
+
+  function scrubEnv(): NodeJS.ProcessEnv {
+    return { RELAY_PROVIDER_SCRUBBED_KEY: shortKey() };
+  }
+
+  test("(a) non-OK body echoing a custom header value matching NO pattern is scrubbed", async () => {
+    const echoedBody = `{"error":"denied","echo":{"x-custom-auth":"${headerSecret()}"}}`;
+    (globalThis as { fetch?: typeof fetch }).fetch = (async () => ({
+      ok: false,
+      status: 401,
+      text: async () => echoedBody,
+    })) as unknown as typeof fetch;
+
+    const runner = runnerFromProviderConfig(scrubConfig(), scrubEnv());
+    const result = await runner.run(makeTask({ provider: "scrubbed" }));
+
+    assert.strictEqual(result.status, "error");
+    assert.ok(!result.output.includes(headerSecret()), "output must not carry the header value");
+    assert.match(result.output, /\[REDACTED:KNOWN\]/, "value-scrub marker present");
+    assert.ok(
+      !result.error!.message.includes(headerSecret()),
+      "error.message must not carry the header value"
+    );
+    assert.match(result.error!.message, /returned 401/, "status code stays useful");
+  });
+
+  test("(b) non-OK body echoing the api key value (not pattern-shaped) is scrubbed", async () => {
+    const echoedBody = `{"error":"denied","echo":{"key":"${shortKey()}"}}`;
+    (globalThis as { fetch?: typeof fetch }).fetch = (async () => ({
+      ok: false,
+      status: 403,
+      text: async () => echoedBody,
+    })) as unknown as typeof fetch;
+
+    const runner = runnerFromProviderConfig(scrubConfig(), scrubEnv());
+    const result = await runner.run(makeTask({ provider: "scrubbed" }));
+
+    assert.strictEqual(result.status, "error");
+    assert.ok(!result.output.includes(shortKey()), "output must not carry the key value");
+    assert.match(result.output, /\[REDACTED:KNOWN\]/);
+    assert.ok(
+      !result.error!.message.includes(shortKey()),
+      "error.message must not carry the key value"
+    );
+  });
+
+  test("parse-failure raw body echoing sent values is scrubbed (anthropic-messages)", async () => {
+    (globalThis as { fetch?: typeof fetch }).fetch = (async () => ({
+      ok: true,
+      json: async () => ({
+        debug_echo: { "x-api-key": shortKey(), "x-custom-auth": headerSecret() },
+        content: [],
+      }),
+    })) as unknown as typeof fetch;
+
+    const runner = runnerFromProviderConfig(
+      scrubConfig({
+        type: "anthropic",
+        url: "https://claude-proxy.example/v1/messages",
+      }),
+      scrubEnv()
+    );
+    const result = await runner.run(makeTask({ provider: "scrubbed" }));
+
+    assert.strictEqual(result.status, "error");
+    assert.ok(!result.output.includes(shortKey()), "raw body must not carry the key value");
+    assert.ok(!result.output.includes(headerSecret()), "raw body must not carry the header value");
+    assert.match(result.output, /\[REDACTED:KNOWN\]/);
+  });
+
+  test("fetch-failure message embedding the key value is scrubbed", async () => {
+    (globalThis as { fetch?: typeof fetch }).fetch = (async () => {
+      throw new Error(`proxy rejected credential ${shortKey()} for upstream`);
+    }) as unknown as typeof fetch;
+
+    const runner = runnerFromProviderConfig(scrubConfig(), scrubEnv());
+    const result = await runner.run(makeTask({ provider: "scrubbed" }));
+
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(result.error?.code, "PROVIDER_ERROR");
+    assert.ok(
+      !result.error.message.includes(shortKey()),
+      "fetch-failure message must not carry the key value"
+    );
+    assert.match(result.error.message, /\[REDACTED:KNOWN\]/);
+  });
+
+  test("(c) values shorter than 4 chars are NOT scrubbed (trivia guard)", async () => {
+    const echoedBody = `{"note":"abort sequence ab happened"}`;
+    (globalThis as { fetch?: typeof fetch }).fetch = (async () => ({
+      ok: false,
+      status: 500,
+      text: async () => echoedBody,
+    })) as unknown as typeof fetch;
+
+    const runner = runnerFromProviderConfig(
+      scrubConfig({ keyEnvVar: null, headers: { "x-tag": "ab" } }),
+      {}
+    );
+    const result = await runner.run(makeTask({ provider: "scrubbed" }));
+
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(result.output, echoedBody, "2-char value must not shred the body");
+    assert.doesNotMatch(result.output, /\[REDACTED/);
+  });
+
+  test("(d) success-path output stays byte-identical even when it contains the sent values", async () => {
+    const modelText = `you asked me to repeat ${shortKey()} and ${headerSecret()} verbatim`;
+    (globalThis as { fetch?: typeof fetch }).fetch = (async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: modelText } }] }),
+    })) as unknown as typeof fetch;
+
+    const runner = runnerFromProviderConfig(scrubConfig(), scrubEnv());
+    const result = await runner.run(makeTask({ provider: "scrubbed" }));
+
+    assert.strictEqual(result.status, "success");
+    assert.strictEqual(result.output, modelText, "success output is the product — byte-identical");
+  });
+});
+
 describe("extractUsageReceipt — uniform across wire shapes", () => {
   test("openai wire: prompt/completion/total", () => {
     assert.deepStrictEqual(
