@@ -129,20 +129,27 @@ function enrichForbiddenWorkdir(err: unknown): unknown {
   return enriched;
 }
 
+// Trigger-rich on purpose: MCP clients (Claude Desktop above all) only call
+// tools whose descriptions say WHEN to call them. tools-memory.test.ts pins
+// the trigger phrases.
 const RECALL_DESCRIPTION =
-  'Recall persistent Relay memories (facts, decisions, lessons, context) for a project. ' +
-  'Memory persists across sessions and across tools — anything saved earlier by the CLI, ' +
-  'a worker, or another MCP client is searchable here. token_budget hard-caps the total ' +
-  'tokens returned; set it to what your context can afford. Pass workdir (absolute project ' +
-  'path) to scope results to that project. Optional query, tags, and types narrow the search.';
+  "Search the user's persistent cross-tool memory — shared with Claude Code, Cursor, and " +
+  'the terminal — which holds context this conversation does not. Use it before answering ' +
+  'any question about past decisions, agreements, lessons, prior work, or project history: ' +
+  'anything like "what did we decide, agree, or learn?". Pass workdir as the project\'s ' +
+  "absolute path, or omit it to use the server's default allowed project. token_budget " +
+  'hard-caps response tokens; ~800 is typical. Optional query, tags, and types narrow ' +
+  'the search.';
 
 const SAVE_DESCRIPTION =
-  "Persist a memory to Relay's cross-session store so future sessions and other tools can " +
-  'recall it. Pass workdir (absolute project path) to scope it to a project. memory_type ' +
-  'controls decay and retrieval priority: fact (durable knowledge), decision (what was ' +
-  'decided and why), lesson (mistakes and corrections), context (working state), state ' +
-  '(volatile current task), handoff (session continuity). Writes are deduplicated, ' +
-  'rate-limited, and redacted by the store.';
+  'Save durable decisions, lessons, and facts the user states or confirms, so other tools ' +
+  '(Claude Code, Cursor, the terminal) and future sessions can recall them. memory_type ' +
+  'sets decay and retrieval priority: fact (durable knowledge), decision (what was decided ' +
+  'and why), lesson (mistakes and corrections), context (working state), state (volatile ' +
+  "current task), handoff (session continuity). Pass workdir as the project's absolute " +
+  "path, or omit it for the server's default allowed project. Never save secrets, " +
+  'credentials, or API keys. Writes are deduplicated, rate-limited, and redacted by ' +
+  'the store.';
 
 export function buildMemoryMcpTools(): readonly [RecallMcpTool, SaveMcpTool] {
   const recall: RecallMcpTool = {

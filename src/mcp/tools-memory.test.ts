@@ -385,6 +385,38 @@ describe('workdir default from RELAY_MEMORY_ALLOWED_WORKDIRS (Desktop ergonomics
   });
 });
 
+describe('tool descriptions carry trigger language (Desktop adoption)', () => {
+  // Desktop's model only calls tools whose descriptions say WHEN to call them.
+  // These pin the intent (trigger phrases), not the exact prose.
+  test('recall description tells the model when to reach for memory unprompted', () => {
+    const [recall] = buildMemoryMcpTools();
+    const d = recall.config.description.toLowerCase();
+    assert.ok(d.includes('before answering'), 'must trigger BEFORE answering, not after');
+    assert.ok(d.includes('decisions'), 'must name past decisions as a trigger');
+    assert.ok(d.includes('lessons'), 'must name lessons as a trigger');
+    assert.ok(d.includes('cross-tool'), 'must say the memory spans tools');
+    assert.ok(
+      d.includes('this conversation does not'),
+      'must say the store holds context the conversation lacks'
+    );
+    assert.ok(d.includes('omit'), 'must say workdir can be omitted for the default project');
+    assert.ok(d.includes('800'), 'must suggest a typical token_budget');
+  });
+
+  test('save description tells the model what to persist and what never to', () => {
+    const [, save] = buildMemoryMcpTools();
+    const d = save.config.description.toLowerCase();
+    assert.ok(d.includes('decisions'), 'must name decisions as save-worthy');
+    assert.ok(d.includes('lessons'), 'must name lessons as save-worthy');
+    assert.ok(
+      d.includes('other tools') && d.includes('future sessions'),
+      'must say other tools and future sessions see the save'
+    );
+    assert.ok(d.includes('memory_type'), 'must explain memory_type semantics');
+    assert.ok(d.includes('never save secrets'), 'must ban secrets/credentials');
+  });
+});
+
 describe('buildMemoryMcpTools surface', () => {
   test('exposes exactly relay_memory_recall and relay_memory_save, in order (Test 5)', () => {
     const tools = buildMemoryMcpTools();
