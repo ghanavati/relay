@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Control E2E grant expiry:** test grants are minted at the live wall clock,
+  matching the tool path's expiry validation.
 ### Added — universal control layer (Phase 8)
 
 - **Cross-session control surface** — `relay session list / inspect / tail / send / delegate / spawn / grant / revoke / pause / resume / approve / deny`. Any supported LLM surface registers as a control session with an explicit, declared capability set; commands refuse unsupported operations instead of silently degrading.
