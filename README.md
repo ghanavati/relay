@@ -149,7 +149,7 @@ Honest constraints, so nobody adopts on a wrong assumption:
 - **Not multi-user.** One person, one machine, one SQLite file. No sync, no sharing, no server.
 - **Not ambient outside Claude Code.** MCP tools are *model-invoked* — the model calls `relay_recall` when it decides to, not automatically every session. Only the Claude Code hook injects context unprompted.
 - **Semantic recall is conditional.** Embedding-based recall requires LM Studio running locally with an embedding model loaded; otherwise recall silently falls back to word-overlap scoring, which misses paraphrases.
-- **Not a release.** `0.2.0` was never cut; the last release is `0.1.2` (2026-05-11) and everything since lives on `main` unreleased.
+- **Not a release.** The last actual release is `v0.1.2` (2026-05-11). A stray `v0.2.0` git tag exists (2026-05-21) but no release was cut for it — no CHANGELOG section, and `package.json` still says 0.1.2. Everything after that tag (control layer, MCP server) is untagged on `main`.
 - **Not unique.** Memory layers for LLM tools exist elsewhere (including free, hosted ones). Relay's bet is the combination: local-first ownership, trust-tiered quarantine of machine writes, score explainability (`relay memory why`), rollback, per-project wipe, and a full read/write audit trail in one place.
 
 ## Privacy & security
@@ -158,7 +158,7 @@ Local storage by default. All memory lives in a single SQLite file under `~/.rel
 
 ## Status
 
-Last release: `0.1.2` (2026-05-11). Everything below lives on `main`, unreleased. **1825 tests**, CI on Node 20 + 22 on every push.
+Last release: `v0.1.2` (2026-05-11). A `v0.2.0` tag exists from 2026-05-21 but was never turned into a release (version reconciliation pending). Everything below lives on `main`, unreleased. **1825 tests**, CI on Node 20 + 22 on every push.
 
 ## On main (unreleased)
 
