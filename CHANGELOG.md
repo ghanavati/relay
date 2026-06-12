@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed — Phase 9
 
+- **CI time bomb (red since 2026-06-09):** two control-e2e tests minted grants at a fixed epoch `T0 = 1_781_000_000_000` (2026-06-09 13:33 UTC) with a 10-minute TTL, while the LLM tool path validates expiry against the real wall clock. Every CI run on every branch failed after 2026-06-09 13:43 UTC — including docs-only commits — despite main being green on 2026-06-08. Grants in those tests are now minted at `Date.now()`. Lesson: never mint TTL'd state from a fixed epoch when the validation path reads the wall clock.
 - `RunStore.list()` filtered on `runs.archived_at`, a column no DDL or migration ever created — every default (non-archived) listing threw `SQLITE_ERROR` on fresh DBs. Latent since the relay-mcp extraction because `handleBrowseRuns` was its only caller and nothing served it. Added the PRAGMA-guarded `archived_at` migration.
 
 ### Added — universal control layer (Phase 8)
