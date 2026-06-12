@@ -130,7 +130,11 @@ describe('control E2E', () => {
     const target = uid('tgt');
     register(store, lm, ['register', 'observe', 'tail', 'mailbox', 'tool_call'], 'lmstudio');
     register(store, target, ['register', 'observe', 'mailbox']);
-    store.grant({ source_session_id: lm, target_session_id: target, ttl_ms: 600_000, max_messages: 10 }, T0);
+    // Time-bomb fix: the tool path validates grant expiry against the real
+    // wall clock (no injectable now at registerControlTools), so the grant
+    // must be minted live — a fixed-epoch T0 grant expired on 2026-06-09 and
+    // turned CI red on every branch.
+    store.grant({ source_session_id: lm, target_session_id: target, ttl_ms: 600_000, max_messages: 10 }, Date.now());
 
     const result = await callSend(store, broker, lm, target, 'run the smoke suite');
     assert.equal(result.ok, true, 'granted llm send is allowed');
@@ -177,7 +181,8 @@ describe('control E2E', () => {
     const target = uid('tgt');
     register(store, lm, ['register', 'observe', 'mailbox', 'tool_call'], 'lmstudio');
     register(store, target, ['register', 'observe', 'mailbox']);
-    store.grant({ source_session_id: lm, target_session_id: target, ttl_ms: 600_000, max_messages: 50 }, T0);
+    // Live-minted for the same time-bomb reason as the granted-send test above.
+    store.grant({ source_session_id: lm, target_session_id: target, ttl_ms: 600_000, max_messages: 50 }, Date.now());
 
     // Threshold is 3 identical messages in the window; the 4th trips loop detection.
     for (let i = 0; i < 3; i++) {
