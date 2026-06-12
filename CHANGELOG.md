@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — MCP server (Phase 9)
+
+- **`relay mcp serve`** — stdio MCP server over the existing tool handlers (restoring the surface lost in the relay-mcp extraction). Exposes `relay_recall`, `relay_memory_search`, `relay_get_memory`, `relay_corpus_query`, `relay_browse_runs`, `relay_compare_runs`, `relay_remember`, and the `relay-context` prompt to any MCP client (Claude Desktop, Cursor, Windsurf, Zed). `--selfcheck` runs an in-process handshake and exits 0/1. Setup guide: `docs/mcp.md`.
+- **Workdir gate for cwd-less clients** — explicit `workdir` arg > `RELAY_MCP_DEFAULT_WORKDIR` (client `env` block) > refusal with instructions. Never a silent global fallback.
+- **Write quarantine** — MCP writes enter as `memory_source='worker-mcp'` at trust `unverified`; `pinned`/`source_run_id` are not accepted over MCP (pinning jumps quarantine; source_run_id bypasses the write rate limit). MCP recall floors at `min_trust='provisional'`, so MCP-written entries cannot surface over MCP until promoted.
+- **Pause sentinel honored** — `~/.relay/paused` blocks MCP recall/search/remember and the context prompt, same as hooks.
+- New dependency: `@modelcontextprotocol/sdk` (PRD 09 D-01).
+
+### Fixed — Phase 9
+
+- `RunStore.list()` filtered on `runs.archived_at`, a column no DDL or migration ever created — every default (non-archived) listing threw `SQLITE_ERROR` on fresh DBs. Latent since the relay-mcp extraction because `handleBrowseRuns` was its only caller and nothing served it. Added the PRAGMA-guarded `archived_at` migration.
+
 ### Added — universal control layer (Phase 8)
 
 - **Cross-session control surface** — `relay session list / inspect / tail / send / delegate / spawn / grant / revoke / pause / resume / approve / deny`. Any supported LLM surface registers as a control session with an explicit, declared capability set; commands refuse unsupported operations instead of silently degrading.

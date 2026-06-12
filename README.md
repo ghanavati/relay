@@ -79,6 +79,12 @@ Add `--clean` to remove duplicate Relay-managed hooks before reinstalling. Add `
 |---|---|
 | `relay context emit --target <cc\|codex\|lmstudio-http\|lmstudio-cli>` | Emit recalled memories in per-LLM wrapper format (replaces hook jq pipeline). Defaults `--min-trust=provisional` to block unverified leaks. |
 
+### MCP server
+| Command | What it does |
+|---|---|
+| `relay mcp serve` | Serve memory tools over MCP stdio for Claude Desktop, Cursor, Windsurf, Zed — `relay_recall`, `relay_remember` (trust-quarantined), `relay_memory_search`, `relay_get_memory`, `relay_corpus_query`, `relay_browse_runs`, `relay_compare_runs`, plus the `relay-context` one-tap prompt. See [docs/mcp.md](docs/mcp.md). |
+| `relay mcp serve --selfcheck` | In-process handshake + tools/list verification, exit 0/1. |
+
 ### Delegation
 | Command | What it does |
 |---|---|
