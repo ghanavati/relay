@@ -4,14 +4,14 @@
 
 > Git records what code changed. Relay records what the agent did — tasks given, models used, context injected, retries, failures, and lessons.
 
-You probably use Claude Code one day, Cursor or Codex the next, an LM Studio model after that. None of them remember what you decided yesterday and none of them let you supervise their work the way you'd supervise a human. Relay sits between you and any LLM tool: it carries memory across sessions, dispatches tasks to whichever provider you want (local LM Studio for free, paid when you need to), and makes agent sessions addressable and steerable — `list`, `inspect`, `tail`, `send`, `delegate`, `spawn`.
+You probably use Claude Code one day, Cursor or Codex the next, an LM Studio model after that. None of them remember what you decided yesterday. Relay keeps one local SQLite store of memory and run history across all of them: automatic injection via hooks in Claude Code, MCP tools in any MCP client (Claude Desktop, Cursor, Windsurf), explicit `relay context emit` everywhere else. It also dispatches tasks to local or hosted providers and records what every run did.
 
-For AI-heavy developers, tech leads supervising parallel agent work, and teams adopting autonomous coding workflows. Solo install today, multi-user-ready surface.
+Single-user, local-first, source-install only. There is no team mode, no hosted component, and no npm package yet — see [What Relay is not](#what-relay-is-not-yet) before adopting.
 
 [![Status](https://img.shields.io/badge/status-pre--release-yellow)](#status)
-[![Version](https://img.shields.io/badge/version-0.2.0-blue)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/last%20release-0.1.2-blue)](CHANGELOG.md)
 [![Node](https://img.shields.io/badge/node-20%20%7C%2022-brightgreen)](#install)
-[![Tests](https://img.shields.io/badge/tests-1371%20passing-brightgreen)](.github/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-1825%20passing-brightgreen)](.github/workflows/test.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 
 ## Install
@@ -133,7 +133,7 @@ Worked examples for common workflows live under [docs/recipes/](docs/recipes/):
 
 The operator layer around AI coding agents. Five concerns:
 
-- **Persistent memory** — recall accumulated decisions, lessons, and contradictions across Claude Code, Codex, LM Studio, and any other tool. `SessionStart` hook injects the relevant slice every session, no manual reloading.
+- **Persistent memory** — recall accumulated decisions, lessons, and contradictions across tools. Automatic injection exists for Claude Code only (`SessionStart` hook); MCP clients get model-invoked tools plus a one-tap `relay-context` prompt; everything else needs an explicit `relay context emit`.
 - **Multi-model dispatch** — send a task to Codex CLI, OpenRouter, Anthropic, or a local LM Studio model (qwen, gemma, glm). One worker or many in parallel. Local-mode = zero API cost.
 - **Audit + provenance** — every run records the task, model, provider, injected context, tool calls, diffs, retries, and outcome. Searchable history that survives session boundaries.
 - **Steerable agentic execution** — `relay run --provider lmstudio-agentic` runs a real tool-call loop on a local model with shell access, sandboxed env, network blocklist, hash-based loop detection.
@@ -141,26 +141,37 @@ The operator layer around AI coding agents. Five concerns:
 
 Hallucination check via optional [Berry](https://github.com/anthropics/berry) MCP integration. Model-agnostic. Single SQLite store. Works against any combination of paid + local providers.
 
+## What Relay is not (yet)
+
+Honest constraints, so nobody adopts on a wrong assumption:
+
+- **Not on npm.** Source install only; MCP client configs need absolute paths until a release is cut.
+- **Not multi-user.** One person, one machine, one SQLite file. No sync, no sharing, no server.
+- **Not ambient outside Claude Code.** MCP tools are *model-invoked* — the model calls `relay_recall` when it decides to, not automatically every session. Only the Claude Code hook injects context unprompted.
+- **Semantic recall is conditional.** Embedding-based recall requires LM Studio running locally with an embedding model loaded; otherwise recall silently falls back to word-overlap scoring, which misses paraphrases.
+- **Not a release.** `0.2.0` was never cut; the last release is `0.1.2` (2026-05-11) and everything since lives on `main` unreleased.
+- **Not unique.** Memory layers for LLM tools exist elsewhere (including free, hosted ones). Relay's bet is the combination: local-first ownership, trust-tiered quarantine of machine writes, score explainability (`relay memory why`), rollback, per-project wipe, and a full read/write audit trail in one place.
+
 ## Privacy & security
 
 Local storage by default. All memory lives in a single SQLite file under `~/.relay/relay.db` (configurable via `RELAY_DB_PATH`); nothing leaves your machine unless you explicitly delegate a run to a hosted provider. Memory writes are scoped to per-project workdirs and gated by an optional `RELAY_MEMORY_ALLOWED_WORKDIRS` allowlist. The `recalled_lessons` context layer only injects entries you have explicitly remembered or migrated; opt-in via `RELAY_RECALLED_LESSONS=1`. Provider API keys live in environment variables only — never in the SQLite store, never logged. Worktree isolation for parallel dispatch keeps concurrent workers from clobbering each other's filesystem state. `shell_exec` strips secret-shaped env vars (`*KEY/*TOKEN/*SECRET/*PASSWORD`) and blocks outbound network binaries (`curl`, `wget`, `ssh`, etc.) before the local model gets a shell. See [SECURITY.md](SECURITY.md) for the full threat model.
 
 ## Status
 
-Pre-release `0.2.0`. **1371 tests** passing, four worker backends (Codex, LM Studio single-shot + agentic, OpenRouter, Anthropic), four cross-LLM context-injection wrappers, semantic recall via `nomic-embed-text-v1.5`, conflict detection on contradictory memories, delta extraction in auto-extract, REST-based Figma tools. CI runs Node 20 + 22 on every push.
+Last release: `0.1.2` (2026-05-11). Everything below lives on `main`, unreleased. **1825 tests**, CI on Node 20 + 22 on every push.
 
-**Command Central (shipped).** `relay tui` is the terminal Ink operator console over the control layer: a session rail, a live event stream with human/model source badges and pending/approved/denied/executed dispositions, and a keyboard-first `:` command palette routed through the same broker the CLI uses. Human palette actions and model tool calls share one broker, one policy path, and one audit trail; a model can request a grant but can never approve its own.
+## On main (unreleased)
 
-**Next:** strong live control beyond Relay-owned processes (opt-in PTY for full-TTY CLIs) and per-session cost/usage rollups. See [`.planning/research/EXTERNAL-TOOLS-ASSESSMENT.md`](.planning/research/EXTERNAL-TOOLS-ASSESSMENT.md) for the product thesis.
+- **MCP server** — `relay mcp serve` exposes the memory store to Claude Desktop, Cursor, Windsurf, Zed. Seven tools + a one-tap context prompt; MCP writes enter trust-quarantined. See [docs/mcp.md](docs/mcp.md).
+- **Cross-session control layer** — `relay session list / inspect / tail / send / delegate / spawn` over registered sessions, with grants, budgets, and loop detection for agent-initiated traffic. Each adapter declares its real capabilities; commands refuse what an adapter can't do. Live stdin control exists only for processes relay itself spawns — full-TTY CLIs (claude, codex) get observe + queued delivery, not live control.
+- **Command Central** — `relay tui`, a terminal Ink console over the same broker as the CLI: session rail, event stream with human/model badges, `:` command palette. A model can request a grant but can never approve its own.
+- **Agentic local execution** — `relay run --provider lmstudio-agentic` runs multi-iteration tool loops on local LM Studio models. No API key, no cost; quality depends entirely on the local model.
+- **Semantic recall** — by meaning via a local embedding model when LM Studio is running; word-overlap fallback otherwise.
+- **Conflict detection** — contradictory memories surface as `⚠ CONFLICTS WITH #N` at recall.
+- **Delta extraction** — auto-extract diffs against existing memories instead of re-extracting; contradictions flagged.
+- **Figma REST tools** — two tools (`figma_list_layers`, `figma_update_token`) usable from the agentic runner. Narrow by design.
 
-## v0.2 capabilities (shipped)
-
-- **Agentic local execution** — `relay run --provider lmstudio-agentic` runs multi-iteration tool loops on local LM Studio models (qwen3-coder-next, qwen3.6-35b-a3b, etc.). No API key, no cost.
-- **Semantic recall** — memory recalls by meaning via nomic-embed-text-v1.5. Word-overlap fallback when model offline.
-- **Conflict detection** — contradictory memories surface as `⚠ CONFLICTS WITH #N` at recall, with negation-aware suppression gate.
-- **Delta extraction** — auto-extract diffs against existing memories, no re-extraction, contradictions flagged.
-- **Figma REST tools** — `figma_list_layers` + `figma_update_token` via local agentic runner. PAT scrubbed across log paths.
-- **Schema cleanup** — versioned migrations (v1->v2->v3) drop 11 orphan tables + budget feature. Online .v1-backup written before destructive migration.
+Direction beyond this lives in [ROADMAP.md](ROADMAP.md) — intentions, not promises.
 
 ## Documentation
 
