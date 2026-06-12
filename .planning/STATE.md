@@ -25,12 +25,14 @@ See: .planning/PROJECT.md (updated 2026-05-18)
 
 ## Current Position
 
-Phase: 8 (Universal LLM Control + Command Central, v0.3)
-Plan: 9 of 9 complete (08-01 through 08-09)
-Status: IMPLEMENTED + security-hardened on branch phase-8-control, full suite 1804/1804, all 17 CONTROL reqs met. Codex review: HIGH (shell_exec control bypass) mitigated + confirmed; 3 secret-leak edges fixed across re-review rounds (delimited env names, spawn_error, DSN-value credentials). Pending: maintainer merge decision (Codex loop stopped at diminishing returns — denylist secret detection is asymptotic; residuals documented in SECURITY.md).
-Last activity: 2026-06-08
+Phase: 9 (MCP server — serve the orphaned relay-mcp tool handlers over stdio)
+Plan: PRD + single-cycle implementation complete (see phases/09-mcp-server/SUMMARY.md)
+Status: SHIPPED on branch claude/irys-stateful-swarms-assess-jwkcds. `relay mcp serve` + `--selfcheck`; 7 relay_* tools + relay-context prompt; workdir gate, write quarantine (worker-mcp → unverified, pinned/source_run_id unexposed), pause sentinel honored, reads audited. 21 new tests; full suite 1825 with zero new failures vs clean baseline (3 pre-existing container fails). New dep: @modelcontextprotocol/sdk. Found+fixed: runs.archived_at column never existed (RunStore.list threw on fresh DBs). Pending maintainer: version cut / npm publish (D-02), retroactive codex review of src/mcp/, SEED confirmation (D-05).
+Last activity: 2026-06-12
 
-Progress: [██████████] 100% (phase 8 plans) — security gate cleared; merge is maintainer's call
+Phase 8 (prior): IMPLEMENTED + security-hardened, merged to main 2026-06-08 (commit ea85fa7), suite 1804.
+
+Progress: [██████████] phase 9 implementation complete — release decisions are maintainer's call
 
 ## Performance Metrics
 
