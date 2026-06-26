@@ -3,7 +3,7 @@
  *
  * One place that turns a registry-resolved ProviderConfig into a worker
  * runner: env-sourced configs ride the parameterized GenericHttpRunner
- * (DISPATCH-01); the five builtins keep their exact runner classes
+ * (DISPATCH-01); the builtins keep their exact runner classes
  * (DISPATCH-02). Extracted so `relay parallel` shares the 09-01 dispatch
  * mapping instead of carrying its own closed provider union.
  *
@@ -17,6 +17,8 @@ import type { WorkerRunner } from '../workers/runner.js';
 import type { NamedToolHandler } from '../workers/lmstudio-agentic.js';
 
 export interface RunnerFactoryOpts {
+  /** Env used by env-sourced provider runners for key lookup. */
+  env?: NodeJS.ProcessEnv;
   /**
    * Extra non-shell tool handlers for the lmstudio-agentic runner (Figma,
    * control tools, …). Ignored for every other provider.
@@ -30,11 +32,15 @@ export async function runnerForProvider(
 ): Promise<WorkerRunner> {
   if (config.source === 'env') {
     const { runnerFromProviderConfig } = await import('../workers/generic-http-runner.js');
-    return runnerFromProviderConfig(config);
+    return runnerFromProviderConfig(config, opts.env ?? process.env);
   }
   if (config.name === 'codex') {
     const { CodexRunner } = await import('../workers/codex.js');
     return new CodexRunner();
+  }
+  if (config.name === 'claude') {
+    const { ClaudeRunner } = await import('../workers/claude.js');
+    return new ClaudeRunner();
   }
   if (config.name === 'lmstudio') {
     const { LmStudioRunner } = await import('../workers/lmstudio.js');

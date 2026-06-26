@@ -25,6 +25,7 @@ export const ConsentFile = z.object({
    * silently picking a stale id (T9).
    */
   model: z.string().min(1).max(200).optional(),
+  extractor: z.string().min(1).default('codex'),
   max_bytes: z.number().int().positive().default(32_768),
   min_confidence: z.number().min(0).max(1).default(0.6),
   extra_redaction_patterns: z

@@ -11,6 +11,7 @@ import { resolveProvider, type ProviderConfig } from '../workers/provider-regist
 import { AGENTIC_SANDBOX_ENV } from '../security/env-sanitize.js';
 import { RunStore } from '../runtime/store/run-store.js';
 import { CodexRunner } from '../workers/codex.js';
+import { ClaudeRunner } from '../workers/claude.js';
 import { LmStudioRunner } from '../workers/lmstudio.js';
 import { OpenRouterRunner } from '../workers/openrouter.js';
 import { AnthropicRunner } from '../workers/anthropic.js';
@@ -289,8 +290,9 @@ describe('executeParallelCommand — registry-resolved spec providers', () => {
 });
 
 describe('runnerForProvider — shared 09-01 factory', () => {
-  test('builtin parity: the five names construct their existing runner classes', async () => {
+  test('builtin parity: builtin names construct their existing runner classes', async () => {
     assert.ok((await runnerForProvider(resolveProvider('codex', {}))) instanceof CodexRunner);
+    assert.ok((await runnerForProvider(resolveProvider('claude', {}))) instanceof ClaudeRunner);
     assert.ok((await runnerForProvider(resolveProvider('lmstudio', {}))) instanceof LmStudioRunner);
     assert.ok((await runnerForProvider(resolveProvider('openrouter', {}))) instanceof OpenRouterRunner);
     assert.ok((await runnerForProvider(resolveProvider('anthropic', {}))) instanceof AnthropicRunner);

@@ -130,6 +130,7 @@ describe('T13: loadConsent — per-workdir consent file', () => {
       assert.strictEqual(result.consent.allow_remote, false);
       assert.strictEqual(result.consent.max_bytes, 32_768);
       assert.strictEqual(result.consent.min_confidence, 0.6);
+      assert.strictEqual(result.consent.extractor, 'codex');
       assert.deepStrictEqual(result.consent.extra_redaction_patterns, []);
     }
   });
@@ -145,6 +146,7 @@ describe('T13: loadConsent — per-workdir consent file', () => {
         allow_remote: true,
         max_bytes: 65_536,
         min_confidence: 0.85,
+        extractor: 'anthropic',
         extra_redaction_patterns: [
           { name: 'employee_id', pattern: 'EMP-[0-9]{6}', replacement: '[REDACTED:EMP]' },
         ],
@@ -158,9 +160,28 @@ describe('T13: loadConsent — per-workdir consent file', () => {
       assert.strictEqual(result.consent.allow_remote, true);
       assert.strictEqual(result.consent.max_bytes, 65_536);
       assert.strictEqual(result.consent.min_confidence, 0.85);
+      assert.strictEqual(result.consent.extractor, 'anthropic');
       assert.strictEqual(result.consent.extra_redaction_patterns.length, 1);
       assert.strictEqual(result.consent.extra_redaction_patterns[0]!.name, 'employee_id');
     }
+  });
+
+  test('extractor is an open provider-name string, not a closed enum', async () => {
+    const path = consentFilePath(tmp);
+    await mkdir(join(tmp, '.relay'), { recursive: true });
+    await writeFile(
+      path,
+      JSON.stringify({ enabled: true, extractor: 'team-provider-01' }),
+      'utf8',
+    );
+    const result = await loadConsent(tmp);
+    assert.strictEqual(result.ok, true);
+    if (result.ok) assert.strictEqual(result.consent.extractor, 'team-provider-01');
+  });
+
+  test('Zod schema rejects an empty extractor name', () => {
+    const result = ConsentFile.safeParse({ enabled: true, extractor: '' });
+    assert.strictEqual(result.success, false);
   });
 
   test('disabled=true with extras still parses (file presence != enable)', async () => {

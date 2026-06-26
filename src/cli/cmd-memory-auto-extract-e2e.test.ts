@@ -22,7 +22,7 @@ process.env['RELAY_DB_PATH'] = ':memory:';
 
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, mkdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -79,6 +79,7 @@ function consentEnabled(): ConsentConfig {
   return Object.freeze({
     enabled: true,
     allow_remote: false,
+    extractor: 'lmstudio',
     max_bytes: 32_768,
     min_confidence: 0.6,
     extra_redaction_patterns: [],
@@ -89,6 +90,7 @@ function consentDisabled(): ConsentConfig {
   return Object.freeze({
     enabled: false,
     allow_remote: false,
+    extractor: 'lmstudio',
     max_bytes: 32_768,
     min_confidence: 0.6,
     extra_redaction_patterns: [],
@@ -562,6 +564,7 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
     const consentWithExtras: ConsentConfig = Object.freeze({
       enabled: true,
       allow_remote: false,
+      extractor: 'lmstudio',
       max_bytes: 32_768,
       min_confidence: 0.6,
       extra_redaction_patterns: [
@@ -611,6 +614,7 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
     const consentWithBadPattern: ConsentConfig = Object.freeze({
       enabled: true,
       allow_remote: false,
+      extractor: 'lmstudio',
       max_bytes: 32_768,
       min_confidence: 0.6,
       extra_redaction_patterns: [
@@ -811,6 +815,176 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
     assert.strictEqual(readMemories(projectCwd).length, 0);
   });
 
+  test('default extractor is codex, needs no model discovery or Anthropic API key', async () => {
+    await mkdir(join(projectCwd, '.relay'), { recursive: true });
+    await writeFile(
+      join(projectCwd, '.relay', 'auto-extract.json'),
+      JSON.stringify({ enabled: true }),
+      'utf8',
+    );
+    let observedProvider = '';
+    let observedPrompt = '';
+    const deps: AutoExtractDeps = {
+      dispatchExtraction: async (providerName, prompt) => {
+        observedProvider = providerName;
+        observedPrompt = prompt;
+        return happyExtraction().rawOutput ?? '{"lessons":[]}';
+      },
+      checkBerry: async () => ({ ok: 'pass' as const }),
+      remember: handleRemember,
+      auditPath,
+      discoverModel: async (): Promise<string | null> => {
+        throw new Error('default codex extractor must not discover an LM Studio model');
+      },
+      env: {} as NodeJS.ProcessEnv,
+    };
+
+    const cap = makeIO(projectCwd);
+    const code = await withStdin(
+      makePayload({ sessionId: 'sess-default-codex', cwd: projectCwd, transcriptPath }),
+      () =>
+        executeMemoryAutoExtractCommand(
+          { fromStdin: true, maxBytes: undefined, json: true },
+          cap.io,
+          deps,
+        ),
+    );
+
+    assert.strictEqual(code, 0);
+    const out = JSON.parse(cap.stdout.join('').trim()) as {
+      status: string;
+      provider?: string;
+      lessons_written?: number;
+    };
+    assert.strictEqual(out.status, 'ok');
+    assert.strictEqual(out.provider, 'codex');
+    assert.strictEqual(out.lessons_written, 1);
+    assert.strictEqual(observedProvider, 'codex');
+    assert.match(observedPrompt, /You are extracting durable lessons/);
+    assert.match(observedPrompt, /edit cmd-init\.ts/);
+  });
+
+  test('extractor precedence is RELAY_AUTO_EXTRACT_BACKEND env over consent file over default', async () => {
+    const seen: string[] = [];
+    const run = async (env: NodeJS.ProcessEnv, consent: ConsentConfig): Promise<void> => {
+      const cap = makeIO(projectCwd);
+      await withStdin(
+        makePayload({ sessionId: `sess-precedence-${seen.length}`, cwd: projectCwd, transcriptPath }),
+        () =>
+          executeMemoryAutoExtractCommand(
+            { fromStdin: true, maxBytes: undefined, json: true },
+            cap.io,
+            {
+              loadConsent: async () => ({ ok: true, consent }),
+              dispatchExtraction: async (providerName) => {
+                seen.push(providerName);
+                return '{"lessons":[]}';
+              },
+              cleanupAndValidate: () => ({
+                ok: false,
+                reason: 'low-confidence',
+                detail: 'empty',
+              }),
+              remember: handleRemember,
+              auditPath,
+              env,
+            },
+          ),
+      );
+    };
+
+    await run(
+      { RELAY_AUTO_EXTRACT_BACKEND: 'codex' } as NodeJS.ProcessEnv,
+      { ...consentEnabled(), extractor: 'claude' },
+    );
+    await run({} as NodeJS.ProcessEnv, { ...consentEnabled(), extractor: 'claude' });
+    await run({} as NodeJS.ProcessEnv, { ...consentEnabled(), extractor: 'codex' });
+
+    assert.deepStrictEqual(seen, ['codex', 'claude', 'codex']);
+  });
+
+  test('unknown extractor name is logged cleanly and never reaches dispatch', async () => {
+    let dispatchCalled = false;
+    const cap = makeIO(projectCwd);
+    const code = await withStdin(
+      makePayload({ sessionId: 'sess-unknown-provider', cwd: projectCwd, transcriptPath }),
+      () =>
+        executeMemoryAutoExtractCommand(
+          { fromStdin: true, maxBytes: undefined, json: true },
+          cap.io,
+          {
+            loadConsent: async () => ({
+              ok: true,
+              consent: { ...consentEnabled(), extractor: 'missing-provider' },
+            }),
+            dispatchExtraction: async () => {
+              dispatchCalled = true;
+              return '{"lessons":[]}';
+            },
+            remember: handleRemember,
+            auditPath,
+            env: {} as NodeJS.ProcessEnv,
+          },
+        ),
+    );
+
+    assert.strictEqual(code, 0);
+    assert.strictEqual(dispatchCalled, false);
+    const out = JSON.parse(cap.stdout.join('').trim()) as { status: string; error?: string };
+    assert.strictEqual(out.status, 'skipped:no-llm');
+    assert.match(out.error ?? '', /unknown provider "missing-provider"/);
+    const audit = await readFile(auditPath, 'utf8');
+    assert.match(audit, /unknown provider/);
+  });
+
+  test('non-lmstudio extractors read beyond 32 KB up to a logged 600000-char cap', async () => {
+    const marker = 'BEYOND_32KB_MARKER';
+    const oversized = Array.from({ length: 6_500 }, (_unused, index) =>
+      JSON.stringify({
+        role: 'user',
+        text: index === 1_500 ? marker : `line-${index}-${'x'.repeat(80)}`,
+      }),
+    ).join('\n');
+    await writeFile(transcriptPath, oversized, 'utf8');
+
+    let observedPrompt = '';
+    const cap = makeIO(projectCwd);
+    const code = await withStdin(
+      makePayload({ sessionId: 'sess-full-transcript', cwd: projectCwd, transcriptPath }),
+      () =>
+        executeMemoryAutoExtractCommand(
+          { fromStdin: true, maxBytes: undefined, json: true },
+          cap.io,
+          {
+            loadConsent: async () => ({
+              ok: true,
+              consent: { ...consentEnabled(), extractor: 'codex' },
+            }),
+            dispatchExtraction: async (_providerName, prompt) => {
+              observedPrompt = prompt;
+              return '{"lessons":[]}';
+            },
+            cleanupAndValidate: () => ({
+              ok: false,
+              reason: 'low-confidence',
+              detail: 'empty',
+            }),
+            remember: handleRemember,
+            auditPath,
+            env: {} as NodeJS.ProcessEnv,
+          },
+        ),
+    );
+
+    assert.strictEqual(code, 0);
+    assert.match(observedPrompt, new RegExp(marker));
+    const out = JSON.parse(cap.stdout.join('').trim()) as { status: string; note?: string };
+    assert.strictEqual(out.status, 'skipped:low-confidence');
+    assert.match(out.note ?? '', /transcript capped at 600000 chars/);
+    const audit = await readFile(auditPath, 'utf8');
+    assert.match(audit, /transcript capped at 600000 chars/);
+  });
+
   // ── T9: model resolution ──────────────────────────────────────────────────
 
   test('T9: discoverModel returns null + no env + no consent.model → error:no-model', async () => {
@@ -895,6 +1069,7 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
     const consentWithModel: ConsentConfig = Object.freeze({
       enabled: true,
       allow_remote: false,
+      extractor: 'lmstudio',
       max_bytes: 32_768,
       min_confidence: 0.6,
       extra_redaction_patterns: [],
@@ -942,6 +1117,7 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
     const consentWithModel: ConsentConfig = Object.freeze({
       enabled: true,
       allow_remote: false,
+      extractor: 'lmstudio',
       max_bytes: 32_768,
       min_confidence: 0.6,
       extra_redaction_patterns: [],

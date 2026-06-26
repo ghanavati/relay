@@ -30,8 +30,8 @@ import { makeError, toRelayException } from "../errors.js";
 export type ProviderSource = "builtin" | "env";
 
 /**
- * Wire protocol. `subprocess` is builtin-only (codex); the env _TYPE enum for
- * dynamic providers accepts openai | anthropic (v1 — D-02).
+ * Wire protocol. `subprocess` is builtin-only (codex/claude); the env _TYPE
+ * enum for dynamic providers accepts openai | anthropic (v1 — D-02).
  */
 export type ProviderWireType = "openai" | "anthropic" | "subprocess";
 
@@ -77,7 +77,7 @@ function trimTrailingSlashes(url: string): string {
 }
 
 /**
- * The five builtins, reproducing today's wiring exactly (DISPATCH-02): same
+ * The builtins, reproducing today's wiring exactly (DISPATCH-02): same
  * runner classes, same env-var names, same endpoints. The URL fields here are
  * informational (for `relay providers`); builtin runners keep deriving their
  * own endpoints internally.
@@ -89,6 +89,15 @@ function builtinProviders(env: NodeJS.ProcessEnv): ProviderConfig[] {
   return [
     {
       name: "codex",
+      source: "builtin",
+      type: "subprocess",
+      url: null,
+      keyEnvVar: null,
+      headers: {},
+      agentic: true,
+    },
+    {
+      name: "claude",
       source: "builtin",
       type: "subprocess",
       url: null,

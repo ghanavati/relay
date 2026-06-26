@@ -19,6 +19,7 @@ import { randomUUID } from 'node:crypto';
 import type { CliIO } from './commands.js';
 import type { ProviderConfig } from '../workers/provider-registry.js';
 import { AGENTIC_SANDBOX_ENV } from '../security/env-sanitize.js';
+import { runnerForProvider, type RunnerFactoryOpts } from './runner-factory.js';
 
 export interface RunCommandArgs {
   task: string;
@@ -82,27 +83,12 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
   //    parameterized GenericHttpRunner (DISPATCH-01).
   let runner;
   try {
-    if (providerConfig.source === 'env') {
-      const { runnerFromProviderConfig } = await import('../workers/generic-http-runner.js');
-      runner = runnerFromProviderConfig(providerConfig);
-    } else if (args.provider === 'codex') {
-      const { CodexRunner } = await import('../workers/codex.js');
-      runner = new CodexRunner();
-    } else if (args.provider === 'lmstudio') {
-      const { LmStudioRunner } = await import('../workers/lmstudio.js');
-      runner = new LmStudioRunner();
-    } else if (args.provider === 'openrouter') {
-      const { OpenRouterRunner } = await import('../workers/openrouter.js');
-      runner = new OpenRouterRunner();
-    } else if (args.provider === 'anthropic') {
-      const { AnthropicRunner } = await import('../workers/anthropic.js');
-      runner = new AnthropicRunner();
-    } else if (args.provider === 'lmstudio-agentic') {
+    const factoryOpts: RunnerFactoryOpts = {};
+    if (args.provider === 'lmstudio-agentic') {
       // 08-fix HIGH — mark this process as an agentic sandbox. shell_exec children
       // inherit it (and defaultShellExec force-injects it per child), so any `relay`
       // CLI a model shells into refuses mutating control subcommands.
       process.env[AGENTIC_SANDBOX_ENV] = '1';
-      const { LmStudioAgenticRunner } = await import('../workers/lmstudio-agentic.js');
       // Phase 7 — env-gated Figma REST tools. registerFigmaTools returns null
       // when PAT is absent (FIGMA-03 graceful — model sees zero Figma tools,
       // no startup error). loadPat is the source of truth for the resolved PAT
@@ -132,18 +118,9 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
         label: task_excerpt,
       });
       const controlNamed = toNamedToolHandlers(registerControlTools(run_id));
-      runner = new LmStudioAgenticRunner({ extraToolHandlers: [...figmaNamed, ...controlNamed] });
-    } else {
-      // Defensive: a builtin name this factory doesn't know means the
-      // registry's builtin table and this mapping drifted — fail loudly.
-      io.stderr(`unsupported provider: ${args.provider}\n`);
-      runStore.recordError(run_id, {
-        error_code: 'INVALID_ARGS',
-        error_message: `unsupported provider: ${args.provider}`,
-        finished_at: Date.now(),
-      });
-      return 2;
+      factoryOpts.agenticExtraToolHandlers = [...figmaNamed, ...controlNamed];
     }
+    runner = await runnerForProvider(providerConfig, factoryOpts);
   } catch (err) {
     const message = (err as Error).message;
     io.stderr(`failed to load ${args.provider} runner: ${message}\n`);

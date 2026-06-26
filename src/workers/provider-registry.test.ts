@@ -14,6 +14,7 @@ import {
 
 const BUILTIN_NAMES = [
   "codex",
+  "claude",
   "openrouter",
   "lmstudio",
   "lmstudio-agentic",
@@ -46,7 +47,10 @@ describe("provider-registry — listProviders", () => {
     assert.strictEqual(byName.get("lmstudio-agentic")!.keyEnvVar, "LMSTUDIO_API_KEY");
     assert.strictEqual(byName.get("anthropic")!.keyEnvVar, "ANTHROPIC_API_KEY");
     assert.strictEqual(byName.get("codex")!.keyEnvVar, null);
+    assert.strictEqual(byName.get("claude")!.keyEnvVar, null);
     assert.strictEqual(byName.get("codex")!.url, null);
+    assert.strictEqual(byName.get("claude")!.url, null);
+    assert.strictEqual(byName.get("claude")!.type, "subprocess");
     assert.strictEqual(byName.get("anthropic")!.type, "anthropic");
   });
 
