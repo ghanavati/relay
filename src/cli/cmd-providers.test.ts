@@ -44,7 +44,7 @@ describe('executeProvidersCommand — key-safe inventory (Test 4)', () => {
     const code = await executeProvidersCommand({ json: false, env: groqEnv(true) }, io);
     assert.strictEqual(code, 0);
     const out = stdout.join('');
-    for (const name of ['codex', 'openrouter', 'lmstudio', 'lmstudio-agentic', 'anthropic', 'groq']) {
+    for (const name of ['codex', 'claude', 'openrouter', 'lmstudio', 'lmstudio-agentic', 'anthropic', 'groq']) {
       assert.match(out, new RegExp(name), `must list ${name}`);
     }
     assert.match(out, /builtin/);
@@ -78,7 +78,7 @@ describe('executeProvidersCommand — key-safe inventory (Test 4)', () => {
     const raw = stdout.join('');
     assert.ok(!raw.includes(SYNTHETIC_KEY), 'JSON must never contain a key value');
     const entries = JSON.parse(raw) as ProviderJsonEntry[];
-    assert.strictEqual(entries.length, 6);
+    assert.strictEqual(entries.length, 7);
     const groq = entries.find((e) => e.name === 'groq');
     assert.ok(groq);
     assert.strictEqual(groq.source, 'env');
@@ -90,6 +90,11 @@ describe('executeProvidersCommand — key-safe inventory (Test 4)', () => {
     assert.ok(codex);
     assert.strictEqual(codex.source, 'builtin');
     assert.strictEqual(codex.url, null);
+    const claude = entries.find((e) => e.name === 'claude');
+    assert.ok(claude);
+    assert.strictEqual(claude.source, 'builtin');
+    assert.strictEqual(claude.type, 'subprocess');
+    assert.strictEqual(claude.url, null);
   });
 });
 
@@ -212,6 +217,7 @@ describe('executeRunCommand — registry resolution (Tests 1-3)', () => {
     'OPENROUTER_API_KEY',
     'ANTHROPIC_API_KEY',
     'RELAY_CODEX_PATH',
+    'RELAY_CLAUDE_PATH',
     'RELAY_AGENTIC_SANDBOX',
   ] as const;
   let savedEnv: Record<string, string | undefined>;
@@ -333,6 +339,16 @@ describe('executeRunCommand — registry resolution (Tests 1-3)', () => {
     const all = stdout.join('') + stderr.join('');
     assert.match(all, /codex/i, 'failure must come from the codex runner path');
     assert.strictEqual(captured.length, 0, 'codex is a subprocess — no HTTP dispatch');
+  });
+
+  test('Test 3d2: claude routes to ClaudeRunner (binary load path)', async () => {
+    process.env['RELAY_CLAUDE_PATH'] = '/nonexistent/claude-binary-for-test';
+    const { io, stdout, stderr } = makeIO();
+    const code = await executeRunCommand({ ...runArgs('claude'), model: undefined }, io);
+    assert.notStrictEqual(code, 0);
+    const all = stdout.join('') + stderr.join('');
+    assert.match(all, /claude/i, 'failure must come from the claude runner path');
+    assert.strictEqual(captured.length, 0, 'claude is a subprocess — no HTTP dispatch');
   });
 
   test('Test 3e: lmstudio-agentic still routes to LmStudioAgenticRunner', async () => {

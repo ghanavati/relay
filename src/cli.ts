@@ -8,12 +8,18 @@
  */
 
 import { argv, exit, cwd } from 'node:process';
+import { readFileSync } from 'node:fs';
 import type { CliIO } from './cli/commands.js';
 import { c, setColorMode, type ColorMode } from './cli/colors.js';
 // T50: env-driven cwd default for `relay memory recall` / `show-context`.
 import { resolveMemoryWorkdir } from './cli/resolve-memory-workdir.js';
 
-const VERSION = '0.1.2';
+// Version is read from package.json at runtime — never hardcode it (it drifts).
+const VERSION = (
+  JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+    version: string;
+  }
+).version;
 
 const io: CliIO = {
   cwd: cwd(),
@@ -116,7 +122,7 @@ ${c.cyan('MEMORY COMMANDS')}
     [--rules-file <path>]
 
   relay memory auto-extract --enable       Opt IN to auto-extraction (writes
-    [--allow-remote]                          .relay/auto-extract.json in workdir)
+    [--allow-remote] [--extractor <name>]      .relay/auto-extract.json in workdir)
     [--workdir <path>] [--json]
   relay memory auto-extract --from-stdin   CC SessionEnd hook entry point
     [--max-bytes <N>]                      (default: 32768)
@@ -447,6 +453,7 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
       const { executeMemoryAutoExtractEnableCommand } = await import('./cli/cmd-memory-auto-extract-enable.js');
       return executeMemoryAutoExtractEnableCommand({
         allowRemote: isBool(flags, 'allow-remote'),
+        extractor: lastOption(flags, 'extractor'),
         workdir: lastOption(flags, 'workdir') ?? io.cwd,
         json: isBool(flags, 'json'),
       }, io);
@@ -460,7 +467,7 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
         json: isBool(flags, 'json'),
       }, io);
     }
-    io.stderr('relay memory auto-extract requires --enable [--allow-remote] OR --from-stdin\n');
+    io.stderr('relay memory auto-extract requires --enable [--allow-remote] [--extractor <name>] OR --from-stdin\n');
     return 2;
   }
 

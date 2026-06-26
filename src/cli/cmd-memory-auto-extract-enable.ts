@@ -20,10 +20,22 @@ import {
 } from '../memory/auto-extract-consent.js';
 
 export async function executeMemoryAutoExtractEnableCommand(
-  command: { allowRemote: boolean; workdir: string; json: boolean },
+  command: { allowRemote: boolean; workdir: string; json: boolean; extractor?: string },
   io: CliIO,
 ): Promise<number> {
   const path = consentFilePath(command.workdir);
+  const requestedExtractor = command.extractor?.trim();
+  if (requestedExtractor) {
+    try {
+      const { resolveProvider } = await import('../workers/provider-registry.js');
+      resolveProvider(requestedExtractor);
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (command.json) io.stdout(JSON.stringify({ error: msg, path }) + '\n');
+      else io.stderr(`${msg}\n`);
+      return 2;
+    }
+  }
 
   // Try to preserve existing config; fall back to defaults if missing/broken.
   // We only treat ENOENT as a normal "no prior file" case — other errors
@@ -47,6 +59,7 @@ export async function executeMemoryAutoExtractEnableCommand(
     enabled: true,
     enabled_at: Date.now(),
     allow_remote: command.allowRemote || (existing.allow_remote ?? false),
+    extractor: requestedExtractor || existing.extractor || 'codex',
     max_bytes: existing.max_bytes ?? 32_768,
     min_confidence: existing.min_confidence ?? 0.6,
     extra_redaction_patterns: existing.extra_redaction_patterns ?? [],
@@ -56,11 +69,19 @@ export async function executeMemoryAutoExtractEnableCommand(
   await writeFile(path, JSON.stringify(next, null, 2) + '\n', 'utf8');
 
   if (command.json) {
-    io.stdout(JSON.stringify({ enabled: true, allow_remote: next.allow_remote, path }) + '\n');
+    io.stdout(
+      JSON.stringify({
+        enabled: true,
+        allow_remote: next.allow_remote,
+        extractor: next.extractor,
+        path,
+      }) + '\n',
+    );
   } else {
     io.stdout(
       `Auto-extract consent enabled at ${path}\n` +
         `  allow_remote: ${next.allow_remote}\n` +
+        `  extractor:    ${next.extractor}\n` +
         `  max_bytes:    ${next.max_bytes}\n` +
         `  min_confidence: ${next.min_confidence}\n`,
     );

@@ -76,11 +76,55 @@ export function resolveCodexBin(
   return 'codex';
 }
 
+export function resolveClaudeBin(
+  env: NodeJS.ProcessEnv = process.env,
+  execPath: string = process.execPath
+): string {
+  const sibling = join(dirname(execPath), 'claude');
+  const siblingValid = existsSync(sibling) && !isWrappedBinary(sibling);
+
+  const configured = env['RELAY_CLAUDE_PATH']?.trim();
+  if (configured) {
+    if (!existsSync(configured) || isWrappedBinary(configured)) {
+      console.warn(
+        `[relay-mcp] RELAY_CLAUDE_PATH=${configured} is missing or wrapped — falling back to auto-resolution`
+      );
+    } else {
+      const configuredVersion = nvmVersionOf(configured);
+      const runningVersion = nvmVersionOf(execPath);
+      const staleNvmOverride =
+        configuredVersion !== null &&
+        runningVersion !== null &&
+        configuredVersion !== runningVersion;
+
+      if (staleNvmOverride && siblingValid) {
+        console.warn(
+          `[relay-mcp] RELAY_CLAUDE_PATH=${configured} is from Node ${configuredVersion} ` +
+          `but relay-mcp is running under Node ${runningVersion}. ` +
+          `Using sibling ${sibling} instead so claude tracks the running Node version. ` +
+          `Remove RELAY_CLAUDE_PATH from your MCP config to silence this and let resolution stay automatic.`
+        );
+        return sibling;
+      }
+
+      return configured;
+    }
+  }
+
+  if (siblingValid) return sibling;
+  return 'claude';
+}
+
 // Resolved once at module load — no repeated I/O per dispatch
 const _resolvedCodexBin = resolveCodexBin();
+const _resolvedClaudeBin = resolveClaudeBin();
 
 export function getCodexBin(): string {
   return _resolvedCodexBin;
+}
+
+export function getClaudeBin(): string {
+  return _resolvedClaudeBin;
 }
 
 export function getRelayLogLevel(): RelayLogLevel {
