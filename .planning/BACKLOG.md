@@ -89,3 +89,11 @@ Items live here ONLY with a why and a build-trigger. No trigger fired = no build
 **What:** Per-dispatch `context_mode: full|minimal` (minimal injects only worker constraints, saving ~10K tokens per dispatch) + `RELAY_INPUT_TOKEN_CAP` preflight rejection. Verified WIRED in `relay-mcp/src/context/layers.ts:336-354` + delegate preflight. The free cost lever that needs no price map.
 
 **Trigger:** measured context bloat — a real dispatch where injected context dwarfs the task, or swarm runs (B-01) where 10K × N tasks = real waste. Likely lands WITH B-01.
+
+## B-09: World-class memory/context options (the dumb-substrate set)
+
+**What:** A ranked set of mechanism-not-policy options that make any model that mounts Relay more effective without Relay growing a brain. Full record + anti-creep status + per-item triggers in `AGENT-DIRECTION.md`. Top three (nobody else does them, all pure mechanism): (1) git-native portable memory — `relay memory export/import` to owned, diffable, git-syncable files; (2) `relay context explain` — deterministic, debuggable context (what gets injected, each score, what the budget dropped); (3) model-facing curation MCP tools (pin/forget/correct/scope) — the model steers its own memory. Then (4) be THE memory MCP (polish + open format), (5) context snapshots/replay, (6) dispatch receipts with an outcome slot.
+
+**Governing rule (also in AGENT-DIRECTION.md):** Relay is mechanism, not policy. Grep-able enforcement — Relay's own logic makes zero LLM calls to decide things. Any "router" stays declarative rules; any "intent" is model-declared, never inferred. Reject the inference version of every item.
+
+**Trigger:** per-item, see AGENT-DIRECTION.md. The verification-native spine item has already fired (2026-06-22 stale-cache mislead). Options 1 and 2 are the recommended first proof.
