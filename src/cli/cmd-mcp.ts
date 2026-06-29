@@ -27,10 +27,23 @@ export interface McpSignalSource {
 export interface McpCommandArgs {
   /** The CLI VERSION — the server reports it as its identity to clients. */
   readonly version: string;
+  /** `--http`: serve over a token-gated remote StreamableHTTP transport instead of stdio. */
+  readonly http?: boolean;
+  /** `--port` for HTTP mode (default 8765). */
+  readonly port?: number;
+  /** Bearer token for HTTP mode (RELAY_MCP_TOKEN). Required when http is set. */
+  readonly token?: string;
   /** Test injection; defaults to the lazy-imported startMcpServer. */
   readonly start?: McpStartFn;
   /** Test injection; defaults to process. */
   readonly signals?: McpSignalSource;
+}
+
+/** Minimal shape shared by the stdio and HTTP server handles. */
+interface RunningMcp {
+  readonly toolNames: readonly string[];
+  readonly closed: Promise<void>;
+  readonly shutdown: () => Promise<void>;
 }
 
 /**
@@ -41,22 +54,42 @@ export interface McpCommandArgs {
  *     already-closed connection is swallowed by the handle, not here).
  */
 export async function executeMcpCommand(args: McpCommandArgs, io: CliIO): Promise<number> {
-  const start = args.start ?? (await import('../mcp/server.js')).startMcpServer;
   const signals: McpSignalSource = args.signals ?? process;
 
-  let handle: McpServerHandle;
-  try {
-    handle = await start({ version: args.version });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    io.stderr(`relay mcp: failed to start — ${message}\n`);
-    return 1;
+  let handle: RunningMcp;
+  if (args.http) {
+    // Remote door — any HTTPS MCP client (a ChatGPT connector, remote Cursor, a
+    // hosted bank) reaches the SAME memory bank as stdio. Token-gated, localhost-bound.
+    const { startHttpMcpServer } = await import('../mcp/http-transport.js');
+    try {
+      const http = await startHttpMcpServer({
+        version: args.version,
+        port: args.port ?? 8765,
+        token: args.token ?? '',
+      });
+      handle = http;
+      io.stderr(
+        `relay mcp: HTTP MCP server on ${http.url} (v${args.version}) — tools: ` +
+          `${http.toolNames.join(', ')}. Bearer token required (RELAY_MCP_TOKEN); bound to ` +
+          `localhost — put TLS + OAuth in front before public/ChatGPT exposure.\n`
+      );
+    } catch (err) {
+      io.stderr(`relay mcp --http: failed to start — ${err instanceof Error ? err.message : String(err)}\n`);
+      return 1;
+    }
+  } else {
+    const start = args.start ?? (await import('../mcp/server.js')).startMcpServer;
+    try {
+      handle = await start({ version: args.version });
+    } catch (err) {
+      io.stderr(`relay mcp: failed to start — ${err instanceof Error ? err.message : String(err)}\n`);
+      return 1;
+    }
+    io.stderr(
+      `relay mcp: stdio MCP server started (v${args.version}) — tools: ` +
+        `${handle.toolNames.join(', ')}. Diagnostics on stderr; the protocol owns the wire.\n`
+    );
   }
-
-  io.stderr(
-    `relay mcp: stdio MCP server started (v${args.version}) — tools: ` +
-      `${handle.toolNames.join(', ')}. Diagnostics on stderr; the protocol owns the wire.\n`
-  );
 
   let shutdownResult: Promise<void> | undefined;
   const onSignal = (): void => {

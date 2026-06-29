@@ -870,8 +870,18 @@ async function main(): Promise<number> {
     return executeTuiCommand({ json: isBool(flags, 'json'), cwd: io.cwd, version: VERSION }, io);
   }
   if (cmd === 'mcp') {
+    const flags = parseFlags(rest);
     const { executeMcpCommand } = await import('./cli/cmd-mcp.js');
-    return executeMcpCommand({ version: VERSION }, io);
+    const portArg = lastOption(flags, 'port');
+    return executeMcpCommand(
+      {
+        version: VERSION,
+        http: isBool(flags, 'http'),
+        port: portArg ? Number(portArg) : undefined,
+        token: process.env['RELAY_MCP_TOKEN'],
+      },
+      io,
+    );
   }
   if (cmd === 'compare') {
     const flags = parseFlags(rest);
