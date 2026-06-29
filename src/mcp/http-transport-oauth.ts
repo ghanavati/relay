@@ -298,6 +298,12 @@ export async function startOAuthHttpMcpServer(opts: OAuthHttpMcpOptions): Promis
 
   const app = express();
   app.set('x-powered-by', false);
+  // Behind a tunnel/proxy (cloudflared, ngrok, OpenAI's tunnel) the real client IP
+  // arrives in X-Forwarded-For and the immediate peer is loopback. Trust ONLY loopback
+  // so express-rate-limit reads the real caller without letting a remote client spoof
+  // X-Forwarded-For to dodge the rate limit. Without this, requests through the tunnel
+  // (i.e. every ChatGPT request) throw ERR_ERL_UNEXPECTED_X_FORWARDED_FOR and fail.
+  app.set('trust proxy', 'loopback');
 
   // Owner-secret consent gate runs ahead of the SDK's authorization handler.
   app.use('/authorize', express.urlencoded({ extended: false }), makeAuthorizeConsentGate(opts.ownerSecret));
