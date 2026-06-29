@@ -21,6 +21,19 @@ export async function dispatchExtraction(
 ): Promise<string> {
   const env = opts.env ?? process.env;
   const config = resolveProvider(providerName, env);
+  if (config.name === 'lmstudio-agentic') {
+    // Agentic tool-loop runners require a non-empty tools[]; extraction is a single-shot
+    // text transform that passes none, so reject it up front with a clear message instead
+    // of failing deep inside the runner.
+    throw toRelayException(
+      makeError(
+        'INVALID_ARGS',
+        `extractor '${providerName}' is an agentic tool-loop runner and cannot be used for ` +
+          `extraction (a single-shot text transform). Use codex, claude, lmstudio, or an HTTP provider.`,
+        false,
+      ),
+    );
+  }
   const runner =
     opts.runnerFactory !== undefined
       ? await opts.runnerFactory(config)
