@@ -872,6 +872,10 @@ async function loadTranscriptForProvider(
   const maxChars =
     args.maxBytes ??
     parsePositiveInt(env['RELAY_AUTO_EXTRACT_TRANSCRIPT_CHAR_CAP']) ??
+    // Honor the per-workdir consented cap before the 600k default — otherwise a
+    // remote (codex/claude/HTTP) extractor receives far more session content than
+    // the user consented to via consent.max_bytes.
+    consent.max_bytes ??
     DEFAULT_NON_LMSTUDIO_TRANSCRIPT_CHAR_CAP;
   if (deps.loadTranscript !== undefined) {
     return { window: deps.loadTranscript(path, maxChars) };

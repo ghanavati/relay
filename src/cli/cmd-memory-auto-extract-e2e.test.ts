@@ -997,7 +997,9 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
           {
             loadConsent: async () => ({
               ok: true,
-              consent: { ...consentEnabled(), extractor: 'codex', allow_remote: true },
+              // max_bytes raised so the consented cap allows reading beyond 32 KB —
+              // the point of this test (the cap is honored before the 600k default).
+              consent: { ...consentEnabled(), extractor: 'codex', allow_remote: true, max_bytes: 600_000 },
             }),
             dispatchExtraction: async (_providerName, prompt) => {
               observedPrompt = prompt;
