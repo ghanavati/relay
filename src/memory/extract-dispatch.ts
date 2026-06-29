@@ -44,6 +44,9 @@ export async function dispatchExtraction(
     workdir: opts.workdir ?? process.cwd(),
     timeout_ms: opts.timeoutMs,
     model: opts.model,
+    // Extraction is a single-shot text transform — run the worker tool-free so it can't
+    // read files / hit MCP. Subprocess runners (claude) honor this; HTTP runners ignore it.
+    disableTools: true,
     run_id: `auto-extract:${randomUUID()}`,
     provider: providerName,
   });
