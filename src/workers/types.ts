@@ -45,6 +45,7 @@ export interface WorkerTask {
   mcps?: ResolvedMcpAttachment[];
   images?: string[];  // Optional image URLs for multimodal requests (OpenRouter/LM Studio only)
   tools?: ToolDef[];  // OpenAI-compatible tool schema for agentic workers (lmstudio-agentic)
+  disableTools?: boolean; // extraction-only: run the worker tool-free (no built-ins, no MCP)
   logStream?: WriteStream;
   onStderr?: (text: string) => void;
   run_id: string;
