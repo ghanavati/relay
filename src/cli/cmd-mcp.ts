@@ -31,8 +31,29 @@ export interface McpCommandArgs {
   readonly http?: boolean;
   /** `--port` for HTTP mode (default 8765). */
   readonly port?: number;
-  /** Bearer token for HTTP mode (RELAY_MCP_TOKEN). Required when http is set. */
+  /** Bearer token for HTTP mode (RELAY_MCP_TOKEN). Required when http is set (static-token path). */
   readonly token?: string;
+  /**
+   * `--oauth`: serve the HTTP transport behind an OAuth 2.1 + PKCE authorization
+   * server (the path ChatGPT's connector needs) instead of a static bearer token.
+   * Requires --http. Mutually exclusive with the static-token path at runtime.
+   */
+  readonly oauth?: boolean;
+  /**
+   * Owner secret gating /authorize in OAuth mode (RELAY_MCP_OWNER_SECRET). When
+   * absent, the OAuth server REFUSES to start unless allowNoAuth is also set —
+   * a loopback bind is not accepted as a substitute (a tunnel forwards remote
+   * traffic into it).
+   */
+  readonly ownerSecret?: string;
+  /**
+   * Deliberate opt-in (RELAY_MCP_DANGEROUSLY_ALLOW_NO_AUTH) to run /authorize in
+   * auto-approve mode with NO owner secret — an unauthenticated memory door,
+   * for a genuinely local-only machine with no tunnel.
+   */
+  readonly allowNoAuth?: boolean;
+  /** Public base URL the OAuth AS advertises (RELAY_MCP_PUBLIC_URL); default http://host:port. */
+  readonly publicUrl?: string;
   /** Test injection; defaults to the lazy-imported startMcpServer. */
   readonly start?: McpStartFn;
   /** Test injection; defaults to process. */
@@ -57,7 +78,38 @@ export async function executeMcpCommand(args: McpCommandArgs, io: CliIO): Promis
   const signals: McpSignalSource = args.signals ?? process;
 
   let handle: RunningMcp;
-  if (args.http) {
+  if (args.http && args.oauth) {
+    // OAuth door — the path ChatGPT's connector needs: an OAuth 2.1 + PKCE
+    // authorization server fronts the SAME memory bank as stdio. /mcp rejects
+    // any request without a valid token; /authorize is gated by the owner
+    // secret. Bound to localhost; put TLS in front before public exposure.
+    const { startOAuthHttpMcpServer } = await import('../mcp/http-transport-oauth.js');
+    try {
+      const oauth = await startOAuthHttpMcpServer({
+        version: args.version,
+        port: args.port ?? 8765,
+        ...(args.ownerSecret !== undefined ? { ownerSecret: args.ownerSecret } : {}),
+        ...(args.allowNoAuth ? { allowNoAuth: true } : {}),
+        ...(args.publicUrl !== undefined ? { publicUrl: args.publicUrl } : {}),
+      });
+      handle = oauth;
+      // The server REFUSES to start in auto-approve mode unless the operator set
+      // the explicit RELAY_MCP_DANGEROUSLY_ALLOW_NO_AUTH opt-in (a loopback bind
+      // is NOT accepted as a substitute), so reaching here with no secret means
+      // the operator deliberately accepted an unauthenticated memory door.
+      const gate = args.ownerSecret
+        ? 'owner-secret consent (RELAY_MCP_OWNER_SECRET)'
+        : 'AUTO-APPROVE, NO AUTH (RELAY_MCP_DANGEROUSLY_ALLOW_NO_AUTH set) — anyone who can reach /authorize gets a memory token; do NOT expose this beyond a trusted local machine';
+      io.stderr(
+        `relay mcp: OAuth MCP server on ${oauth.url} (v${args.version}) — tools: ` +
+          `${oauth.toolNames.join(', ')}. OAuth 2.1 + PKCE; /authorize gate: ${gate}. ` +
+          `Put TLS in front before public/ChatGPT exposure.\n`
+      );
+    } catch (err) {
+      io.stderr(`relay mcp --http --oauth: failed to start — ${err instanceof Error ? err.message : String(err)}\n`);
+      return 1;
+    }
+  } else if (args.http) {
     // Remote door — any HTTPS MCP client (a ChatGPT connector, remote Cursor, a
     // hosted bank) reaches the SAME memory bank as stdio. Token-gated, localhost-bound.
     const { startHttpMcpServer } = await import('../mcp/http-transport.js');

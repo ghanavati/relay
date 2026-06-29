@@ -238,6 +238,9 @@ ${c.cyan('SESSION COMMANDS')} (universal control layer)
 ${c.cyan('MCP SERVER')}
   relay mcp                                Start the stdio MCP server exposing memory
                                            recall/save to MCP clients (logs on stderr)
+  relay mcp --http [--port N]              Same tools over token-gated HTTP (RELAY_MCP_TOKEN)
+  relay mcp --http --oauth [--port N]      Same tools behind OAuth 2.1 + PKCE (for ChatGPT);
+                                           /authorize gated by RELAY_MCP_OWNER_SECRET
 
 ${c.cyan('PROJECT')} (per-project privacy controls)
   relay project disable [--yes] [--json]   Write .relayignore, opt out of extract/recall/hook/share
@@ -877,8 +880,15 @@ async function main(): Promise<number> {
       {
         version: VERSION,
         http: isBool(flags, 'http'),
+        oauth: isBool(flags, 'oauth'),
         port: portArg ? Number(portArg) : undefined,
         token: process.env['RELAY_MCP_TOKEN'],
+        ownerSecret: process.env['RELAY_MCP_OWNER_SECRET'],
+        // Deliberate opt-in to run the OAuth door with NO owner secret
+        // (auto-approve). Only '1' or 'true' enables it; anything else is off so
+        // a stray empty/`0`/`false` value can't accidentally open the door.
+        allowNoAuth: ['1', 'true'].includes((process.env['RELAY_MCP_DANGEROUSLY_ALLOW_NO_AUTH'] ?? '').toLowerCase()),
+        publicUrl: process.env['RELAY_MCP_PUBLIC_URL'],
       },
       io,
     );
