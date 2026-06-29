@@ -819,7 +819,10 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
     await mkdir(join(projectCwd, '.relay'), { recursive: true });
     await writeFile(
       join(projectCwd, '.relay', 'auto-extract.json'),
-      JSON.stringify({ enabled: true }),
+      // codex egresses to the cloud, so it needs remote consent (see the
+      // cloud-subprocess gate) — the point of this test is no LM Studio model
+      // discovery and no Anthropic API key, not the privacy gate.
+      JSON.stringify({ enabled: true, allow_remote: true }),
       'utf8',
     );
     let observedProvider = '';
@@ -864,6 +867,40 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
     assert.match(observedPrompt, /edit cmd-init\.ts/);
   });
 
+  test('cloud subprocess extractor (codex) is blocked under local-only consent', async () => {
+    // Privacy gate: codex runs as a local subprocess but sends the transcript to
+    // its cloud service, so allow_remote:false must block it before any dispatch.
+    let dispatchCalled = false;
+    const cap = makeIO(projectCwd);
+    const code = await withStdin(
+      makePayload({ sessionId: 'sess-codex-local-only', cwd: projectCwd, transcriptPath }),
+      () =>
+        executeMemoryAutoExtractCommand(
+          { fromStdin: true, maxBytes: undefined, json: true },
+          cap.io,
+          {
+            loadConsent: async () => ({
+              ok: true,
+              consent: { ...consentEnabled(), extractor: 'codex', allow_remote: false },
+            }),
+            dispatchExtraction: async () => {
+              dispatchCalled = true;
+              return '{"lessons":[]}';
+            },
+            remember: handleRemember,
+            auditPath,
+            env: {} as NodeJS.ProcessEnv,
+          },
+        ),
+    );
+
+    assert.strictEqual(code, 0);
+    assert.strictEqual(dispatchCalled, false, 'transcript must not reach the cloud subprocess');
+    const out = JSON.parse(cap.stdout.join('').trim()) as { status: string; error?: string };
+    assert.strictEqual(out.status, 'error:remote-llm-blocked');
+    assert.match(out.error ?? '', /off-machine|allow_remote/);
+  });
+
   test('extractor precedence is RELAY_AUTO_EXTRACT_BACKEND env over consent file over default', async () => {
     const seen: string[] = [];
     const run = async (env: NodeJS.ProcessEnv, consent: ConsentConfig): Promise<void> => {
@@ -893,12 +930,14 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
       );
     };
 
+    // codex/claude are cloud subprocesses → need remote consent to reach dispatch.
+    const remoteOk = { ...consentEnabled(), allow_remote: true };
     await run(
       { RELAY_AUTO_EXTRACT_BACKEND: 'codex' } as NodeJS.ProcessEnv,
-      { ...consentEnabled(), extractor: 'claude' },
+      { ...remoteOk, extractor: 'claude' },
     );
-    await run({} as NodeJS.ProcessEnv, { ...consentEnabled(), extractor: 'claude' });
-    await run({} as NodeJS.ProcessEnv, { ...consentEnabled(), extractor: 'codex' });
+    await run({} as NodeJS.ProcessEnv, { ...remoteOk, extractor: 'claude' });
+    await run({} as NodeJS.ProcessEnv, { ...remoteOk, extractor: 'codex' });
 
     assert.deepStrictEqual(seen, ['codex', 'claude', 'codex']);
   });
@@ -958,7 +997,7 @@ describe('executeMemoryAutoExtractCommand — full E2E pipeline (deps-injected)'
           {
             loadConsent: async () => ({
               ok: true,
-              consent: { ...consentEnabled(), extractor: 'codex' },
+              consent: { ...consentEnabled(), extractor: 'codex', allow_remote: true },
             }),
             dispatchExtraction: async (_providerName, prompt) => {
               observedPrompt = prompt;

@@ -313,11 +313,15 @@ async function runPipeline(
   }
 
   const remoteEndpoint = remoteEndpointForProvider(providerConfig, env);
-  if (
-    remoteEndpoint !== null &&
-    !isLocalEndpoint(remoteEndpoint) &&
-    consent.allow_remote !== true
-  ) {
+  // codex/claude run as local subprocesses but EGRESS to their cloud service, so
+  // local-only consent (allow_remote:false) must block them exactly like a non-local
+  // HTTP endpoint — otherwise the privacy guard silently leaks the transcript to the
+  // cloud (the subprocess type bypassed the gate before this).
+  const cloudSubprocess = providerConfig.type === 'subprocess';
+  const isRemote =
+    cloudSubprocess || (remoteEndpoint !== null && !isLocalEndpoint(remoteEndpoint));
+  if (isRemote && consent.allow_remote !== true) {
+    const where = remoteEndpoint ?? `${provider} (cloud subprocess)`;
     await emitResult('error:remote-llm-blocked', {
       ts: new Date().toISOString(),
       session_id: payload.value.session_id,
@@ -326,9 +330,9 @@ async function runPipeline(
       provider,
       duration_ms: now() - startedAt,
       error:
-        `provider '${provider}' endpoint '${remoteEndpoint}' is not localhost. ` +
-        `To allow remote endpoints, set "allow_remote": true in ` +
-        `<cwd>/.relay/auto-extract.json. Localhost hosts: 127.0.0.1, ::1, localhost.`,
+        `provider '${provider}' sends transcripts off-machine (${where}). ` +
+        `To allow this, set "allow_remote": true in <cwd>/.relay/auto-extract.json, ` +
+        `or choose a local extractor. Localhost hosts: 127.0.0.1, ::1, localhost.`,
     });
     return 0;
   }
@@ -819,7 +823,11 @@ export function resolveAutoExtractBackend(
   env: NodeJS.ProcessEnv,
   consent: ConsentConfig,
 ): string {
-  const fromEnv = env['RELAY_AUTO_EXTRACT_BACKEND'];
+  // RELAY_AUTO_EXTRACT_BACKEND is the current var; RELAY_AUTO_EXTRACT_PROVIDER is the
+  // documented/legacy name — honor it as an alias so upgraded installs that already set
+  // it keep their configured backend instead of silently falling back to the default.
+  const fromEnv =
+    env['RELAY_AUTO_EXTRACT_BACKEND'] ?? env['RELAY_AUTO_EXTRACT_PROVIDER'];
   if (typeof fromEnv === 'string' && fromEnv.trim().length > 0) {
     return fromEnv.trim();
   }

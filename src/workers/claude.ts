@@ -28,11 +28,15 @@ function terminateProcessGroup(
 export async function runClaudeWorker(task: WorkerTask): Promise<WorkerResult> {
   const startTime = Date.now();
   const claudeBin = getClaudeBin();
-  // Extraction is a pure text→JSON transform. Deny all tools (`--allowedTools ''`)
-  // so `claude -p` runs as a constrained completion, not a tool-capable agent that
-  // could read files / hit MCP / wander. Prompt arrives on stdin, so the empty
-  // allowlist value can't be mistaken for the prompt.
-  const child = spawn(claudeBin, ['-p', '--allowedTools', ''], {
+  // Extraction is a pure text→JSON transform. `--tools ''` sets the AVAILABLE tool set
+  // to empty (NOT --allowedTools, which only controls which tools auto-run without a
+  // prompt — it leaves every tool available); this makes `claude -p` a constrained
+  // completion that can't read files / hit MCP / wander. Prompt arrives on stdin, so the
+  // empty value can't be mistaken for it. Forward the requested model so the run matches
+  // what Relay recorded instead of silently using the user's default Claude model.
+  const args = ['-p', '--tools', ''];
+  if (task.model) args.push('--model', task.model);
+  const child = spawn(claudeBin, args, {
     cwd: task.workdir,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env },
