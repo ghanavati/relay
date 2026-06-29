@@ -304,6 +304,17 @@ export async function startOAuthHttpMcpServer(opts: OAuthHttpMcpOptions): Promis
   // X-Forwarded-For to dodge the rate limit. Without this, requests through the tunnel
   // (i.e. every ChatGPT request) throw ERR_ERL_UNEXPECTED_X_FORWARDED_FOR and fail.
   app.set('trust proxy', 'loopback');
+  // Request log (stderr) — every method/path/status, so a failing client flow
+  // (register/authorize/token/mcp) is diagnosable instead of silent. Enable with
+  // RELAY_MCP_HTTP_LOG=1. Never logs headers/bodies (tokens/secrets stay out of logs).
+  if (process.env['RELAY_MCP_HTTP_LOG'] === '1') {
+    app.use((req, res, next) => {
+      res.on('finish', () => {
+        process.stderr.write(`[mcp-http] ${req.method} ${req.path} -> ${res.statusCode}\n`);
+      });
+      next();
+    });
+  }
 
   // Owner-secret consent gate runs ahead of the SDK's authorization handler.
   app.use('/authorize', express.urlencoded({ extended: false }), makeAuthorizeConsentGate(opts.ownerSecret));
