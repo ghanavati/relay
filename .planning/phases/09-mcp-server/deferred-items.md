@@ -37,3 +37,24 @@ Baseline: 1819 tests / 1817 pass / 2 fail — the same two grant-expiry tests do
 
 **Discovered during:** Plan 09-01 Task 3 read of `src/cli/cmd-completion.ts:38`.
 **Detail:** `PROVIDERS = ['codex', 'lmstudio', 'openrouter', 'anthropic']` — already missing `lmstudio-agentic` before this plan; cannot know env-discovered names at completion-script generation time anyway. Tab completion still works for the listed builtins; dynamic provider names simply don't tab-complete. Cosmetic; out of scope.
+
+## [09-oauth] GitHub Codex PR-bot findings on commit 742c289 (ad hoc post-09-05 commits, no plan doc)
+
+**Discovered during:** `@chatgpt-codex-connector[bot]` automated PR review of commit 742c289, surfaced to the maintainer 2026-07-01. Not caused by, or in scope of, the ChatGPT-connector tunnel-durability fix being worked in `.worktrees/mcp-tunnel-durability` — logged here rather than fixed, per explicit maintainer scoping ("only fix what solves the problem we have now").
+
+**1. (P2) `redactEnvelope` can corrupt JSON when redacting inside already-serialized text**
+- **File:** `src/mcp/tools-memory.ts` (`redactEnvelope`), pattern lives in `src/security/redaction.ts` (env_assignment rule).
+- **Issue:** `redactSecrets` runs over the fully-serialized JSON string. Its `env_assignment` pattern matches `\S+` for the value, which can consume the closing quote/comma of the JSON string it's sitting inside, producing malformed JSON. A memory whose content contains something shaped like `MY_SECRET=...` can make `relay_memory_recall`/`relay_memory_save` return unparsable tool text.
+- **Suggested fix:** redact structured fields BEFORE `JSON.stringify`, or make the `env_assignment` pattern JSON-delimiter-safe (stop at an unescaped `"`).
+
+**2. (P2) OAuth HTTP listener isn't closed when post-bind setup throws**
+- **File:** `src/mcp/http-transport-oauth.ts`, `startOAuthHttpMcpServer` — `httpServer.listen()` succeeds before `publicUrl`/`issuerUrl` are parsed and before `mcpAuthRouter` validates the issuer.
+- **Issue:** a bad `RELAY_MCP_PUBLIC_URL` (e.g. non-HTTPS non-loopback, or unparsable) throws AFTER the socket is already bound. The thrown startup error never closes `httpServer`, so the port stays occupied and the CLI can hang.
+- **Relevance flag:** not today's failure (the configured `RELAY_MCP_PUBLIC_URL` was a well-formed https:// tunnel URL), but worth keeping in mind if the tunnel-durability fix auto-restarts relay with a freshly-parsed URL — a malformed URL from a bad restart could hang instead of failing cleanly.
+- **Suggested fix:** wrap the post-bind setup in a try/catch that closes `httpServer` before rethrowing, or validate the URL before calling `.listen()`.
+
+**3. (P1) Auto-extract's `disableTools: true` is not enforced for the Codex runner**
+- **File:** `src/memory/extract-dispatch.ts` (sets `disableTools: true`) / Codex runner's `buildCodexInvocation` (never reads that field).
+- **Issue:** auto-extract is documented as a sandboxed, tool-free transcript→JSON transform. Subprocess runners like `claude` honor `disableTools`; the Codex runner ignores it entirely and still builds a normal `codex exec` invocation with workspace-write/full-auto behavior. If a user configures Codex as their auto-extract backend, the SessionEnd hook can invoke Codex with full file/tool access instead of a constrained transform.
+- **Unrelated subsystem:** auto-extract / SessionEnd hook, not the MCP OAuth connector — flagged P1 by the bot but explicitly out of scope for the current fix.
+- **Suggested fix:** either make `buildCodexInvocation` honor `disableTools` (real sandboxed invocation) or reject/warn when Codex is selected as the auto-extract extractor until that's implemented.
