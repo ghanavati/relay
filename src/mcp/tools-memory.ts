@@ -105,8 +105,13 @@ function allowedWorkdirRoots(): readonly string[] {
  * through to a cwd-based default the gate would reject. With no allow-list
  * the args pass through untouched (existing cwd/global behavior downstream).
  * MCP-handler-only: the CLI path and contracts schemas are not involved.
+ *
+ * An explicit `workdir: null` (schema: "Null = global") is left alone here —
+ * only an OMITTED (undefined) workdir gets the ergonomic default. A client
+ * that explicitly asked for global scope must not be silently redirected to
+ * the configured project.
  */
-function applyWorkdirDefault<T extends { readonly workdir?: string | undefined }>(args: T): T {
+function applyWorkdirDefault<T extends { readonly workdir?: string | null | undefined }>(args: T): T {
   if (args.workdir !== undefined) return args;
   const first = allowedWorkdirRoots()[0];
   return first === undefined ? args : { ...args, workdir: first };
