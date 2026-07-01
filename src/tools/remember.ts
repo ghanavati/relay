@@ -24,8 +24,8 @@ export function handleRemember(args: RememberArgs, memorySource: MemorySource = 
   });
 
   const tokenCount = estimateTokens(args.content);
-  const totalMemories = store.count(args.workdir);
-  const totalTokens = store.totalTokens(args.workdir);
+  const totalMemories = store.count(args.workdir ?? undefined);
+  const totalTokens = store.totalTokens(args.workdir ?? undefined);
 
   return {
     content: [{

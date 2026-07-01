@@ -259,6 +259,44 @@ describe('relay_memory_save', () => {
     assert.strictEqual(countAfter, countBefore, 'a forbidden save must not insert a row');
   });
 
+  test('explicit null workdir is accepted and stored as global (schema says "Null = global")', async () => {
+    // ChatGPT's connector sent workdir: null (following the field's own
+    // description) and got a Zod validation error, because .optional() only
+    // allows omission, not null. Reproduces that failure at the schema layer.
+    const [, save] = buildMemoryMcpTools();
+    const result = await save.handler(
+      RememberArgsSchema.parse({
+        content: 'client sends explicit null workdir nonce-6a2f',
+        memory_type: 'fact',
+        workdir: null,
+      })
+    );
+
+    assert.notStrictEqual(result.isError, true, result.content[0].text);
+    const parsed = JSON.parse(result.content[0].text) as { memory_id: string };
+    const row = getDb()
+      .prepare('SELECT workdir FROM memories WHERE memory_id = ?')
+      .get(parsed.memory_id) as { workdir: string | null } | undefined;
+    assert.ok(row, 'the save must insert a row');
+    assert.strictEqual(row.workdir, null, 'explicit null must mean global, same as omitted');
+  });
+
+  test('explicit null expires_in_hours is accepted and never expires (schema says "Null = never expires")', async () => {
+    const [, save] = buildMemoryMcpTools();
+    const result = await save.handler(
+      RememberArgsSchema.parse({
+        content: 'client sends explicit null expiry nonce-3d9c',
+        memory_type: 'fact',
+        expires_in_hours: null,
+        workdir: WORKDIR,
+      })
+    );
+
+    assert.notStrictEqual(result.isError, true, result.content[0].text);
+    const parsed = JSON.parse(result.content[0].text) as { expires_at: number | null };
+    assert.strictEqual(parsed.expires_at, null, 'explicit null must mean never-expires');
+  });
+
   test('success result is redacted at the MCP boundary (Test 4)', async () => {
     // handleRemember echoes args.tags into its response — a secret-shaped tag
     // is the input field that round-trips into the success envelope, proving
