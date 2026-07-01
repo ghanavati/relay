@@ -308,7 +308,7 @@ export async function startOAuthHttpMcpServer(opts: OAuthHttpMcpOptions): Promis
   // (register/authorize/token/mcp) is diagnosable instead of silent. Enable with
   // RELAY_MCP_HTTP_LOG=1. Never logs headers/bodies (tokens/secrets stay out of logs).
   if (process.env['RELAY_MCP_HTTP_LOG'] === '1') {
-    app.use((req, res, next) => {
+    app.use((req: import('express').Request, res: import('express').Response, next: import('express').NextFunction): void => {
       res.on('finish', () => {
         process.stderr.write(`[mcp-http] ${req.method} ${req.path} -> ${res.statusCode}\n`);
       });
