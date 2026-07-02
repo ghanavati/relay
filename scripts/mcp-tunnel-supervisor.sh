@@ -6,20 +6,24 @@
 # Ctrl+C stops everything. Not a background service — nothing here touches
 # launchd or auto-starts at login.
 #
-# Starts a Cloudflare quick tunnel + `relay mcp --http --oauth` as a bound
-# pair: quick tunnels need no Cloudflare account but mint a NEW random
-# hostname every time they (re)connect, and today's outage happened because
-# the two processes' lifecycles weren't linked — cloudflared died silently
-# while relay kept serving under the old (now-dead) RELAY_MCP_PUBLIC_URL.
-# Here, if either process dies, both are torn down and restarted together
-# with a freshly-captured URL, for as long as this script keeps running.
+# Starts the NAMED Cloudflare tunnel "relay" + `relay mcp --http --oauth` as a
+# bound pair: if either process dies, both are torn down and restarted together
+# (the Jul 1 outage was cloudflared dying silently while relay kept serving a
+# dead public URL). The tunnel serves a STABLE hostname (relay.ghanavati.dk),
+# so ChatGPT's connector is configured ONCE and never re-pasted — restarts are
+# invisible to it, and OAuth client registrations survive restarts too
+# (~/.relay/mcp-oauth-state.json).
 #
-# The current URL is always at $URL_FILE — paste it into ChatGPT's connector
-# settings whenever it changes (i.e. whenever the pair restarts).
+# One-time setup for the stable hostname (until it's done, the script falls
+# back to a throwaway trycloudflare URL that must be re-pasted into ChatGPT
+# after each restart):
+#   cloudflared tunnel login                              # browser: authorize ghanavati.dk
+#   cloudflared tunnel create relay
+#   cloudflared tunnel route dns relay relay.ghanavati.dk
 #
 # If Ctrl+C ever leaves something behind (it shouldn't — the EXIT trap below
 # covers signal-induced termination, not just normal exit), the fallback is:
-#   pkill -f 'cloudflared tunnel --url'; pkill -f 'dist/cli.js mcp'
+#   pkill -f 'cloudflared tunnel'; pkill -f 'dist/cli.js mcp'
 
 set -uo pipefail
 
@@ -30,6 +34,9 @@ CLOUDFLARED_BIN="/opt/homebrew/bin/cloudflared"
 SECRET_FILE="$HOME/.relay/mcp-owner-secret"
 URL_FILE="$HOME/.relay/mcp-tunnel-url.txt"
 CF_LOG="$HOME/.relay/cloudflared.log"
+TUNNEL_NAME="relay"
+TUNNEL_HOSTNAME="relay.ghanavati.dk"
+PUBLIC_URL="https://$TUNNEL_HOSTNAME"
 
 mkdir -p "$HOME/.relay"
 
@@ -38,6 +45,20 @@ if [[ ! -s "$SECRET_FILE" ]]; then
   exit 1
 fi
 RELAY_MCP_OWNER_SECRET=$(<"$SECRET_FILE")
+
+# Stable named tunnel when it exists; throwaway quick tunnel until then.
+TUNNEL_MODE="quick"
+if "$CLOUDFLARED_BIN" tunnel list 2>/dev/null | awk '{print $2}' | grep -qx "$TUNNEL_NAME"; then
+  TUNNEL_MODE="named"
+else
+  {
+    echo "named tunnel \"$TUNNEL_NAME\" not set up — using a throwaway URL for now."
+    echo "one-time setup for the permanent https://$TUNNEL_HOSTNAME address:"
+    echo "  $CLOUDFLARED_BIN tunnel login            # browser: authorize the zone"
+    echo "  $CLOUDFLARED_BIN tunnel create $TUNNEL_NAME"
+    echo "  $CLOUDFLARED_BIN tunnel route dns $TUNNEL_NAME $TUNNEL_HOSTNAME"
+  } >&2
+fi
 
 # No custom INT/TERM trap: Ctrl+C's default effect (terminate this script) is
 # what we want, and a plain EXIT trap fires on that just as reliably as on
@@ -52,26 +73,31 @@ cleanup() {
 trap cleanup EXIT
 
 run_pair() {
-  "$CLOUDFLARED_BIN" tunnel --url "http://localhost:$PORT" >"$CF_LOG" 2>&1 &
-  CF_PID=$!
-
   local url=""
-  for _ in $(seq 1 40); do
-    url=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$CF_LOG" 2>/dev/null | head -1)
-    [[ -n "$url" ]] && break
-    kill -0 "$CF_PID" 2>/dev/null || break
-    sleep 0.5
-  done
-
-  if [[ -z "$url" ]]; then
-    echo "cloudflared did not report a tunnel URL within 20s — see $CF_LOG" >&2
-    kill "$CF_PID" 2>/dev/null
-    CF_PID=""
-    return 1
+  if [[ "$TUNNEL_MODE" == "named" ]]; then
+    "$CLOUDFLARED_BIN" tunnel run --url "http://localhost:$PORT" "$TUNNEL_NAME" >"$CF_LOG" 2>&1 &
+    CF_PID=$!
+    url="$PUBLIC_URL"
+    echo "$(date -u +%FT%TZ) tunnel up: $url (stable hostname — ChatGPT is configured once, restarts change nothing)" >&2
+  else
+    "$CLOUDFLARED_BIN" tunnel --url "http://localhost:$PORT" >"$CF_LOG" 2>&1 &
+    CF_PID=$!
+    for _ in $(seq 1 40); do
+      url=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$CF_LOG" 2>/dev/null | head -1)
+      [[ -n "$url" ]] && break
+      kill -0 "$CF_PID" 2>/dev/null || break
+      sleep 0.5
+    done
+    if [[ -z "$url" ]]; then
+      echo "cloudflared did not report a tunnel URL within 20s — see $CF_LOG" >&2
+      kill "$CF_PID" 2>/dev/null
+      CF_PID=""
+      return 1
+    fi
+    echo "$(date -u +%FT%TZ) tunnel up: $url  <- paste this into ChatGPT's connector settings" >&2
   fi
 
   echo "$url" >"$URL_FILE"
-  echo "$(date -u +%FT%TZ) tunnel up: $url  <- paste this into ChatGPT's connector settings" >&2
 
   RELAY_MCP_OWNER_SECRET="$RELAY_MCP_OWNER_SECRET" \
   RELAY_MCP_PUBLIC_URL="$url" \
