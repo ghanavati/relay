@@ -53,7 +53,7 @@ For Claude Desktop there is also an optional skill at [docs/skills/relay-memory/
 
 stdio reaches any app that is an MCP client: Claude Desktop, Claude Code, Cursor, Codex, Windsurf — and harnesses that run those agents (Conductor and the like) when MCP config passes through to the agent layer.
 
-ChatGPT and web clients need a remote transport plus OAuth; that is deferred to v2. Relay stays local either way — `relay mcp` opens no port and serves only the process that spawned it.
+ChatGPT and other web clients reach the same two tools over `relay mcp --http --oauth` — an OAuth 2.1 + PKCE door bound to localhost, exposed through a tunnel you run yourself (see `scripts/mcp-tunnel-supervisor.sh`). Client registrations and token hashes persist in `~/.relay/mcp-oauth-state.json` (owner-only 0600), so a server restart does not invalidate the connector. The stdio default stays fully local — plain `relay mcp` opens no port and serves only the process that spawned it.
 
 ## Security posture
 
