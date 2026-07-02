@@ -10,6 +10,8 @@
 // The command blocks until the connection closes: client disconnect resolves
 // the handle's closed promise, and SIGINT/SIGTERM route through the handle's
 // graceful shutdown (then this function returns and the dispatcher exits).
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { CliIO } from './commands.js';
 import type { McpServerHandle, StartMcpServerDeps } from '../mcp/server.js';
 
@@ -91,6 +93,10 @@ export async function executeMcpCommand(args: McpCommandArgs, io: CliIO): Promis
         ...(args.ownerSecret !== undefined ? { ownerSecret: args.ownerSecret } : {}),
         ...(args.allowNoAuth ? { allowNoAuth: true } : {}),
         ...(args.publicUrl !== undefined ? { publicUrl: args.publicUrl } : {}),
+        // Client registrations + token hashes survive restarts (the tunnel
+        // supervisor restarts the pair on any hiccup) so the ChatGPT connector
+        // doesn't come back to "Invalid client_id" and need re-adding.
+        oauthStatePath: join(homedir(), '.relay', 'mcp-oauth-state.json'),
       });
       handle = oauth;
       // The server REFUSES to start in auto-approve mode unless the operator set

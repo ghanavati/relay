@@ -63,6 +63,11 @@ export interface OAuthHttpMcpOptions {
   readonly codeTtlSeconds?: number;
   /** Max concurrent MCP sessions (default 1000). */
   readonly maxSessions?: number;
+  /**
+   * File where the OAuth provider persists client registrations + token hashes
+   * across restarts (see RelayOAuthProviderOptions.persistPath). Unset = in-memory.
+   */
+  readonly oauthStatePath?: string;
 }
 
 const SESSION_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -287,6 +292,7 @@ export async function startOAuthHttpMcpServer(opts: OAuthHttpMcpOptions): Promis
 
   const provider = new RelayOAuthProvider({
     canonicalResource,
+    ...(opts.oauthStatePath !== undefined ? { persistPath: opts.oauthStatePath } : {}),
     ...(opts.accessTokenTtlSeconds !== undefined
       ? { accessTokenTtlSeconds: opts.accessTokenTtlSeconds }
       : {}),

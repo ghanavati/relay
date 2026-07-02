@@ -31,6 +31,8 @@ import {
   createHash,
   timingSafeEqual,
 } from 'node:crypto';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import {
   InvalidGrantError,
   InvalidTokenError,
@@ -64,6 +66,14 @@ interface StoredToken {
   readonly expiresAt: number; // ms epoch
 }
 
+/** JSON shape written to persistPath — Map entries as [key, value] pairs. */
+interface PersistedState {
+  readonly version: 1;
+  readonly clients: ReadonlyArray<readonly [string, StoredClient]>;
+  readonly accessTokens: ReadonlyArray<readonly [string, StoredToken]>;
+  readonly refreshTokens: ReadonlyArray<readonly [string, StoredToken]>;
+}
+
 export interface RelayOAuthProviderOptions {
   /**
    * Canonical resource identifier this MCP server is the audience for
@@ -78,6 +88,14 @@ export interface RelayOAuthProviderOptions {
   readonly codeTtlSeconds?: number;
   /** Scopes this server advertises/grants. Default ['mcp']. */
   readonly scopes?: readonly string[];
+  /**
+   * When set, registered clients and issued token HASHES are persisted to this
+   * JSON file (owner-only 0600, atomic tmp+rename) and reloaded on construction,
+   * so a server restart no longer invalidates the ChatGPT connector ("Invalid
+   * client_id" after every tunnel-supervisor restart). One-time auth codes stay
+   * memory-only. Unset = fully in-memory (stdio path, tests).
+   */
+  readonly persistPath?: string;
 }
 
 const DEFAULT_ACCESS_TTL_S = 60 * 60; // 1 hour
@@ -112,12 +130,15 @@ export class RelayOAuthProvider {
   private readonly accessTtlS: number;
   private readonly codeTtlS: number;
   private readonly scopes: readonly string[];
+  private readonly persistPath: string | undefined;
 
   constructor(opts: RelayOAuthProviderOptions) {
     this.canonicalResource = opts.canonicalResource;
     this.accessTtlS = opts.accessTokenTtlSeconds ?? DEFAULT_ACCESS_TTL_S;
     this.codeTtlS = opts.codeTtlSeconds ?? DEFAULT_CODE_TTL_S;
     this.scopes = opts.scopes ?? DEFAULT_SCOPES;
+    this.persistPath = opts.persistPath;
+    if (this.persistPath !== undefined) this.loadState(this.persistPath);
   }
 
   /**
@@ -140,6 +161,7 @@ export class RelayOAuthProvider {
         // client asked for token_endpoint_auth_method='none'); persist as-is.
         const full = client as StoredClient;
         this.clients.set(full.client_id, full);
+        this.saveState();
         return full;
       },
     };
@@ -297,14 +319,18 @@ export class RelayOAuthProvider {
    */
   async revokeToken(client: StoredClient, request: OAuthTokenRevocationRequest): Promise<void> {
     const key = hashToken(request.token);
+    let changed = false;
     const access = this.accessTokens.get(key);
     if (access && access.clientId === client.client_id) {
       this.accessTokens.delete(key);
+      changed = true;
     }
     const refresh = this.refreshTokens.get(key);
     if (refresh && refresh.clientId === client.client_id) {
       this.refreshTokens.delete(key);
+      changed = true;
     }
+    if (changed) this.saveState();
   }
 
   /** Sweep expired codes and tokens. Called periodically by the server module. */
@@ -312,12 +338,20 @@ export class RelayOAuthProvider {
     for (const [code, entry] of this.codes) {
       if (entry.expiresAt < now) this.codes.delete(code);
     }
+    let changed = false;
     for (const [key, entry] of this.accessTokens) {
-      if (entry.expiresAt < now) this.accessTokens.delete(key);
+      if (entry.expiresAt < now) {
+        this.accessTokens.delete(key);
+        changed = true;
+      }
     }
     for (const [key, entry] of this.refreshTokens) {
-      if (entry.expiresAt < now) this.refreshTokens.delete(key);
+      if (entry.expiresAt < now) {
+        this.refreshTokens.delete(key);
+        changed = true;
+      }
     }
+    if (changed) this.saveState();
   }
 
   /** Mint an access + rotating refresh token pair, storing only their hashes. */
@@ -344,6 +378,7 @@ export class RelayOAuthProvider {
       resource,
       expiresAt: now + this.accessTtlS * 1000 * 24, // 24x the access TTL
     });
+    this.saveState();
     return {
       access_token: accessToken,
       token_type: 'Bearer',
@@ -351,6 +386,61 @@ export class RelayOAuthProvider {
       scope: scopes.join(' '),
       refresh_token: refreshToken,
     };
+  }
+
+  /**
+   * Load persisted clients/token-hashes. Expired tokens are dropped at load;
+   * an unreadable or malformed file degrades to an empty store with a stderr
+   * warning — a bad state file must never keep the server from starting.
+   */
+  private loadState(path: string): void {
+    try {
+      const parsed = JSON.parse(readFileSync(path, 'utf8')) as PersistedState;
+      const now = Date.now();
+      for (const [id, client] of parsed.clients) this.clients.set(id, client);
+      for (const [key, token] of parsed.accessTokens) {
+        if (token.expiresAt > now) this.accessTokens.set(key, token);
+      }
+      for (const [key, token] of parsed.refreshTokens) {
+        if (token.expiresAt > now) this.refreshTokens.set(key, token);
+      }
+    } catch (err) {
+      this.clients.clear();
+      this.accessTokens.clear();
+      this.refreshTokens.clear();
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        process.stderr.write(
+          `relay mcp: ignoring unreadable OAuth state at ${path} — starting empty (${err instanceof Error ? err.message : String(err)})\n`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Persist synchronously (writes are tiny and rare: client registration,
+   * token issuance/revocation, expiry sweep) via tmp+rename so a crash
+   * mid-write can't corrupt the file. A write failure warns instead of
+   * throwing — an fs hiccup must not turn a token exchange into a 500 while
+   * the in-memory state is still good.
+   */
+  private saveState(): void {
+    if (this.persistPath === undefined) return;
+    const state: PersistedState = {
+      version: 1,
+      clients: [...this.clients],
+      accessTokens: [...this.accessTokens],
+      refreshTokens: [...this.refreshTokens],
+    };
+    const tmp = `${this.persistPath}.tmp`;
+    try {
+      mkdirSync(dirname(this.persistPath), { recursive: true });
+      writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
+      renameSync(tmp, this.persistPath);
+    } catch (err) {
+      process.stderr.write(
+        `relay mcp: failed to persist OAuth state to ${this.persistPath} — ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
   }
 }
 
