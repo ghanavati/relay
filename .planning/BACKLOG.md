@@ -97,3 +97,26 @@ Items live here ONLY with a why and a build-trigger. No trigger fired = no build
 **Governing rule (also in AGENT-DIRECTION.md):** Relay is mechanism, not policy. Grep-able enforcement — Relay's own logic makes zero LLM calls to decide things. Any "router" stays declarative rules; any "intent" is model-declared, never inferred. Reject the inference version of every item.
 
 **Trigger:** per-item, see AGENT-DIRECTION.md. The verification-native spine item has already fired (2026-06-22 stale-cache mislead). Options 1 and 2 are the recommended first proof.
+
+## B-10: memory remember — workdir-gate error should name the fix
+
+**What:** With `RELAY_MEMORY_ALLOWED_WORKDIRS` set, `relay memory remember` without `--workdir` throws `MEMORY_WORKDIR_FORBIDDEN: "Cross-workdir memory access is not permitted in this context"` — correct gate, useless message. It should say *why* (no workdir supplied while an allowlist is active) and *what to do* (`pass --workdir <path>`, list the allowed roots). Optionally: default workdir to `process.cwd()` when cwd falls inside the allowlist — saves the flag in the 99% case without weakening the gate. Gate lives at `src/memory/memory-store.ts:69` (assertWorkdirAllowed); CLI flag exists at `src/cli/cmd-memory-ops.ts`.
+
+**Why parked:** one-line-ish DX fix, no dispatch/memory/receipt behavior change; discovered 2026-07-04 when session-hook env (which sets the allowlist) made every bare `remember` fail — five saves bounced before the flag was found by reading source.
+
+**Trigger:** already fired once (2026-07-04, this session). Ship with the next Relay maintenance pass.
+
+## B-11: local (oMLX) auto-extract option — recipe parked
+
+**What:** Optional offline/private memory extraction on a local model instead of Codex.
+Recipe: set consent `extractor: "lmstudio"`, `LMSTUDIO_ENDPOINT=http://127.0.0.1:8000`,
+`RELAY_AUTO_EXTRACT_MODEL=<non-thinking, e.g. Qwen3-Coder-Next-MLX-6bit or gemma-26b>`, and
+oMLX `skip_api_key_verification=true` (loopback-only; the extract runner sends NO auth header —
+`src/memory/auto-extract-runner.ts` has no Bearer). Then verify one real harvest + quality-check.
+
+**Why parked (2026-07-04):** auto-extract is currently `extractor: codex` and WORKS (cloud,
+higher quality). Not broken — shutting LM Studio down did not kill it (my earlier claim was wrong).
+Local is an offline/privacy UPGRADE, not a repair, and Codex extraction quality > local.
+
+**Trigger:** you want session-learning to run fully offline/private, OR Codex quota becomes a
+constraint. Until then, Codex stays.
