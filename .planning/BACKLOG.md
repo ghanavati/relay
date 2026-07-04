@@ -120,3 +120,21 @@ Local is an offline/privacy UPGRADE, not a repair, and Codex extraction quality 
 
 **Trigger:** you want session-learning to run fully offline/private, OR Codex quota becomes a
 constraint. Until then, Codex stays.
+
+## B-12: session registration was silently broken; live CC control is turn-gated
+
+**What:** Until 2026-07-04 no CC session registered as an ACTIVE control session — the global
+SessionStart hook ran `relay memory recall` only; `relay context emit` (which registers) ran
+just at SessionEnd (which stop-marks). Net: `relay session list` showed every session `ended`,
+`relay session send` had no live target. Fixed by adding a SessionStart context-emit hook globally.
+
+**Deeper limits to design around:** (1) CC is `live_control:false` — sessions are addressable +
+mailbox-queueable but NOT real-time controllable; delivery is turn-gated at hook boundaries.
+(2) An already-running session can't register without a restart (SessionStart is one-shot).
+(3) Registration `relay context emit` errors (non-fatally) when workdir ∉ RELAY_MEMORY_ALLOWED_WORKDIRS
+— registration still lands but the noise is ugly; consider a quiet-register path.
+
+**Trigger:** if live cross-session coordination becomes a real workflow (it nearly did today —
+fleet session ↔ inspo-library session), make registration robust: emit on SessionStart AND a
+per-turn hook, add a `relay session register` explicit command for mid-life registration, and
+document the turn-gated-delivery reality so users don't expect real-time puppeteering.
