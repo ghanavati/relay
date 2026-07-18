@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+### Added — MCP server (Phase 9)
+
+- **`relay mcp serve`** — stdio MCP server over the existing tool handlers (restoring the surface lost in the relay-mcp extraction). Exposes `relay_recall`, `relay_memory_search`, `relay_get_memory`, `relay_corpus_query`, `relay_browse_runs`, `relay_compare_runs`, `relay_remember`, and the `relay-context` prompt to any MCP client (Claude Desktop, Cursor, Windsurf, Zed). `--selfcheck` runs an in-process handshake and exits 0/1. Setup guide: `docs/mcp.md`.
+- **Workdir gate for cwd-less clients** — explicit `workdir` arg > `RELAY_MCP_DEFAULT_WORKDIR` (client `env` block) > refusal with instructions. Never a silent global fallback.
+- **Write quarantine** — MCP writes enter as `memory_source='worker-mcp'` at trust `unverified`; `pinned`/`source_run_id` are not accepted over MCP (pinning jumps quarantine; source_run_id bypasses the write rate limit). MCP recall floors at `min_trust='provisional'`, so MCP-written entries cannot surface over MCP until promoted.
+- **Pause sentinel honored** — `~/.relay/paused` blocks MCP recall/search/remember and the context prompt, same as hooks.
+- New dependency: `@modelcontextprotocol/sdk` (PRD 09 D-01).
+
+### Fixed — Phase 9
+
+- **CI time bomb (red since 2026-06-09):** two control-e2e tests minted grants at a fixed epoch `T0 = 1_781_000_000_000` (2026-06-09 13:33 UTC) with a 10-minute TTL, while the LLM tool path validates expiry against the real wall clock. Every CI run on every branch failed after 2026-06-09 13:43 UTC — including docs-only commits — despite main being green on 2026-06-08. Grants in those tests are now minted at `Date.now()`. Lesson: never mint TTL'd state from a fixed epoch when the validation path reads the wall clock.
+- `RunStore.list()` filtered on `runs.archived_at`, a column no DDL or migration ever created — every default (non-archived) listing threw `SQLITE_ERROR` on fresh DBs. Latent since the relay-mcp extraction because `handleBrowseRuns` was its only caller and nothing served it. Added the PRAGMA-guarded `archived_at` migration.
+
+### Fixed — agentic harness
 
 - **Agentic profile and parallel receipts:** oMLX/LM Studio agentic profiles can
   now set validated sampling controls (`top_p`, `top_k`, `min_p`, and

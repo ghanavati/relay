@@ -25,12 +25,14 @@ See: .planning/PROJECT.md (updated 2026-05-18)
 
 ## Current Position
 
-Phase: 9 (v0.4 Lean Core — Agnostic Dispatch + MCP Memory Server)
-Plan: 0 of 5 complete (09-01 through 09-05 written 2026-06-09, ready for execution)
-Status: PLANNED. Phase 8 MERGED to main 2026-06-08 (1804/1804, Codex-reviewed, security residuals in SECURITY.md). Phase 9 rescoped same week after the v0.4 scrutiny: original 6-plan session-control-over-MCP draft replaced by the lean set — agnostic provider dispatch (RELAY_PROVIDER_* env registry, port of the relay-mcp pattern) + thin stdio MCP server exposing exactly relay_memory_recall/save. Memory subsystem verified already-existing (no build). Kill/defer record: .planning/RELAY-V04-SCOPE.md; predecessor lessons: .planning/LESSONS-FROM-RELAY-MCP.md.
-Last activity: 2026-06-09
+Phase: 9 (MCP server — serve the orphaned relay-mcp tool handlers over stdio)
+Plan: PRD + single-cycle implementation complete (see phases/09-mcp-server/SUMMARY.md)
+Status: SHIPPED on branch claude/irys-stateful-swarms-assess-jwkcds. `relay mcp serve` + `--selfcheck`; 7 relay_* tools + relay-context prompt; workdir gate, write quarantine (worker-mcp → unverified, pinned/source_run_id unexposed), pause sentinel honored, reads audited. 21 new tests; full suite 1825 with zero new failures vs clean baseline (3 pre-existing container fails). New dep: @modelcontextprotocol/sdk. Found+fixed: runs.archived_at column never existed (RunStore.list threw on fresh DBs). Pending maintainer: version cut / npm publish (D-02), retroactive codex review of src/mcp/, SEED confirmation (D-05).
+Last activity: 2026-06-12
 
-Progress: [░░░░░░░░░░] 0% (phase 9 plans) — wave 1 = 09-01 ∥ 09-02 (09-02 needs maintainer approval for the SDK install)
+Phase 8 (prior): IMPLEMENTED + security-hardened, merged to main 2026-06-08 (commit ea85fa7), suite 1804.
+
+Progress: [██████████] phase 9 implementation complete — release decisions are maintainer's call
 
 ## Performance Metrics
 

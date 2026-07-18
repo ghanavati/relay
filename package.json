@@ -45,6 +45,7 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^11.3.0",
     "ink": "^6.8.0",
     "react": "^19.2.6",
