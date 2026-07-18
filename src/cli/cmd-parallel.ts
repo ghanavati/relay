@@ -5,6 +5,7 @@
 import type { CliIO } from './commands.js';
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { resolve } from 'node:path';
 import { RunStore } from '../runtime/store/run-store.js';
 import type { WorkerRunner } from '../workers/runner.js';
 import type { WorkerResult } from '../workers/types.js';
@@ -35,7 +36,17 @@ interface RunOutcome {
   model: string | null;
 }
 
-async function getRunner(provider: SpecTask['provider']): Promise<WorkerRunner> {
+interface AgenticRunContext {
+  run_id: string;
+  workdir: string;
+  model?: string;
+  label: string;
+}
+
+async function getRunner(
+  provider: SpecTask['provider'],
+  agentic?: AgenticRunContext,
+): Promise<WorkerRunner> {
   if (provider === 'codex') {
     const { CodexRunner } = await import('../workers/codex.js');
     return new CodexRunner();
@@ -53,6 +64,7 @@ async function getRunner(provider: SpecTask['provider']): Promise<WorkerRunner> 
     return new AnthropicRunner();
   }
   if (provider === 'lmstudio-agentic') {
+    if (!agentic) throw new Error('lmstudio-agentic requires run context');
     const { LmStudioAgenticRunner } = await import('../workers/lmstudio-agentic.js');
     // Phase 7 — env-gated Figma REST tools. Null when PAT absent (FIGMA-03 graceful).
     const { registerFigmaTools } = await import('../tools/figma/index.js');
@@ -67,7 +79,13 @@ async function getRunner(provider: SpecTask['provider']): Promise<WorkerRunner> 
           handle: h.handle as (a: unknown, c: { workdir: string; pat: string }) => Promise<unknown>,
         }))
       : undefined;
-    return new LmStudioAgenticRunner(extraToolHandlers ? { extraToolHandlers } : {});
+    const { createControlSessionForRun, registerControlTools, toNamedToolHandlers } =
+      await import('../control/tools.js');
+    createControlSessionForRun(agentic);
+    const controlHandlers = toNamedToolHandlers(registerControlTools(agentic.run_id));
+    return new LmStudioAgenticRunner({
+      extraToolHandlers: [...(extraToolHandlers ?? []), ...controlHandlers],
+    });
   }
   throw new Error(`unsupported provider: ${provider as string}`);
 }
@@ -96,6 +114,17 @@ function fmtDuration(ms: number | undefined): string {
   if (ms == null) return '—';
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function sharedAgenticWorkdir(tasks: readonly SpecTask[], cwd: string): string | null {
+  const seen = new Set<string>();
+  for (const task of tasks) {
+    if (task.provider !== 'lmstudio-agentic') continue;
+    const workdir = resolve(task.workdir ?? cwd);
+    if (seen.has(workdir)) return workdir;
+    seen.add(workdir);
+  }
+  return null;
 }
 
 export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Promise<number> {
@@ -128,6 +157,12 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
     if (httpProviders.has(t.provider) && !t.model) { io.stderr(`task[${idx}].model required for provider=${t.provider}\n`); return 2; }
   }
 
+  const sharedWorkdir = sharedAgenticWorkdir(spec.tasks, io.cwd);
+  if (sharedWorkdir) {
+    io.stderr(`agentic parallel tasks require a separate workdir per task; duplicate: ${sharedWorkdir}\n`);
+    return 2;
+  }
+
   // 08-fix HIGH — if any task runs the agentic shell loop, mark this process as an
   // agentic sandbox so a model that shells into the `relay` CLI is refused mutating
   // control subcommands (shell_exec children inherit + force-inject the marker).
@@ -151,7 +186,7 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
       task_excerpt,
       timeout_ms,
     });
-    return { ...t, run_id, workdir, timeout_ms };
+    return { ...t, run_id, workdir, timeout_ms, task_excerpt };
   });
 
   if (!args.json) {
@@ -166,7 +201,12 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
       store.recordEvent(run.run_id, 'started', { provider: run.provider, model: run.model ?? null });
 
       try {
-        const runner = await getRunner(run.provider);
+        const runner = await getRunner(run.provider, {
+          run_id: run.run_id,
+          workdir: run.workdir,
+          model: run.model,
+          label: run.task_excerpt,
+        });
         const { buildDelegatedTask } = await import('../context/layers.js');
         const built = await buildDelegatedTask({
           workdir: run.workdir,
@@ -180,11 +220,12 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
         if (run.provider === 'lmstudio-agentic') {
           const { DEFAULT_AGENTIC_TOOLS } = await import('../workers/lmstudio-agentic.js');
           const { registerFigmaTools } = await import('../tools/figma/index.js');
+          const { CONTROL_TOOL_DEFS } = await import('../control/tools.js');
           const { homedir } = await import('node:os');
           const figmaHandlers = registerFigmaTools(process.env, homedir());
           tools = figmaHandlers
-            ? [...DEFAULT_AGENTIC_TOOLS, ...figmaHandlers.map((h) => h.def)]
-            : DEFAULT_AGENTIC_TOOLS;
+            ? [...DEFAULT_AGENTIC_TOOLS, ...figmaHandlers.map((h) => h.def), ...CONTROL_TOOL_DEFS]
+            : [...DEFAULT_AGENTIC_TOOLS, ...CONTROL_TOOL_DEFS];
         }
         const result = await runner.run({
           task: built.bareTask,
@@ -197,6 +238,10 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
           provider: run.provider,
           ...(tools ? { tools } : {}),
         });
+        if (run.provider === 'lmstudio-agentic') {
+          const { endControlSessionForRun } = await import('../control/tools.js');
+          endControlSessionForRun(run.run_id);
+        }
         const finished_at = Date.now();
         store.complete(run.run_id, {
           status: result.status,
@@ -222,6 +267,10 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        if (run.provider === 'lmstudio-agentic') {
+          const { endControlSessionForRun } = await import('../control/tools.js');
+          endControlSessionForRun(run.run_id);
+        }
         store.recordError(run.run_id, { error_code: 'WORKER_THREW', error_message: message, finished_at: Date.now() });
         if (!args.json) {
           const shortId = run.run_id.slice(0, 8);
