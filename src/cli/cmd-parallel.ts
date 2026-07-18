@@ -19,7 +19,7 @@ export interface ParallelArgs {
 
 interface SpecTask {
   task: string;
-  provider: 'codex' | 'lmstudio' | 'openrouter' | 'anthropic' | 'lmstudio-agentic';
+  provider: 'codex' | 'lmstudio' | 'openrouter' | 'anthropic' | 'lmstudio-agentic' | 'omlx-agentic';
   model?: string;
   workdir?: string;
   timeout_ms?: number;
@@ -63,9 +63,10 @@ async function getRunner(
     const { AnthropicRunner } = await import('../workers/anthropic.js');
     return new AnthropicRunner();
   }
-  if (provider === 'lmstudio-agentic') {
-    if (!agentic) throw new Error('lmstudio-agentic requires run context');
+  if (provider === 'lmstudio-agentic' || provider === 'omlx-agentic') {
+    if (!agentic) throw new Error(`${provider} requires run context`);
     const { LmStudioAgenticRunner } = await import('../workers/lmstudio-agentic.js');
+    const { OmlxAgenticRunner } = await import('../workers/omlx-agentic.js');
     // Phase 7 — env-gated Figma REST tools. Null when PAT absent (FIGMA-03 graceful).
     const { registerFigmaTools } = await import('../tools/figma/index.js');
     const { loadPat } = await import('../tools/figma/pat-loader.js');
@@ -83,9 +84,10 @@ async function getRunner(
       await import('../control/tools.js');
     createControlSessionForRun(agentic);
     const controlHandlers = toNamedToolHandlers(registerControlTools(agentic.run_id));
-    return new LmStudioAgenticRunner({
+    const opts = {
       extraToolHandlers: [...(extraToolHandlers ?? []), ...controlHandlers],
-    });
+    };
+    return provider === 'omlx-agentic' ? new OmlxAgenticRunner(opts) : new LmStudioAgenticRunner(opts);
   }
   throw new Error(`unsupported provider: ${provider as string}`);
 }
@@ -119,7 +121,7 @@ function fmtDuration(ms: number | undefined): string {
 function sharedAgenticWorkdir(tasks: readonly SpecTask[], cwd: string): string | null {
   const seen = new Set<string>();
   for (const task of tasks) {
-    if (task.provider !== 'lmstudio-agentic') continue;
+    if (task.provider !== 'lmstudio-agentic' && task.provider !== 'omlx-agentic') continue;
     const workdir = resolve(task.workdir ?? cwd);
     if (seen.has(workdir)) return workdir;
     seen.add(workdir);
@@ -149,8 +151,8 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
     return 2;
   }
 
-  const validProviders = new Set(['codex', 'lmstudio', 'openrouter', 'anthropic', 'lmstudio-agentic']);
-  const httpProviders = new Set(['lmstudio', 'openrouter', 'anthropic', 'lmstudio-agentic']);
+  const validProviders = new Set(['codex', 'lmstudio', 'openrouter', 'anthropic', 'lmstudio-agentic', 'omlx-agentic']);
+  const httpProviders = new Set(['lmstudio', 'openrouter', 'anthropic', 'lmstudio-agentic', 'omlx-agentic']);
   for (const [idx, t] of spec.tasks.entries()) {
     if (!t.task?.trim()) { io.stderr(`task[${idx}].task is empty\n`); return 2; }
     if (!validProviders.has(t.provider)) { io.stderr(`task[${idx}].provider must be codex|lmstudio|openrouter|anthropic|lmstudio-agentic\n`); return 2; }
@@ -166,7 +168,7 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
   // 08-fix HIGH — if any task runs the agentic shell loop, mark this process as an
   // agentic sandbox so a model that shells into the `relay` CLI is refused mutating
   // control subcommands (shell_exec children inherit + force-inject the marker).
-  if (spec.tasks.some((t) => t.provider === 'lmstudio-agentic')) {
+  if (spec.tasks.some((t) => t.provider === 'lmstudio-agentic' || t.provider === 'omlx-agentic')) {
     process.env[AGENTIC_SANDBOX_ENV] = '1';
   }
 
@@ -217,7 +219,7 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
         // runner has a shell_exec tool to offer the model. Worker rejects empty tools[].
         // Phase 7: when registerFigmaTools returned handlers, merge their ToolDefs.
         let tools;
-        if (run.provider === 'lmstudio-agentic') {
+        if (run.provider === 'lmstudio-agentic' || run.provider === 'omlx-agentic') {
           const { DEFAULT_AGENTIC_TOOLS } = await import('../workers/lmstudio-agentic.js');
           const { registerFigmaTools } = await import('../tools/figma/index.js');
           const { CONTROL_TOOL_DEFS } = await import('../control/tools.js');
@@ -238,7 +240,7 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
           provider: run.provider,
           ...(tools ? { tools } : {}),
         });
-        if (run.provider === 'lmstudio-agentic') {
+        if (run.provider === 'lmstudio-agentic' || run.provider === 'omlx-agentic') {
           const { endControlSessionForRun } = await import('../control/tools.js');
           endControlSessionForRun(run.run_id);
         }
@@ -267,7 +269,7 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        if (run.provider === 'lmstudio-agentic') {
+        if (run.provider === 'lmstudio-agentic' || run.provider === 'omlx-agentic') {
           const { endControlSessionForRun } = await import('../control/tools.js');
           endControlSessionForRun(run.run_id);
         }

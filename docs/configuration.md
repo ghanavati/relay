@@ -61,6 +61,8 @@ The auto-extract pipeline calls a local model on session-end to extract candidat
 | `OPENROUTER_API_KEY` | (unset) | Required for OpenRouter provider. Get from https://openrouter.ai. |
 | `LMSTUDIO_ENDPOINT` | `http://localhost:1234` | LM Studio API endpoint for delegated runs. (Distinct from `RELAY_AUTO_EXTRACT_ENDPOINT`.) |
 | `LMSTUDIO_API_KEY` | (unset) | Only needed if LM Studio is behind a reverse proxy with auth. |
+| `OMLX_ENDPOINT` | (unset) | Required base URL for `omlx-agentic`, for example `http://127.0.0.1:8000`. |
+| `OMLX_API_KEY` | (unset) | Optional bearer token for the oMLX server. |
 | `ANTHROPIC_API_KEY` | (unset) | Required for `anthropic` provider. |
 | `RELAY_CODEX_NETWORK_MODE` | (unset) | Set to `dangerous` to skip Codex approval flow (recommended for solo). |
 
