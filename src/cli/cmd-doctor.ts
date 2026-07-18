@@ -3,7 +3,7 @@ import { readFile, access } from 'node:fs/promises';
 import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
-import Database from 'better-sqlite3';
+import Database from 'libsql';
 import type { CliIO } from './commands.js';
 import { c, statusBadge } from './colors.js';
 import { probeCodex, probeLmStudio, probeEnvKey, type ProviderProbe } from './probes.js';

@@ -6,7 +6,7 @@
  * STATE.md).
  */
 
-import Database from 'better-sqlite3';
+import Database from 'libsql';
 
 /**
  * Individual DDL statements for capability routing tables.

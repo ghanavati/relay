@@ -18,7 +18,7 @@
  * multiple times for the same version without producing duplicates — the
  * (version) PRIMARY KEY gives us idempotency for free.
  */
-import type Database from 'better-sqlite3';
+import type Database from 'libsql';
 
 /** Schema version the running binary expects to find applied. */
 export const EXPECTED_SCHEMA_VERSION = 4 as const;
