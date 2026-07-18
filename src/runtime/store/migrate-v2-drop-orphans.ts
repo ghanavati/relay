@@ -20,7 +20,7 @@
  * (DROP irreversible) is mitigated by that backup — without it the
  * migration is irreversible. See PLAN risk register.
  */
-import type Database from 'better-sqlite3';
+import type Database from 'libsql';
 
 import {
   readSchemaVersion,

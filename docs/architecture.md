@@ -20,7 +20,6 @@ Relay is a model-agnostic, local-first CLI that bridges AI delegation and persis
 | Tools | [`src/tools/`](../src/tools/) | MCP-style handlers wrapped by the CLI (`remember.ts`, `recall.ts`, `get_memory.ts`, …) |
 | Contracts | [`src/contracts/`](../src/contracts/) | Zod schemas + TS types shared across boundaries |
 | Config | [`src/config/`](../src/config/) | env var resolution, provider config, constants |
-| One-shot scripts | [`src/scripts/`](../src/scripts/) | `migrate-cc-memory.ts` — port Claude Code auto-memory into SQLite |
 | Errors | [`src/errors.ts`](../src/errors.ts) | `RelayError` + `makeError` (canonical user-facing failure type) |
 
 ## 3. Data flow — write path

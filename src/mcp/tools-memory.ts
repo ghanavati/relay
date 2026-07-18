@@ -29,6 +29,7 @@ import type { RecallArgs, RememberArgs } from '../contracts/memory.js';
 import { relayErrorToMcpResult } from './result.js';
 import type { McpToolResult } from './result.js';
 import { redactSecrets } from '../security/redaction.js';
+import { syncDbIfRemote } from '../runtime/store/db.js';
 import type { MemorySource } from '../memory/types.js';
 
 /**
@@ -203,7 +204,12 @@ export function buildMemoryMcpTools(): readonly [RecallMcpTool, SaveMcpTool] {
             ? { expires_in_hours: args.expires_in_hours }
             : {}),
         });
-        return redactEnvelope(handleRemember(constrained, MCP_MEMORY_SOURCE));
+        const envelope = redactEnvelope(handleRemember(constrained, MCP_MEMORY_SOURCE));
+        // Remote-DB mode: push the write to the remote before returning so a
+        // save from this client is visible to the next session anywhere.
+        // 'failed' is fine — the write is durable locally and syncs later.
+        await syncDbIfRemote();
+        return envelope;
       } catch (err) {
         return relayErrorToMcpResult(enrichForbiddenWorkdir(err));
       }

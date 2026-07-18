@@ -26,7 +26,8 @@ Claude Desktop — the same `mcpServers` block goes in `claude_desktop_config.js
 
 `RELAY_MEMORY_ALLOWED_WORKDIRS` is optional but recommended: a colon-separated allowlist of project roots the server may read or write memory for. Without it, any workdir the client names is in scope. Set it so a client session in one project cannot pull another project's memory. The `env` field is per-entry, so different clients can get different scopes.
 
-`relay` must be on the client's PATH (`npm link` from the checkout — see [README install](../README.md#install)). If the client does not inherit your shell PATH, use the absolute path to `dist/cli.js`'s `relay` symlink as `command`.
+Relay must already be provisioned for the client. If the client does not inherit
+your shell PATH, use the runtime's absolute executable path as `command`.
 
 ## Tools
 

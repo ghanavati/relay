@@ -3,7 +3,7 @@ import { readFile, access } from 'node:fs/promises';
 import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
-import Database from 'better-sqlite3';
+import Database from 'libsql';
 import type { CliIO } from './commands.js';
 import { c, statusBadge } from './colors.js';
 import { probeCodex, probeLmStudio, probeEnvKey, type ProviderProbe } from './probes.js';
@@ -549,6 +549,19 @@ export async function executeDoctorCommand(args: DoctorArgs, io: CliIO): Promise
   // 15. Command Central read-model health — bounded snapshot + pending grant
   //     queue depth, the data source behind `relay tui` (Phase 8 / D-12, D-14)
   record(await checkCommandCentral());
+
+  // 16. MCP client registration — is the relay server wired into each
+  //     detected client? Read-only probes; `relay init` does the writing.
+  {
+    const { probeMcpClients } = await import('./mcp-clients.js');
+    for (const p of probeMcpClients()) {
+      record({
+        name: `mcp-${p.client}`,
+        status: p.registered === true ? 'ok' : 'missing',
+        detail: p.detail,
+      });
+    }
+  }
 
   // Output
   if (args.json) {

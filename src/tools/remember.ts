@@ -2,11 +2,14 @@ import { MemoryStore } from '../memory/memory-store.js';
 import type { RememberArgs } from '../contracts/memory.js';
 import type { MemoryType, MemorySource } from '../memory/types.js';
 import { estimateTokens } from '../memory/memory-engine.js';
+import { assertRemoteWritable } from '../runtime/store/db.js';
 
 type McpToolResult = { content: Array<{ type: 'text'; text: string }> };
 
 export function handleRemember(args: RememberArgs, memorySource: MemorySource = 'worker-mcp'): McpToolResult {
+  // Construct first: opening the DB is what detects replica-offline state.
   const store = new MemoryStore();
+  assertRemoteWritable();
 
   const expiresAt = args.expires_in_hours
     ? Date.now() + args.expires_in_hours * 60 * 60 * 1000
