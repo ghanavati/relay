@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Removed the stale internal roadmap from the public repository. Its historical
+  copy is retained in the local project archive.
+
 ## [0.4.0] - 2026-07-18
 
 ### Changed
