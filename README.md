@@ -4,17 +4,8 @@
 
 Relay turns scattered AI coding sessions into a connected operating layer:
 shared memory, deliberate delegation, and visible outcomes across the agents
-you already use. It is the layer behind your lead model,not another model to
+you already use. It is the layer behind your lead model, not another model to
 choose between.
-
-## Status
-
-Relay is released through GitHub, not npm. Download the archive for your
-platform from [Relay v0.4.0-beta.1](https://github.com/ghanavati/relay/releases/tag/v0.4.0-beta.1),
-verify its checksum, and run `relay setup --everything`.
-
-Each archive includes Relay, its production dependencies, and the Node runtime
-it needs. You do not need npm or a separate Node install to use Relay.
 
 ## What Relay does
 
