@@ -373,8 +373,6 @@ export async function executeInitCommand(args: InitArgs, io: CliIO): Promise<num
     let wantMcpWire = false;
     if (rl) {
       wantMcpWire = await ask(rl, '\nRegister the Relay memory MCP server with detected clients (Claude Code/Desktop, Cursor, Codex)?');
-    } else {
-      wantMcpWire = true;
     }
     if (wantMcpWire) {
       try {

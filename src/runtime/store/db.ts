@@ -233,6 +233,11 @@ export function assertRemoteWritable(): void {
   );
 }
 
+/** True only while a remote replica is serving reads from its offline cache. */
+export function isRemoteReplicaOffline(): boolean {
+  return _replicaOffline;
+}
+
 /** Test hook — simulate offline-fallback state without a dead remote. */
 export function _setReplicaOfflineForTest(value: boolean): void {
   _replicaOffline = value;
