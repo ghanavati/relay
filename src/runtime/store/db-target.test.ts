@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { resolveDbTarget } from './db.js';
+import { resolveDbTarget, assertRemoteWritable, _setReplicaOfflineForTest } from './db.js';
 
 describe('resolveDbTarget — RELAY_DB_URL boundary', () => {
   test('unset → local default under ~/.relay', () => {
@@ -59,6 +59,23 @@ describe('resolveDbTarget — RELAY_DB_URL boundary', () => {
         return true;
       }
     );
+  });
+
+  test('assertRemoteWritable: no-op normally, plain-language refusal in offline fallback', () => {
+    assert.doesNotThrow(() => assertRemoteWritable());
+    _setReplicaOfflineForTest(true);
+    try {
+      assert.throws(
+        () => assertRemoteWritable(),
+        (err: Error) => {
+          assert.match(err.message, /saving is paused/);
+          assert.match(err.message, /reads still work/i);
+          return true;
+        }
+      );
+    } finally {
+      _setReplicaOfflineForTest(false);
+    }
   });
 
   test('config file db_url is used when env is unset; env wins when both set', () => {

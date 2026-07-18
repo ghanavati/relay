@@ -10,6 +10,7 @@ import { migrateAuthTables } from './migrations/auth.js';
 import {
   readSchemaVersion,
   writeSchemaVersion,
+  runAddColumn,
   EXPECTED_SCHEMA_VERSION,
   BASELINE_SCHEMA_DESCRIPTION,
 } from './schema-version.js';
@@ -214,20 +215,65 @@ export function resolveDbTarget(env: NodeJS.ProcessEnv = process.env): DbTarget 
 // sync channel; syncDbIfRemote() no-ops otherwise.
 let _syncHandle: Database.Database | null = null;
 
+// True when RELAY_DB_URL is configured but the remote was unreachable and we
+// fell back to the plain-local replica file. Saves are refused in this state:
+// a write made outside the replication protocol is silently DISCARDED when
+// the next reachable open re-clones the replica (observed, not theoretical).
+let _replicaOffline = false;
+
+/**
+ * Guard for user-facing memory writes in remote-DB mode. Throws a
+ * plain-language error while the replica is in offline fallback; no-op for
+ * local databases and healthy replica connections.
+ */
+export function assertRemoteWritable(): void {
+  if (!_replicaOffline) return;
+  throw new Error(
+    'the remote database is unreachable, so saving is paused (reads still work). Retry when it is reachable — or unset RELAY_DB_URL to use a local store'
+  );
+}
+
+/** Test hook — simulate offline-fallback state without a dead remote. */
+export function _setReplicaOfflineForTest(value: boolean): void {
+  _replicaOffline = value;
+}
+
 function openReplica(target: Extract<DbTarget, { kind: 'replica' }>): Database.Database {
+  // Schema and migrations run on a DIRECT remote connection first. Running
+  // them through the replica's write delegation is broken by design here: a
+  // rejected delegated write (e.g. a tolerated duplicate-column ALTER)
+  // poisons the session's local write-through, after which later writes land
+  // on the primary but never in the local file — and sync() does not repair
+  // it. On a direct connection the PRAGMA guards read the remote truth, so
+  // migrations behave exactly as they do locally.
+  let remoteReady = false;
   try {
-    const db = new Database(target.path, {
-      syncUrl: target.syncUrl,
-      ...(target.authToken !== undefined ? { authToken: target.authToken } : {}),
-    });
-    _syncHandle = db;
-    return db;
-  } catch (err) {
+    // libsql ships better-sqlite3's typings, which don't know the remote
+    // options; the runtime accepts them.
+    const remote = new Database(
+      target.syncUrl,
+      (target.authToken !== undefined
+        ? { authToken: target.authToken }
+        : {}) as unknown as Database.Options
+    );
+    try {
+      installNestableTransactions(remote);
+      applySchema(remote);
+      remoteReady = true;
+    } finally {
+      try { remote.close(); } catch { /* best-effort */ }
+    }
+  } catch { /* unreachable or rejected — offline handling below */ }
+
+  if (!remoteReady) {
     if (existsSync(target.path)) {
-      // Offline with an existing replica: open it plain-local so reads and
-      // writes keep working; sync resumes on the next reachable open.
+      // Offline with an existing replica: open it plain-local so READS keep
+      // working. Saves are refused (assertRemoteWritable) — plain-local
+      // writes sit outside the replication protocol and get discarded when
+      // the next reachable open re-clones.
+      _replicaOffline = true;
       process.stderr.write(
-        'relay: warning: remote database unreachable — using the local replica; will sync when the remote is reachable again\n'
+        'relay: warning: remote database unreachable — memory reads come from the local replica; saving is paused until it is reachable\n'
       );
       return new Database(target.path);
     }
@@ -235,6 +281,21 @@ function openReplica(target: Extract<DbTarget, { kind: 'replica' }>): Database.D
       'could not reach the remote database to create the first local replica — check RELAY_DB_URL / RELAY_DB_AUTH_TOKEN and connectivity'
     );
   }
+
+  // The replica now clones/pulls a COMPLETE schema — no delegated DDL at all.
+  const db = new Database(target.path, {
+    syncUrl: target.syncUrl,
+    ...(target.authToken !== undefined ? { authToken: target.authToken } : {}),
+  });
+  try {
+    (db as unknown as { sync: () => unknown }).sync();
+  } catch {
+    process.stderr.write(
+      'relay: warning: could not pull the latest state from the remote database — reads may be stale until it is reachable\n'
+    );
+  }
+  _syncHandle = db;
+  return db;
 }
 
 /**
@@ -276,7 +337,19 @@ export function getDb(): Database.Database {
       throw new Error('.v1-backup write failed — refusing to open DB for v0.2 migration');
     }
   }
-  _db = target.kind === 'replica' ? openReplica(target) : new Database(dbPath);
+  if (target.kind === 'replica') {
+    // openReplica already ran applySchema on a direct remote connection and
+    // cloned the finished schema down. Running applySchema again HERE, over
+    // write delegation, would re-fire blind ALTERs and poison local
+    // write-through (see openReplica). Journal pragmas are also owned by the
+    // sync protocol on replicas (Sqlite3UnsupportedStatement if attempted).
+    _db = openReplica(target);
+    installNestableTransactions(_db);
+    try { chmodSync(dbPath, 0o600); } catch { /* best-effort */ }
+    _db.pragma('foreign_keys = ON');
+    return _db;
+  }
+  _db = new Database(dbPath);
   installNestableTransactions(_db);
   if (dbPath !== ':memory:') {
     try { chmodSync(dbPath, 0o600); } catch { /* best-effort */ }
@@ -332,7 +405,7 @@ function migrateRunsVerificationStatus(db: Database.Database): void {
   const info = db.prepare('PRAGMA table_info(runs)').all() as { name: string }[];
   const cols = new Set(info.map(r => r.name));
   if (!cols.has('verification_status')) {
-    db.prepare('ALTER TABLE runs ADD COLUMN verification_status TEXT').run();
+    runAddColumn(db, 'ALTER TABLE runs ADD COLUMN verification_status TEXT');
   }
 }
 
@@ -349,10 +422,10 @@ function migrateModelObligationFields(db: Database.Database): void {
   const info = db.prepare('PRAGMA table_info(models)').all() as { name: string }[];
   const cols = new Set(info.map(r => r.name));
   if (!cols.has('obligation_role')) {
-    db.prepare('ALTER TABLE models ADD COLUMN obligation_role TEXT').run();
+    runAddColumn(db, 'ALTER TABLE models ADD COLUMN obligation_role TEXT');
   }
   if (!cols.has('provider_documentation_received')) {
-    db.prepare('ALTER TABLE models ADD COLUMN provider_documentation_received INTEGER NOT NULL DEFAULT 0').run();
+    runAddColumn(db, 'ALTER TABLE models ADD COLUMN provider_documentation_received INTEGER NOT NULL DEFAULT 0');
   }
 }
 
@@ -364,7 +437,7 @@ function migrateModelTypeField(db: Database.Database): void {
   const info = db.prepare('PRAGMA table_info(models)').all() as { name: string }[];
   const cols = new Set(info.map(r => r.name));
   if (!cols.has('model_type')) {
-    db.prepare('ALTER TABLE models ADD COLUMN model_type TEXT').run();
+    runAddColumn(db, 'ALTER TABLE models ADD COLUMN model_type TEXT');
   }
 }
 
@@ -373,7 +446,7 @@ function migrateIdempotencyExpiresAt(db: Database.Database): void {
   const info = db.prepare('PRAGMA table_info(idempotency_keys)').all() as { name: string }[];
   const cols = new Set(info.map(r => r.name));
   if (!cols.has('expires_at')) {
-    db.prepare('ALTER TABLE idempotency_keys ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0').run();
+    runAddColumn(db, 'ALTER TABLE idempotency_keys ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0');
   }
 }
 
@@ -381,13 +454,13 @@ function migrateSessionFields(db: Database.Database): void {
   const info = db.prepare('PRAGMA table_info(relay_sessions)').all() as { name: string }[];
   const cols = new Set(info.map(r => r.name));
   if (!cols.has('worktree_path')) {
-    db.prepare('ALTER TABLE relay_sessions ADD COLUMN worktree_path TEXT').run();
+    runAddColumn(db, 'ALTER TABLE relay_sessions ADD COLUMN worktree_path TEXT');
   }
   if (!cols.has('tmux_session')) {
-    db.prepare('ALTER TABLE relay_sessions ADD COLUMN tmux_session TEXT').run();
+    runAddColumn(db, 'ALTER TABLE relay_sessions ADD COLUMN tmux_session TEXT');
   }
   if (!cols.has('cc_session_id')) {
-    db.prepare('ALTER TABLE relay_sessions ADD COLUMN cc_session_id TEXT').run();
+    runAddColumn(db, 'ALTER TABLE relay_sessions ADD COLUMN cc_session_id TEXT');
   }
 }
 
@@ -557,7 +630,7 @@ function migrateRunsTaskHash(db: Database.Database): void {
   const info = db.prepare('PRAGMA table_info(runs)').all() as { name: string }[];
   const cols = new Set(info.map(r => r.name));
   if (!cols.has('task_hash')) {
-    db.prepare('ALTER TABLE runs ADD COLUMN task_hash TEXT').run();
+    runAddColumn(db, 'ALTER TABLE runs ADD COLUMN task_hash TEXT');
     db.prepare('CREATE INDEX IF NOT EXISTS idx_runs_task_hash ON runs(task_hash) WHERE task_hash IS NOT NULL').run();
   }
 }
@@ -571,20 +644,20 @@ function migrateRunsThinkingBlocks(db: Database.Database): void {
   const info = db.prepare('PRAGMA table_info(runs)').all() as { name: string }[];
   const cols = new Set(info.map(r => r.name));
   if (!cols.has('thinking_blocks')) {
-    db.prepare('ALTER TABLE runs ADD COLUMN thinking_blocks INTEGER').run();
+    runAddColumn(db, 'ALTER TABLE runs ADD COLUMN thinking_blocks INTEGER');
   }
   if (!cols.has('tool_use_blocks')) {
-    db.prepare('ALTER TABLE runs ADD COLUMN tool_use_blocks INTEGER').run();
+    runAddColumn(db, 'ALTER TABLE runs ADD COLUMN tool_use_blocks INTEGER');
   }
   if (!cols.has('reasoning_density')) {
-    db.prepare('ALTER TABLE runs ADD COLUMN reasoning_density REAL').run();
+    runAddColumn(db, 'ALTER TABLE runs ADD COLUMN reasoning_density REAL');
     db.prepare('CREATE INDEX IF NOT EXISTS idx_runs_reasoning_density ON runs(reasoning_density) WHERE reasoning_density IS NOT NULL').run();
   }
   if (!cols.has('file_reads_before_first_write')) {
-    db.prepare('ALTER TABLE runs ADD COLUMN file_reads_before_first_write INTEGER').run();
+    runAddColumn(db, 'ALTER TABLE runs ADD COLUMN file_reads_before_first_write INTEGER');
   }
   if (!cols.has('tool_retry_count')) {
-    db.prepare('ALTER TABLE runs ADD COLUMN tool_retry_count INTEGER').run();
+    runAddColumn(db, 'ALTER TABLE runs ADD COLUMN tool_retry_count INTEGER');
   }
 }
 
@@ -598,10 +671,10 @@ function migrateRunsUsageReceipt(db: Database.Database): void {
   const info = db.prepare('PRAGMA table_info(runs)').all() as { name: string }[];
   const cols = new Set(info.map(r => r.name));
   if (!cols.has('prompt_tokens')) {
-    db.prepare('ALTER TABLE runs ADD COLUMN prompt_tokens INTEGER').run();
+    runAddColumn(db, 'ALTER TABLE runs ADD COLUMN prompt_tokens INTEGER');
   }
   if (!cols.has('completion_tokens')) {
-    db.prepare('ALTER TABLE runs ADD COLUMN completion_tokens INTEGER').run();
+    runAddColumn(db, 'ALTER TABLE runs ADD COLUMN completion_tokens INTEGER');
   }
 }
 
@@ -614,7 +687,7 @@ function migrateRunsRecalledMemories(db: Database.Database): void {
   const info = db.prepare('PRAGMA table_info(runs)').all() as { name: string }[];
   const cols = new Set(info.map(r => r.name));
   if (!cols.has('recalled_memory_ids_json')) {
-    db.prepare('ALTER TABLE runs ADD COLUMN recalled_memory_ids_json TEXT').run();
+    runAddColumn(db, 'ALTER TABLE runs ADD COLUMN recalled_memory_ids_json TEXT');
   }
 }
 
@@ -627,10 +700,10 @@ function migrateRunEventsTraceFields(db: Database.Database): void {
   const info = db.prepare('PRAGMA table_info(run_events)').all() as { name: string }[];
   const cols = new Set(info.map(r => r.name));
   if (!cols.has('trace_id')) {
-    db.prepare('ALTER TABLE run_events ADD COLUMN trace_id TEXT').run();
+    runAddColumn(db, 'ALTER TABLE run_events ADD COLUMN trace_id TEXT');
   }
   if (!cols.has('caused_by')) {
-    db.prepare('ALTER TABLE run_events ADD COLUMN caused_by TEXT').run();
+    runAddColumn(db, 'ALTER TABLE run_events ADD COLUMN caused_by TEXT');
   }
 }
 
@@ -641,4 +714,5 @@ export function closeDb(): void {
   _db?.close();
   _db = null;
   _syncHandle = null;
+  _replicaOffline = false;
 }

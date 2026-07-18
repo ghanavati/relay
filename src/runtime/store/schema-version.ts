@@ -51,6 +51,21 @@ export function readSchemaVersion(db: Database.Database): number {
  * timestamp is more useful than overwriting it on retries (and the PK
  * conflict handler keeps it that way).
  */
+/**
+ * Run an `ALTER TABLE … ADD COLUMN` statement, treating "duplicate column"
+ * as success. Needed for embedded replicas (RELAY_DB_URL): writes delegate
+ * to the remote primary while the PRAGMA-based column guards read the stale
+ * local replica, so an already-applied ALTER can be re-issued blind. Locally
+ * the guards short-circuit first and this is a plain run().
+ */
+export function runAddColumn(db: Database.Database, alterSql: string): void {
+  try {
+    db.prepare(alterSql).run();
+  } catch (err) {
+    if (!/duplicate column/i.test((err as Error).message)) throw err;
+  }
+}
+
 export function writeSchemaVersion(
   db: Database.Database,
   version: number,
