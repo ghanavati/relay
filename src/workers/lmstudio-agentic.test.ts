@@ -109,8 +109,8 @@ describe('T1 — preconditions', () => {
       'cmd-run must resolve providers through the registry'
     );
     assert.ok(
-      /provider === 'lmstudio-agentic'/.test(src),
-      'cmd-run must keep the lmstudio-agentic runner branch'
+      /AGENTIC_LOCAL_PROVIDERS/.test(src),
+      'cmd-run must keep the local agentic runner branch'
     );
     const { listProviders } = await import('./provider-registry.js');
     const agentic = listProviders({}).find((p) => p.name === 'lmstudio-agentic');
@@ -131,8 +131,8 @@ describe('T1 — preconditions', () => {
       'cmd-parallel must resolve spec providers through the registry'
     );
     assert.ok(
-      /provider === 'lmstudio-agentic'/.test(src),
-      'cmd-parallel must keep the lmstudio-agentic wiring branch'
+      /AGENTIC_LOCAL_PROVIDERS/.test(src),
+      'cmd-parallel must keep the local agentic wiring branch'
     );
     assert.ok(
       /runnerForProvider/.test(src),
@@ -856,7 +856,7 @@ describe('T7 — dispatch wiring smoke', () => {
 
   test('cmd-run dispatch — lmstudio-agentic routes through the shared runner factory', async () => {
     const src = await readSourceFile('src/cli/cmd-run.ts');
-    assert.match(src, /args\.provider === 'lmstudio-agentic'/);
+    assert.match(src, /AGENTIC_LOCAL_PROVIDERS/);
     assert.match(src, /runnerForProvider\(providerConfig, factoryOpts\)/);
     assert.match(src, /agenticExtraToolHandlers/);
   });
@@ -865,7 +865,7 @@ describe('T7 — dispatch wiring smoke', () => {
     // Phase 9 (09-01 follow-up): the private getRunner is gone; cmd-parallel
     // calls runnerForProvider and the construction lives in runner-factory.ts.
     const src = await readSourceFile('src/cli/cmd-parallel.ts');
-    assert.match(src, /provider === 'lmstudio-agentic'/);
+    assert.match(src, /AGENTIC_LOCAL_PROVIDERS/);
     assert.match(src, /runnerForProvider\(/);
     const factorySrc = await readSourceFile('src/cli/runner-factory.ts');
     assert.match(factorySrc, /import\(['"]\.\.\/workers\/lmstudio-agentic\.js['"]\)/);
@@ -916,13 +916,13 @@ describe('T7 — dispatch wiring smoke', () => {
   test('cmd-run wires DEFAULT_AGENTIC_TOOLS for lmstudio-agentic provider', async () => {
     const src = await readSourceFile('src/cli/cmd-run.ts');
     assert.match(src, /DEFAULT_AGENTIC_TOOLS/);
-    assert.match(src, /provider === 'lmstudio-agentic'/);
+    assert.match(src, /AGENTIC_LOCAL_PROVIDERS/);
   });
 
   test('cmd-parallel wires DEFAULT_AGENTIC_TOOLS for lmstudio-agentic provider', async () => {
     const src = await readSourceFile('src/cli/cmd-parallel.ts');
     assert.match(src, /DEFAULT_AGENTIC_TOOLS/);
-    assert.match(src, /provider === 'lmstudio-agentic'/);
+    assert.match(src, /AGENTIC_LOCAL_PROVIDERS/);
   });
 
   test('cli.ts run dispatch forwards lmstudio-agentic to the registry (no closed validator)', async () => {

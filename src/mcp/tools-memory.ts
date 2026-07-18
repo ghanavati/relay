@@ -31,6 +31,7 @@ import type { McpToolResult } from './result.js';
 import { redactSecrets } from '../security/redaction.js';
 import { syncDbIfRemote } from '../runtime/store/db.js';
 import type { MemorySource } from '../memory/types.js';
+import { isPaused } from '../cli/cmd-pause.js';
 
 /**
  * The MCP save surface (review fix 4): the contracts schema MINUS pinned and
@@ -166,9 +167,15 @@ export function buildMemoryMcpTools(): readonly [RecallMcpTool, SaveMcpTool] {
     },
     handler: async (args: RecallArgs): Promise<McpToolResult> => {
       try {
+        const resolvedArgs = applyWorkdirDefault(args);
+        // The user's pause sentinel is a privacy off-switch for every context
+        // entrance, including an externally launched MCP process.
+        if (await isPaused(resolvedArgs.workdir)) {
+          return { content: [{ type: 'text', text: JSON.stringify({ paused: true, memories: [] }) }] };
+        }
         // handleRecall is async (semantic-similarity embedding) and already
         // returns the { content } envelope — redact it, do not re-wrap.
-        return redactEnvelope(await handleRecall(applyWorkdirDefault(args)));
+        return redactEnvelope(await handleRecall(resolvedArgs));
       } catch (err) {
         // e.g. MEMORY_WORKDIR_FORBIDDEN thrown by MemoryStore's
         // assertWorkdirAllowed gate — code preserved, message redacted

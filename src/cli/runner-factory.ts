@@ -60,6 +60,12 @@ export async function runnerForProvider(
       opts.agenticExtraToolHandlers ? { extraToolHandlers: opts.agenticExtraToolHandlers } : {}
     );
   }
+  if (config.name === 'omlx-agentic') {
+    const { OmlxAgenticRunner } = await import('../workers/omlx-agentic.js');
+    return new OmlxAgenticRunner(
+      opts.agenticExtraToolHandlers ? { extraToolHandlers: opts.agenticExtraToolHandlers } : {}
+    );
+  }
   // Defensive: a builtin name this factory doesn't know means the registry's
   // builtin table and this mapping drifted — fail loudly (mirrors cmd-run).
   throw new Error(`unsupported provider: ${config.name}`);

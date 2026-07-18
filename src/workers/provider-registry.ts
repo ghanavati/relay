@@ -86,6 +86,8 @@ function builtinProviders(env: NodeJS.ProcessEnv): ProviderConfig[] {
   const lmstudioUrl = `${trimTrailingSlashes(
     env["LMSTUDIO_ENDPOINT"]?.trim() || DEFAULT_LMSTUDIO_ENDPOINT
   )}/v1/chat/completions`;
+  const omlxEndpoint = env["OMLX_ENDPOINT"]?.trim();
+  const omlxUrl = omlxEndpoint ? `${trimTrailingSlashes(omlxEndpoint)}/v1/chat/completions` : null;
   return [
     {
       name: "codex",
@@ -129,6 +131,15 @@ function builtinProviders(env: NodeJS.ProcessEnv): ProviderConfig[] {
       type: "openai",
       url: lmstudioUrl,
       keyEnvVar: "LMSTUDIO_API_KEY",
+      headers: {},
+      agentic: true,
+    },
+    {
+      name: "omlx-agentic",
+      source: "builtin",
+      type: "openai",
+      url: omlxUrl,
+      keyEnvVar: "OMLX_API_KEY",
       headers: {},
       agentic: true,
     },

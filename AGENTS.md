@@ -101,6 +101,10 @@ Add or update tests for the code you change. v0.1.0 inherited tests from relay-m
 LM Studio concurrent rules + parallel dispatch patterns: see `docs/parallel.md`.
 Headline: `isolation: "worktree"` + every prompt ends with `git add && git commit`. Without the commit, files are lost on merge.
 
+For local oMLX dispatch, read `docs/FLEET-OPERATIONS.md` first. It is the
+current evidence ledger, role-routing guide, profile policy, and no-repeat
+test protocol; it overrides historical model-fleet assumptions.
+
 ## Extraction history
 
 This repo was extracted from `relay-mcp` on 2026-05-02. If you need that context: `docs/findings/2026-05-02-extract-session-learnings.md`.

@@ -44,7 +44,7 @@ describe('executeProvidersCommand — key-safe inventory (Test 4)', () => {
     const code = await executeProvidersCommand({ json: false, env: groqEnv(true) }, io);
     assert.strictEqual(code, 0);
     const out = stdout.join('');
-    for (const name of ['codex', 'claude', 'openrouter', 'lmstudio', 'lmstudio-agentic', 'anthropic', 'groq']) {
+    for (const name of ['codex', 'claude', 'openrouter', 'lmstudio', 'lmstudio-agentic', 'omlx-agentic', 'anthropic', 'groq']) {
       assert.match(out, new RegExp(name), `must list ${name}`);
     }
     assert.match(out, /builtin/);
@@ -78,7 +78,7 @@ describe('executeProvidersCommand — key-safe inventory (Test 4)', () => {
     const raw = stdout.join('');
     assert.ok(!raw.includes(SYNTHETIC_KEY), 'JSON must never contain a key value');
     const entries = JSON.parse(raw) as ProviderJsonEntry[];
-    assert.strictEqual(entries.length, 7);
+    assert.strictEqual(entries.length, 8);
     const groq = entries.find((e) => e.name === 'groq');
     assert.ok(groq);
     assert.strictEqual(groq.source, 'env');

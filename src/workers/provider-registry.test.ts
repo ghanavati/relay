@@ -18,6 +18,7 @@ const BUILTIN_NAMES = [
   "openrouter",
   "lmstudio",
   "lmstudio-agentic",
+  "omlx-agentic",
   "anthropic",
 ] as const;
 
@@ -45,6 +46,7 @@ describe("provider-registry — listProviders", () => {
     assert.strictEqual(byName.get("openrouter")!.keyEnvVar, "OPENROUTER_API_KEY");
     assert.strictEqual(byName.get("lmstudio")!.keyEnvVar, "LMSTUDIO_API_KEY");
     assert.strictEqual(byName.get("lmstudio-agentic")!.keyEnvVar, "LMSTUDIO_API_KEY");
+    assert.strictEqual(byName.get("omlx-agentic")!.keyEnvVar, "OMLX_API_KEY");
     assert.strictEqual(byName.get("anthropic")!.keyEnvVar, "ANTHROPIC_API_KEY");
     assert.strictEqual(byName.get("codex")!.keyEnvVar, null);
     assert.strictEqual(byName.get("claude")!.keyEnvVar, null);
