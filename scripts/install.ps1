@@ -24,5 +24,4 @@ Pop-Location
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
 Set-Content (Join-Path $bin 'relay.cmd') "@echo off`r`nnode `"$prefix\dist\cli.js`" %*"
 [Environment]::SetEnvironmentVariable('Path', $env:Path + ";$bin", 'User')
-& (Join-Path $bin 'relay.cmd') setup --everything --yes
-Write-Host 'Relay is installed. Open a new terminal and run: relay --help'
+Write-Host 'Relay is installed. Open a new terminal and run: relay setup --everything'

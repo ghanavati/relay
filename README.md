@@ -9,7 +9,7 @@ choose between.
 
 ## Get started
 
-Relay installs from your terminal and completes setup automatically.
+Relay installs from your terminal in two clear steps.
 
 **Mac or Linux**
 
@@ -23,9 +23,13 @@ curl -fsSL https://raw.githubusercontent.com/ghanavati/relay/main/scripts/instal
 irm https://raw.githubusercontent.com/ghanavati/relay/main/scripts/install.ps1 | iex
 ```
 
-Each command installs Relay, creates your memory store, and offers to connect
-the coding tools you already use. Open a new terminal afterwards, then run
-`relay --help`.
+Each command installs Relay.
+
+Then open a new terminal and run:
+
+```bash
+relay setup --everything
+```
 
 ## What Relay does
 
