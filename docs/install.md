@@ -20,9 +20,9 @@ relay init
 1. writes `~/.relay/config.json`,
 2. installs the Claude Code session hooks so past lessons load automatically,
 3. detects your LLM CLIs (Codex, LM Studio, OpenRouter, Anthropic) and wires them,
-4. registers the Relay MCP server with every MCP client it can find — Claude Code, Claude Desktop, Cursor, Codex.
+4. offers to register the Relay MCP server with every MCP client it can find — Claude Code, Claude Desktop, Cursor, Codex.
 
-Re-running it is safe; it never duplicates entries and never touches config it can't parse.
+Re-running it is safe; it never duplicates entries and never touches config it can't parse. `--auto` skips MCP client registration because those are global client settings; run interactive `relay init` to approve that step.
 
 ## The success moment
 
@@ -38,7 +38,7 @@ If a client was open during `relay init`, restart it so it picks up the new MCP 
 
 ## Per-client notes
 
-`relay init` handles all of these automatically when the client is installed. The manual fallbacks below are only needed if you skipped init or the client wasn't detected.
+Interactive `relay init` handles these after your confirmation when the client is installed. The manual fallbacks below are only needed if you skipped that step or the client wasn't detected.
 
 **Claude Code** — registered via `claude mcp add --scope user relay`. Manual: add to `.mcp.json` in your project or run that command yourself.
 
