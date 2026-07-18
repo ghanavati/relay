@@ -9,26 +9,22 @@ choose between.
 
 ## Get started
 
-Relay installs from your terminal. It keeps your memory in `~/.relay/` and
-then walks you through connecting the coding tools you already use.
-
-**Mac or Linux**
+Relay installs from your terminal. Run this once:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ghanavati/relay/main/scripts/install-release.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ghanavati/relay/main/scripts/install.sh | bash -s -- --yes
+```
+
+Then open a new terminal and run:
+
+```bash
 relay setup --everything
 ```
 
-**Windows PowerShell**
-
-```powershell
-irm https://raw.githubusercontent.com/ghanavati/relay/main/scripts/install-release.ps1 | iex
-relay setup --everything
-```
-
-The first command installs Relay. The second sets up your local memory and
-offers to connect Claude Code, Codex, or another available tool. Open a new
-terminal if the installer asks you to add Relay to your PATH.
+It installs Relay locally, then the setup command creates your memory store and
+offers to connect the coding tools you already use. It works in any terminal
+with Git, Node 20 or newer, and npm, including macOS, Linux, and Windows through
+Git Bash or WSL.
 
 ## What Relay does
 
