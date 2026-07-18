@@ -1,5 +1,11 @@
 # Parallel dispatch
 
+> **Current local-fleet rules:** Read [FLEET-OPERATIONS.md](FLEET-OPERATIONS.md)
+> before dispatching oMLX models. It supersedes the historical model names,
+> lane counts, and prompt rules below. In particular, use `relay parallel` with
+> separate `workdir` values and treat the Relay run status—not a changed file
+> alone—as the completion verdict.
+
 Relay fans a single bounded task out to N workers running concurrently via `relay parallel <spec.json> --max-concurrency N`.
 
 ## Why parallel

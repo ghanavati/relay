@@ -752,6 +752,31 @@ describe('T4 continuation — tools[] re-sent', () => {
   });
 });
 
+test('forwards model-specific sampling controls to every chat-completion request', async () => {
+  const { fetchImpl, requests } = makeScriptedFetch({
+    responses: [{ kind: 'ok', body: asstFinal('ok') }],
+  });
+  const runner = new LmStudioAgenticRunner({
+    fetchImpl,
+    profileForModel: async () => ({
+      temperature: 0.7,
+      top_p: 0.95,
+      top_k: 40,
+      min_p: 0,
+      presence_penalty: 1.5,
+    } as never),
+  });
+
+  await runner.run(baseTask());
+
+  const body = JSON.parse(requests.find((request) => request.url.endsWith('/v1/chat/completions'))?.init.body as string);
+  assert.equal(body.temperature, 0.7);
+  assert.equal(body.top_p, 0.95);
+  assert.equal(body.top_k, 40);
+  assert.equal(body.min_p, 0);
+  assert.equal(body.presence_penalty, 1.5);
+});
+
 // ─── T6: LFM2 SYSTEM-PROMPT NUDGE INTEGRATION ────────────────────────────
 
 describe('T6 — LFM2 nudge integration', () => {
@@ -837,20 +862,22 @@ describe('T7 — dispatch wiring smoke', () => {
     assert.equal(instance.capabilities?.execution_model, 'tool_loop');
   });
 
-  test('cmd-run dispatch — provider literal "lmstudio-agentic" recognized in HTTP_PROVIDERS', async () => {
+  test('cmd-run dispatch recognizes both local agentic providers', async () => {
     const src = await readSourceFile('src/cli/cmd-run.ts');
-    assert.match(src, /args\.provider === 'lmstudio-agentic'/);
+    assert.match(src, /'lmstudio-agentic'/);
+    assert.match(src, /'omlx-agentic'/);
     assert.match(src, /import\(['"]\.\.\/workers\/lmstudio-agentic\.js['"]\)/);
     // Constructor may accept opts (Phase 7: extraToolHandlers when FIGMA_API_TOKEN set).
     assert.match(src, /new LmStudioAgenticRunner\(/);
   });
 
-  test('cmd-parallel dispatch — provider literal "lmstudio-agentic" recognized in getRunner', async () => {
+  test('cmd-parallel dispatch recognizes both local agentic providers', async () => {
     const src = await readSourceFile('src/cli/cmd-parallel.ts');
     assert.match(src, /provider === 'lmstudio-agentic'/);
     assert.match(src, /import\(['"]\.\.\/workers\/lmstudio-agentic\.js['"]\)/);
     // Constructor may accept opts (Phase 7: extraToolHandlers when FIGMA_API_TOKEN set).
-    assert.match(src, /return new LmStudioAgenticRunner\(/);
+    assert.match(src, /new LmStudioAgenticRunner\(/);
+    assert.match(src, /new OmlxAgenticRunner\(/);
   });
 
   test('cmd-parallel rejects model-less lmstudio-agentic task', async () => {
@@ -896,7 +923,7 @@ describe('T7 — dispatch wiring smoke', () => {
   test('cmd-run wires DEFAULT_AGENTIC_TOOLS for lmstudio-agentic provider', async () => {
     const src = await readSourceFile('src/cli/cmd-run.ts');
     assert.match(src, /DEFAULT_AGENTIC_TOOLS/);
-    assert.match(src, /provider === 'lmstudio-agentic'/);
+    assert.match(src, /AGENTIC_LOCAL_PROVIDERS/);
   });
 
   test('cmd-parallel wires DEFAULT_AGENTIC_TOOLS for lmstudio-agentic provider', async () => {
@@ -909,7 +936,7 @@ describe('T7 — dispatch wiring smoke', () => {
     const src = await readSourceFile('src/cli.ts');
     assert.match(src, /'lmstudio-agentic'/);
     // The validator array at line ~260 must include the new provider literal
-    assert.match(src, /\['codex',\s*'openrouter',\s*'lmstudio',\s*'anthropic',\s*'lmstudio-agentic'\]/);
+    assert.match(src, /'omlx-agentic'/);
   });
 });
 

@@ -60,6 +60,14 @@ export function getLmStudioApiKey(): string | null {
   return process.env["LMSTUDIO_API_KEY"]?.trim() || null;
 }
 
+export function getOmlxEndpoint(): string | null {
+  return process.env['OMLX_ENDPOINT']?.trim() || null;
+}
+
+export function getOmlxApiKey(): string | null {
+  return process.env['OMLX_API_KEY']?.trim() || null;
+}
+
 export function getAnthropicApiKey(): string | null {
   return process.env["ANTHROPIC_API_KEY"]?.trim() || null;
 }

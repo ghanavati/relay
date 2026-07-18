@@ -18,7 +18,7 @@ import { AGENTIC_SANDBOX_ENV } from '../security/env-sanitize.js';
 
 export interface RunCommandArgs {
   task: string;
-  provider: 'codex' | 'openrouter' | 'lmstudio' | 'anthropic' | 'lmstudio-agentic';
+  provider: 'codex' | 'openrouter' | 'lmstudio' | 'anthropic' | 'lmstudio-agentic' | 'omlx-agentic';
   model?: string;
   workdir: string;
   timeoutMs: number;
@@ -26,7 +26,8 @@ export interface RunCommandArgs {
   json: boolean;
 }
 
-const HTTP_PROVIDERS = new Set(['openrouter', 'lmstudio', 'anthropic', 'lmstudio-agentic']);
+const HTTP_PROVIDERS = new Set(['openrouter', 'lmstudio', 'anthropic', 'lmstudio-agentic', 'omlx-agentic']);
+const AGENTIC_LOCAL_PROVIDERS = new Set(['lmstudio-agentic', 'omlx-agentic']);
 
 export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promise<number> {
   // 1. Validate
@@ -79,12 +80,13 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
     } else if (args.provider === 'anthropic') {
       const { AnthropicRunner } = await import('../workers/anthropic.js');
       runner = new AnthropicRunner();
-    } else if (args.provider === 'lmstudio-agentic') {
+    } else if (AGENTIC_LOCAL_PROVIDERS.has(args.provider)) {
       // 08-fix HIGH — mark this process as an agentic sandbox. shell_exec children
       // inherit it (and defaultShellExec force-injects it per child), so any `relay`
       // CLI a model shells into refuses mutating control subcommands.
       process.env[AGENTIC_SANDBOX_ENV] = '1';
       const { LmStudioAgenticRunner } = await import('../workers/lmstudio-agentic.js');
+      const { OmlxAgenticRunner } = await import('../workers/omlx-agentic.js');
       // Phase 7 — env-gated Figma REST tools. registerFigmaTools returns null
       // when PAT is absent (FIGMA-03 graceful — model sees zero Figma tools,
       // no startup error). loadPat is the source of truth for the resolved PAT
@@ -114,10 +116,10 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
         label: task_excerpt,
       });
       const controlNamed = toNamedToolHandlers(registerControlTools(run_id));
-      runner = new LmStudioAgenticRunner({ extraToolHandlers: [...figmaNamed, ...controlNamed] });
+      runner = args.provider === 'omlx-agentic'
+        ? new OmlxAgenticRunner({ extraToolHandlers: [...figmaNamed, ...controlNamed] })
+        : new LmStudioAgenticRunner({ extraToolHandlers: [...figmaNamed, ...controlNamed] });
     } else {
-      const exhaustive: never = args.provider;
-      void exhaustive;
       io.stderr(`unsupported provider: ${args.provider}\n`);
       runStore.recordError(run_id, {
         error_code: 'INVALID_ARGS',
@@ -149,7 +151,7 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
   // Phase 7: when registerFigmaTools returned handlers, merge their ToolDefs into
   // the tools[] presented to the model (additive — preserves shell_exec).
   let tools;
-  if (args.provider === 'lmstudio-agentic') {
+  if (AGENTIC_LOCAL_PROVIDERS.has(args.provider)) {
     const { DEFAULT_AGENTIC_TOOLS } = await import('../workers/lmstudio-agentic.js');
     const { registerFigmaTools } = await import('../tools/figma/index.js');
     const { CONTROL_TOOL_DEFS } = await import('../control/tools.js');
@@ -184,7 +186,7 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
       finished_at: Date.now(),
     });
     // Phase 8 — close the run's control session on the throw path too.
-    if (args.provider === 'lmstudio-agentic') {
+    if (AGENTIC_LOCAL_PROVIDERS.has(args.provider)) {
       const { endControlSessionForRun } = await import('../control/tools.js');
       endControlSessionForRun(run_id);
     }
@@ -221,7 +223,7 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
   }
 
   // Phase 8 — the run is over: mark its control session ended (audited).
-  if (args.provider === 'lmstudio-agentic') {
+  if (AGENTIC_LOCAL_PROVIDERS.has(args.provider)) {
     const { endControlSessionForRun } = await import('../control/tools.js');
     endControlSessionForRun(run_id);
   }
