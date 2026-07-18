@@ -1,7 +1,7 @@
 # Troubleshooting
 
-> Relay has no supported public installation path yet. These notes are for a
-> pre-provisioned development or evaluation runtime, not a general installer.
+> Relay’s public installation path will be GitHub Releases, not npm. Until the
+> first release bundle is published, these notes apply to a provisioned runtime.
 
 Symptom-first guide for users who installed Relay and something is wrong.
 Start at the top, work down.
@@ -234,9 +234,10 @@ Fix: don't pass `--source-run-id` on bulk writes — the limiter is keyed
 on it. Solo CLI users normally skip this flag.
 
 ### Public installation
-Relay does not yet have a supported public installation path. Follow the
-repository's development guidance only if you are intentionally evaluating or
-contributing to the source.
+Relay will be installed from [GitHub Releases](https://github.com/ghanavati/relay/releases).
+The first platform bundles are being prepared. Until then, follow the
+repository's development guidance only if you are intentionally contributing to
+the source.
 
 ### Codex: "You've hit your usage limit"
 `error: You've hit your usage limit. Try again at HH:MM PM.`

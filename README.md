@@ -9,10 +9,14 @@ choose between.
 
 ## Status
 
-Relay is in active pre-release. The core is ready to explore in maintained
-development and evaluation environments, while public packaging is being
-prepared. For now, use a provisioned runtime rather than expecting a general
-one-command public install.
+Relay is preparing for its first public GitHub Release. That will be the
+supported way to get Relay: download a release for your platform directly from
+GitHub, then connect it to the coding tools you already use. No public npm
+install is planned.
+
+Today, the repository is the place to follow development. The release bundles,
+checksums, and installation instructions are the next delivery step—not an
+unfinished product verdict.
 
 ## What Relay does
 
@@ -56,7 +60,7 @@ exposing an MCP endpoint beyond your machine.
 
 ## Documentation
 
-- [Distribution status](docs/install.md)
+- [Installing from GitHub Releases](docs/install.md)
 - [Memory model](docs/memory.md)
 - [MCP memory server](docs/mcp.md)
 - [Database and optional remote replica](docs/database.md)
@@ -69,10 +73,9 @@ exposing an MCP endpoint beyond your machine.
 
 ## For contributors and evaluators
 
-The repository includes the development workflow and test suite, but that is
-not a public product-installation guide. See [CONTRIBUTING.md](CONTRIBUTING.md)
-for the supported contributor setup and [AGENTS.md](AGENTS.md) for the project
-engineering contract.
+The repository includes the development workflow and test suite. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for contributor setup and
+[AGENTS.md](AGENTS.md) for the project engineering contract.
 
 ## License
 
