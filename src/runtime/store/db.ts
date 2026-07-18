@@ -1,5 +1,6 @@
 import Database from 'libsql';
-import { mkdirSync, chmodSync } from 'node:fs';
+import { mkdirSync, chmodSync, existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import * as path from 'node:path';
@@ -141,9 +142,123 @@ const DDL_STATEMENTS: readonly string[] = [
 // (v0.2 schema cleanup). The CLI tier never read this table; see
 // migrate-v2-drop-orphans.ts.
 
+export type DbTarget =
+  | { readonly kind: 'local'; readonly path: string }
+  | {
+      readonly kind: 'replica';
+      readonly path: string;
+      readonly syncUrl: string;
+      readonly authToken: string | undefined;
+    };
+
+const REMOTE_SCHEMES = new Set(['libsql:', 'https:', 'http:']);
+
+/**
+ * `db_url` from `~/.relay/config.json`, if present. Env always wins — this is
+ * only consulted when RELAY_DB_URL is unset. Any read/parse failure means
+ * "not configured"; `relay doctor` owns config validation.
+ */
+function readConfigDbUrl(): string | undefined {
+  try {
+    const raw = readFileSync(join(homedir(), '.relay', 'config.json'), 'utf8');
+    const parsed = JSON.parse(raw) as { db_url?: unknown };
+    return typeof parsed.db_url === 'string' && parsed.db_url.trim() !== ''
+      ? parsed.db_url.trim()
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Where the store lives. Precedence: RELAY_DB_URL env > config `db_url` >
+ * local default (RELAY_DB_PATH or ~/.relay/relay.db).
+ *
+ * A remote URL (libsql:// | https:// | http:// — Turso or any libsql server)
+ * selects an EMBEDDED REPLICA: a local SQLite file synced against the remote,
+ * so reads stay local-fast and offline keeps working. The replica file is
+ * derived from the URL hash — one replica per remote, and it never collides
+ * with a plain local relay.db.
+ *
+ * Connection strings are secrets (Turso tokens can ride in the URL): error
+ * messages name the scheme only, never the value, and nothing here logs it.
+ */
+export function resolveDbTarget(env: NodeJS.ProcessEnv = process.env): DbTarget {
+  const url = env['RELAY_DB_URL']?.trim() || readConfigDbUrl();
+  if (!url) {
+    return { kind: 'local', path: env['RELAY_DB_PATH'] ?? join(homedir(), '.relay', 'relay.db') };
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(
+      'RELAY_DB_URL is not a valid URL (value withheld — it may contain credentials)'
+    );
+  }
+  if (!REMOTE_SCHEMES.has(parsed.protocol)) {
+    throw new Error(
+      `RELAY_DB_URL scheme "${parsed.protocol}//" is not supported — use libsql://, https:// or http:// (Turso / libsql server)`
+    );
+  }
+  const hash = createHash('sha256').update(url).digest('hex').slice(0, 12);
+  return {
+    kind: 'replica',
+    path: join(homedir(), '.relay', `replica-${hash}.db`),
+    syncUrl: url,
+    authToken: env['RELAY_DB_AUTH_TOKEN']?.trim() || undefined,
+  };
+}
+
+// Set only when the live connection is an embedded replica with a working
+// sync channel; syncDbIfRemote() no-ops otherwise.
+let _syncHandle: Database.Database | null = null;
+
+function openReplica(target: Extract<DbTarget, { kind: 'replica' }>): Database.Database {
+  try {
+    const db = new Database(target.path, {
+      syncUrl: target.syncUrl,
+      ...(target.authToken !== undefined ? { authToken: target.authToken } : {}),
+    });
+    _syncHandle = db;
+    return db;
+  } catch (err) {
+    if (existsSync(target.path)) {
+      // Offline with an existing replica: open it plain-local so reads and
+      // writes keep working; sync resumes on the next reachable open.
+      process.stderr.write(
+        'relay: warning: remote database unreachable — using the local replica; will sync when the remote is reachable again\n'
+      );
+      return new Database(target.path);
+    }
+    throw new Error(
+      'could not reach the remote database to create the first local replica — check RELAY_DB_URL / RELAY_DB_AUTH_TOKEN and connectivity'
+    );
+  }
+}
+
+/**
+ * Push/pull the embedded replica against its remote. No-op for local DBs and
+ * for offline-fallback opens. 'failed' means the write is safe locally and
+ * will sync on a later run — callers surface a warning, never an error.
+ */
+export async function syncDbIfRemote(): Promise<'synced' | 'skipped' | 'failed'> {
+  if (!_syncHandle) return 'skipped';
+  try {
+    const result = (_syncHandle as unknown as { sync?: () => unknown }).sync?.();
+    if (result && typeof (result as Promise<unknown>).then === 'function') {
+      await (result as Promise<unknown>);
+    }
+    return 'synced';
+  } catch {
+    return 'failed';
+  }
+}
+
 export function getDb(): Database.Database {
   if (_db) return _db;
-  const dbPath = process.env['RELAY_DB_PATH'] ?? join(homedir(), '.relay', 'relay.db');
+  const target = resolveDbTarget();
+  const dbPath = target.path;
   if (dbPath !== ':memory:') {
     mkdirSync(path.dirname(dbPath), { recursive: true });
     // Sync .v1-backup BEFORE we open the DB for writes. The backup helper
@@ -161,7 +276,7 @@ export function getDb(): Database.Database {
       throw new Error('.v1-backup write failed — refusing to open DB for v0.2 migration');
     }
   }
-  _db = new Database(dbPath);
+  _db = target.kind === 'replica' ? openReplica(target) : new Database(dbPath);
   installNestableTransactions(_db);
   if (dbPath !== ':memory:') {
     try { chmodSync(dbPath, 0o600); } catch { /* best-effort */ }
@@ -525,4 +640,5 @@ export function closeDb(): void {
   }
   _db?.close();
   _db = null;
+  _syncHandle = null;
 }
