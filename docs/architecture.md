@@ -144,7 +144,7 @@ Defence in depth, ordered by enforcement point:
 ## 11. Build + test layout
 
 ```bash
-npm install                              # better-sqlite3 native module + zod + typescript
+npm install                              # contributor dependencies
 npm run build                            # tsc → dist/; chmod +x dist/cli.js
 npm run typecheck                        # tsc --noEmit (authoritative compile check)
 npm test                                 # node --test --test-concurrency=1 dist/**/*.test.js
@@ -153,13 +153,13 @@ npm run clean                            # rm -rf dist tsconfig.tsbuildinfo
 
 Tests are colocated next to source (`memory-store.ts` + `memory-remember.test.ts`, etc.). Test runtime is `node:test`; mocking patterns from Jest do not apply. SQLite tests set `process.env['RELAY_DB_PATH'] = ':memory:'` **before** any db import — the in-memory DB is opened lazily on first `getDb()` call.
 
-`better-sqlite3` is a native module: requires Node >=20, a working C++ toolchain (Xcode CLT on macOS, `build-essential python3` on Linux), and is rebuilt on `npm install`. All DB operations are **synchronous** by design — never use `async`/`await` on `db.prepare(...)` chains.
+Relay uses libSQL with a local SQLite-compatible store and optional remote replica support. The store adapter preserves the existing synchronous-style query interface; do not introduce asynchronous database calls into the established store methods without changing the adapter contract deliberately.
 
 ## 12. Control fabric (Phase 8)
 
 The control layer turns Relay from memory-plus-dispatch into an agent-control bus. Any supported LLM surface registers as a *control session*; one command surface (`relay session ...` for humans, Relay tools for models) drives them all.
 
-- **Sessions + store** (`src/control/session-store.ts`) — synchronous better-sqlite3 over five v4 tables: `control_sessions`, `control_events`, `control_mailbox`, `control_grants`, `control_delivery_attempts`. Every boundary is Zod-validated; rows read back are re-validated so corrupted JSON fails loudly.
+- **Sessions + store** (`src/control/session-store.ts`) — Relay's SQLite-compatible store over five v4 tables: `control_sessions`, `control_events`, `control_mailbox`, `control_grants`, `control_delivery_attempts`. Every boundary is Zod-validated; rows read back are re-validated so corrupted JSON fails loudly.
 - **Broker** (`src/control/broker.ts`) — the single policy path. Human sends route straight through; model (`llm`) sends are default-deny and require a human-issued grant with a TTL and a message budget, plus content redaction and loop detection on repeated identical messages. These are guardrails on agent-initiated traffic, not a separate audit product — every decision (enqueued, blocked, delivered, failed) is recorded as a control event.
 - **Adapter registry + capability taxonomy** (`src/control/adapter-registry.ts`, `src/control/types.ts`) — each adapter declares exactly what it supports (`register`, `observe`, `tail`, `context_inject`, `mailbox`, `resume_send`, `live_stdin`, `interrupt`, ...). Delivery routes to the strongest shared capability; unsupported operations are refused, never silently degraded. No adapter infers behavior from a provider name.
 - **Adapters** (`src/control/adapters/`) — Claude Code (ambient hook context delivery), Codex (discovery-gated MCP/instructions), generic-HTTP (transcript-backed OpenRouter/Anthropic), and the deterministic fake used in tests. None claim a live stdin channel.

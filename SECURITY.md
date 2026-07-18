@@ -14,17 +14,17 @@ Response target: best-effort within 7 days. This is a solo project; no SLA.
 - API key exposure in logs, stdout, or audit trail
 - Prompt injection from memory content into worker dispatch
 - Filesystem path traversal in `--workdir` arguments
-- SQL injection via FTS5 queries (better-sqlite3 should prevent this, but report anyway)
+- SQL injection via FTS5 queries or the database adapter layer
 - Race conditions in concurrent CLI invocations
 
 ## What's NOT in scope
 
-- Vulnerabilities in upstream dependencies (better-sqlite3, zod, Node, etc.) — report directly to those projects.
+- Vulnerabilities in upstream dependencies (libSQL, zod, Node, etc.) — report directly to those projects.
 - Vulnerabilities in worker providers (codex CLI, OpenRouter API, LM Studio) — report directly to those projects.
 - Vulnerabilities in models themselves (jailbreaks, hallucinations, etc.) — report to the provider.
 - Issues that require an attacker who already has shell access on the host (Relay runs as the user, by design).
 
-## Secret handling in v0.1.0
+## Secret handling
 
 Provider API keys live in environment variables only:
 - `OPENROUTER_API_KEY` — OpenRouter API key
@@ -115,4 +115,4 @@ The `RELAY_MEMORY_ALLOWED_WORKDIRS` env var allows you to restrict which workdir
 
 ## Audit trail
 
-Every `relay run` and `relay parallel` creates a row in the `runs` table with the full input + output. This is your audit trail. It's not signed or tamper-evident in v0.1.0; trust the local filesystem.
+Every `relay run` and `relay parallel` creates a row in the `runs` table with the full input + output. This is your audit trail. It is not signed or tamper-evident; trust the local filesystem.
