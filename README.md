@@ -7,10 +7,28 @@ shared memory, deliberate delegation, and visible outcomes across the agents
 you already use. It is the layer behind your lead model, not another model to
 choose between.
 
+## Get started
+
+Relay installs from your terminal. It keeps your memory in `~/.relay/` and
+then walks you through connecting the coding tools you already use.
+
+**Mac or Linux**
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ghanavati/relay/main/scripts/install-release.sh | bash
 relay setup --everything
 ```
+
+**Windows PowerShell**
+
+```powershell
+irm https://raw.githubusercontent.com/ghanavati/relay/main/scripts/install-release.ps1 | iex
+relay setup --everything
+```
+
+The first command installs Relay. The second sets up your local memory and
+offers to connect Claude Code, Codex, or another available tool. Open a new
+terminal if the installer asks you to add Relay to your PATH.
 
 ## What Relay does
 
