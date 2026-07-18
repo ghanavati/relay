@@ -381,16 +381,6 @@ export async function executeInitCommand(args: InitArgs, io: CliIO): Promise<num
     }
   }
 
-  // CC memory migration offer (unchanged)
-  let migrateMemory = false;
-  if (rl && ccMemory) {
-    migrateMemory = await ask(rl, `\nFound Claude Code auto-memory at ${ccMemoryPath}. Migrate to Relay's memory store?`);
-  }
-  if (migrateMemory) {
-    io.stdout('\nRun: node dist/scripts/migrate-cc-memory.js --apply\n');
-    io.stdout('(Run --inventory + --dry-run first to inspect.)\n');
-  }
-
   // Persist config (providers + auto_extract.model if chosen)
   config.providers = providers;
   await writeConfig(config);

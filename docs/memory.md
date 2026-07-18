@@ -54,8 +54,6 @@ Relay computes a trust level for each entry on read:
 | `provisional` | human source OR 1+ successful recall |
 | `unverified` | default for auto-written entries |
 
-The migration script (`migrate-cc-memory.ts`) sets `human + pinned` so every imported entry is `trusted`.
-
 ## The recalled_lessons context layer
 
 When Relay dispatches a task to a worker (codex, lmstudio, openrouter), the recalled_lessons context layer is injected if `RELAY_RECALLED_LESSONS=1` is set. It runs:
@@ -84,28 +82,6 @@ This writes to `<project>/.claude/settings.json` SessionStart array. The hook ru
 Uninstall:
 ```
 relay memory hook --uninstall
-```
-
-## Migrating from Claude Code memory
-
-If you've been using Claude Code's auto-memory at `~/.claude/projects/.../memory/`, migrate it:
-
-```
-node dist/scripts/migrate-cc-memory.js --inventory   # scan, no writes
-node dist/scripts/migrate-cc-memory.js --dry-run     # show proposed mappings
-node dist/scripts/migrate-cc-memory.js --apply       # write to MemoryStore
-node dist/scripts/migrate-cc-memory.js --archive     # mv source to .archived-YYYY-MM-DD
-```
-
-The migration:
-- Maps frontmatter type → memory_type: `feedback`→`lesson`, `project`→`context`, `reference`/`user`→`fact`
-- Skips tombstones (entries with name='SUPERSEDED' or description starting 'REMOVED')
-- Tags every imported entry with `migration:YYYY-MM-DD` for rollback
-- Sets `memory_source: 'human'` + `pinned: true` (→ trust_level: trusted)
-
-Rollback:
-```sql
-UPDATE memories SET superseded_by='migration-rollback' WHERE tags_json LIKE '%"migration:2026-05-02"%';
 ```
 
 ## Promoting a memory to permanent rules

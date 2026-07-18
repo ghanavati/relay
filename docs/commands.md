@@ -268,6 +268,3 @@ Example: `relay doctor --json`.
 Emit shell completion script for the named shell.
 Example: `relay completion zsh > "${fpath[1]}/_relay"`.
 
-## Migration script
-
-`node dist/scripts/migrate-cc-memory.js [--inventory|--dry-run|--apply|--archive]` — see [docs/memory.md](./memory.md) for the 5-phase migration of Claude Code auto-memory.

@@ -120,7 +120,6 @@ Full flag reference: [docs/commands.md](docs/commands.md). Cheat sheet: [docs/cl
 
 Worked examples for common workflows live under [docs/recipes/](docs/recipes/):
 
-- [Migrating Claude Code memory](docs/recipes/migrating-cc-memory.md) — port existing CC auto-memory into the SQLite store.
 - [Morning startup](docs/recipes/morning-startup.md) — daily `relay doctor` + recall flow.
 - [Parallel dispatch with LM Studio](docs/recipes/parallel-with-lmstudio.md) — concurrency rules and worktree isolation.
 - [QMD companion](docs/recipes/qmd-companion.md) — pairing Relay with the QMD planner.
