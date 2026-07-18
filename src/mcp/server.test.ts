@@ -1,215 +1,298 @@
 /**
- * Phase 9 (REQ-MCP-01/02/03/05) — in-process MCP server tests.
+ * Phase 9 / Plan 04 — startMcpServer: build, register, connect, shut down.
  *
- * Client and server run over InMemoryTransport in this process, so the
- * in-memory SQLite store is shared and assertable. Protocol-level e2e
- * against the real binary lives in src/cli/cmd-mcp-e2e.test.ts.
+ * The server is tested with an INJECTED fake SDK + transport so no real stdio
+ * is ever opened (the real StdioServerTransport would take ownership of
+ * process.stdin/stdout — Plan 05's linked-pair integration test owns the real
+ * wire). These tests prove the assembly contract:
+ *
+ *   1. exactly the two memory tools register — nothing more (D-07: the killed
+ *      control/dispatch scope stays structurally absent)
+ *   2. truthful identity: name 'relay', version = the CLI's version (asserted
+ *      against the live `relay --version` output, not a copied constant)
+ *   3. construction goes through the resolved SDK surface (the injected
+ *      constructors are used — imports are never hardcoded; MCP-05/T-09-12)
+ *   4. clean shutdown: client disconnect resolves the handle's closed promise;
+ *      shutdown() is idempotent; no process signal listeners are installed
  */
+
 process.env['RELAY_DB_PATH'] = ':memory:';
-delete process.env['RELAY_MCP_DEFAULT_WORKDIR'];
 delete process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'];
+delete process.env['RELAY_EMBEDDING_MODEL'];
 
-import { test, describe } from 'node:test';
+import { describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { buildMcpServer, MCP_TOOL_NAMES } from './server.js';
-import { MemoryStore } from '../memory/memory-store.js';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { startMcpServer, MCP_SERVER_NAME } from './server.js';
+import { MCP_SDK_PACKAGE } from './sdk-probe.js';
+import type { McpConstructor, ResolvedMcpSdk } from './sdk-probe.js';
+import { RecallArgsSchema, RememberArgsSchema } from '../contracts/memory.js';
 
-type TextResult = { content: Array<{ type: string; text: string }>; isError?: boolean };
+// ---------------------------------------------------------------------------
+// Fake SDK — mimics the verified 1.29.0 surface (constructor shape, ownership
+// chain transport.onclose → underlying server.onclose, close() → transport
+// close). Built per-test via a factory so instance records never bleed.
+// ---------------------------------------------------------------------------
 
-async function connectedClient(): Promise<Client> {
-  const server = buildMcpServer();
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  await server.connect(serverTransport);
-  const client = new Client({ name: 'relay-mcp-test', version: '0.0.0' });
-  await client.connect(clientTransport);
-  return client;
+interface FakeRegistration {
+  readonly name: string;
+  readonly config: { description?: string; inputSchema?: unknown };
+  readonly handler: unknown;
 }
 
-function parseText(result: unknown): Record<string, unknown> {
-  const r = result as TextResult;
-  assert.ok(Array.isArray(r.content) && r.content[0]?.type === 'text', 'expected text content');
-  return JSON.parse(r.content[0]!.text) as Record<string, unknown>;
+interface FakeSdkKit {
+  sdk: ResolvedMcpSdk;
+  serverInstances: FakeServerShape[];
+  transportInstances: FakeTransportShape[];
 }
 
-describe('mcp server surface (REQ-MCP-01/02)', () => {
-  test('tools/list exposes exactly the relay_ tool set', async () => {
-    const client = await connectedClient();
-    const { tools } = await client.listTools();
-    const names = tools.map(t => t.name).sort();
-    assert.deepEqual(names, [...MCP_TOOL_NAMES].sort());
-    assert.ok(names.every(n => n.startsWith('relay_')), 'D-04: relay_ prefix on every tool');
-    await client.close();
-  });
+interface FakeTransportShape {
+  started: boolean;
+  closed: boolean;
+  onclose?: () => void;
+  start(): Promise<void>;
+  close(): Promise<void>;
+}
 
-  test('prompts/list exposes relay-context', async () => {
-    const client = await connectedClient();
-    const { prompts } = await client.listPrompts();
-    assert.ok(prompts.some(p => p.name === 'relay-context'));
-    await client.close();
-  });
-});
+interface FakeServerShape {
+  serverInfo: { name?: string; version?: string };
+  registered: FakeRegistration[];
+  connectedTransport: FakeTransportShape | undefined;
+  closeCalls: number;
+  server: { onclose?: () => void };
+  registerTool(name: string, config: FakeRegistration['config'], handler: unknown): unknown;
+  connect(transport: FakeTransportShape): Promise<void>;
+  close(): Promise<void>;
+}
 
-describe('mcp write path (REQ-MCP-03)', () => {
-  test('relay_remember writes worker-mcp source at unverified trust, never pinned', async () => {
-    const client = await connectedClient();
-    const result = await client.callTool({
-      name: 'relay_remember',
-      arguments: {
-        content: 'phase9 quarantine probe — written via MCP',
-        memory_type: 'lesson',
-        workdir: '/tmp/phase9-proj',
-        // Hostile extras: schema must drop these, not honor them.
-        pinned: true,
-        source_run_id: 'forged-run-id',
-      },
-    });
-    const payload = parseText(result);
-    const memoryId = payload['memory_id'] as string;
-    assert.ok(memoryId, 'remember returns memory_id');
+function makeFakeSdk(): FakeSdkKit {
+  const serverInstances: FakeServerShape[] = [];
+  const transportInstances: FakeTransportShape[] = [];
 
-    const store = new MemoryStore();
-    const row = store.getMemory(memoryId);
-    assert.ok(row, 'row persisted');
-    assert.equal(row!.memory_source, 'worker-mcp');
-    assert.equal(row!.trust_level, 'unverified');
-    assert.equal(row!.pinned, false, 'pinned must be stripped — pinning jumps quarantine');
-    assert.equal(row!.source_run_id, null, 'source_run_id must be stripped');
-    await client.close();
-  });
-
-  test("relay_remember rejects '*' workdir", async () => {
-    const client = await connectedClient();
-    const result = (await client.callTool({
-      name: 'relay_remember',
-      arguments: { content: 'x'.repeat(10), memory_type: 'fact', workdir: '*' },
-    })) as TextResult;
-    assert.equal(result.isError, true);
-    await client.close();
-  });
-
-  test('relay_remember without workdir and without env refuses', async () => {
-    const client = await connectedClient();
-    const result = (await client.callTool({
-      name: 'relay_remember',
-      arguments: { content: 'no workdir provided here', memory_type: 'fact' },
-    })) as TextResult;
-    assert.equal(result.isError, true);
-    assert.match(result.content[0]!.text, /workdir required/i);
-    await client.close();
-  });
-});
-
-describe('mcp quarantine at recall (REQ-MCP-05)', () => {
-  test('default recall excludes unverified MCP writes; explicit min_trust=unverified includes them', async () => {
-    const client = await connectedClient();
-    const marker = `quarantine-recall-${Date.now()}`;
-    await client.callTool({
-      name: 'relay_remember',
-      arguments: { content: `${marker} lesson body`, memory_type: 'lesson', workdir: '/tmp/phase9-q' },
-    });
-
-    const defaulted = parseText(await client.callTool({
-      name: 'relay_recall',
-      arguments: { query: marker, workdir: '/tmp/phase9-q' },
-    }));
-    const defaultedHits = (defaulted['memories'] as Array<{ content: string }>).filter(
-      m => m.content.includes(marker)
-    );
-    assert.equal(defaultedHits.length, 0, 'provisional floor must hide unverified MCP writes');
-
-    const opened = parseText(await client.callTool({
-      name: 'relay_recall',
-      arguments: { query: marker, workdir: '/tmp/phase9-q', min_trust: 'unverified' },
-    }));
-    const openedHits = (opened['memories'] as Array<{ content: string }>).filter(
-      m => m.content.includes(marker)
-    );
-    assert.equal(openedHits.length, 1, 'explicit unverified opt-in surfaces the write');
-    await client.close();
-  });
-
-  test('relay_recall without workdir refuses instead of going global', async () => {
-    const client = await connectedClient();
-    const result = (await client.callTool({
-      name: 'relay_recall',
-      arguments: { query: 'anything' },
-    })) as TextResult;
-    assert.equal(result.isError, true);
-    assert.match(result.content[0]!.text, /workdir required/i);
-    await client.close();
-  });
-
-  test('RELAY_MCP_DEFAULT_WORKDIR fallback applies', async () => {
-    process.env['RELAY_MCP_DEFAULT_WORKDIR'] = '/tmp/phase9-env';
-    try {
-      const client = await connectedClient();
-      const result = (await client.callTool({
-        name: 'relay_recall',
-        arguments: { query: 'env fallback probe' },
-      })) as TextResult;
-      assert.notEqual(result.isError, true, 'env-configured workdir must satisfy the gate');
-      await client.close();
-    } finally {
-      delete process.env['RELAY_MCP_DEFAULT_WORKDIR'];
+  class FakeTransport implements FakeTransportShape {
+    started = false;
+    closed = false;
+    onclose?: () => void;
+    constructor() {
+      transportInstances.push(this);
     }
-  });
-});
+    async start(): Promise<void> {
+      this.started = true;
+    }
+    async close(): Promise<void> {
+      if (this.closed) return;
+      this.closed = true;
+      this.onclose?.();
+    }
+  }
 
-describe('mcp read tools (REQ-MCP-02)', () => {
-  test('relay_get_memory round-trips a stored memory', async () => {
-    const client = await connectedClient();
-    const written = parseText(await client.callTool({
-      name: 'relay_remember',
-      arguments: { content: 'get-memory round trip body', memory_type: 'fact', workdir: '/tmp/phase9-get' },
-    }));
-    const fetched = parseText(await client.callTool({
-      name: 'relay_get_memory',
-      arguments: { memory_id: written['memory_id'] },
-    }));
-    assert.equal(fetched['content'], 'get-memory round trip body');
-    await client.close();
-  });
+  class FakeMcpServer implements FakeServerShape {
+    serverInfo: { name?: string; version?: string };
+    registered: FakeRegistration[] = [];
+    connectedTransport: FakeTransportShape | undefined;
+    closeCalls = 0;
+    // The real McpServer exposes the underlying protocol server whose onclose
+    // callback fires when the transport closes — same shape here.
+    server: { onclose?: () => void } = {};
+    constructor(serverInfo: { name?: string; version?: string }) {
+      this.serverInfo = serverInfo;
+      serverInstances.push(this);
+    }
+    registerTool(name: string, config: FakeRegistration['config'], handler: unknown): unknown {
+      this.registered.push({ name, config, handler });
+      return {};
+    }
+    async connect(transport: FakeTransportShape): Promise<void> {
+      this.connectedTransport = transport;
+      // Ownership contract from the real SDK: connect() takes over the
+      // transport callbacks and chains close through the protocol layer.
+      transport.onclose = () => {
+        this.server.onclose?.();
+      };
+      await transport.start();
+    }
+    async close(): Promise<void> {
+      this.closeCalls++;
+      await this.connectedTransport?.close();
+    }
+  }
 
-  test('relay_corpus_query on missing corpus returns isError with hint', async () => {
-    const client = await connectedClient();
-    const result = (await client.callTool({
-      name: 'relay_corpus_query',
-      arguments: { name: 'no-such-corpus', query_text: 'anything' },
-    })) as TextResult;
-    assert.equal(result.isError, true);
-    assert.match(result.content[0]!.text, /corpus_not_found/);
-    await client.close();
-  });
+  const sdk: ResolvedMcpSdk = {
+    packageName: MCP_SDK_PACKAGE,
+    version: '1.29.0',
+    McpServer: FakeMcpServer as unknown as McpConstructor,
+    StdioServerTransport: FakeTransport as unknown as McpConstructor,
+  };
+  return { sdk, serverInstances, transportInstances };
+}
 
-  test('relay_browse_runs returns a runs array on an empty store', async () => {
-    const client = await connectedClient();
-    const payload = parseText(await client.callTool({ name: 'relay_browse_runs', arguments: {} }));
-    assert.ok(Array.isArray(payload['runs']));
-    await client.close();
-  });
-});
+function cliVersion(): string {
+  const cliPath = fileURLToPath(new URL('../cli.js', import.meta.url));
+  const res = spawnSync(process.execPath, [cliPath, '--version'], { encoding: 'utf8' });
+  assert.strictEqual(res.status, 0, `relay --version must exit 0 (stderr: ${res.stderr})`);
+  const match = /^relay v(\S+)/.exec(res.stdout);
+  assert.ok(match?.[1], `--version output must look like 'relay vX.Y.Z' (got: ${res.stdout})`);
+  return match[1];
+}
 
-describe('relay-context prompt (REQ-MCP-07)', () => {
-  test('prompt resolves workdir and returns a text message', async () => {
-    const client = await connectedClient();
-    const result = await client.getPrompt({
-      name: 'relay-context',
-      arguments: { workdir: '/tmp/phase9-prompt' },
-    });
-    assert.ok(result.messages.length >= 1);
-    const first = result.messages[0]!;
-    assert.equal(first.content.type, 'text');
-    await client.close();
-  });
+describe('startMcpServer — tool surface (Test 1)', () => {
+  test('registers exactly relay_memory_recall + relay_memory_save — nothing more', async () => {
+    const { sdk, serverInstances, transportInstances } = makeFakeSdk();
+    const handle = await startMcpServer({ sdk, transport: new (sdk.StdioServerTransport)() });
 
-  test('prompt without workdir and without env refuses', async () => {
-    const client = await connectedClient();
-    await assert.rejects(
-      client.getPrompt({ name: 'relay-context', arguments: {} }),
-      /workdir required/i
+    assert.strictEqual(serverInstances.length, 1);
+    const srv = serverInstances[0]!;
+    assert.deepStrictEqual(
+      srv.registered.map((r) => r.name).sort(),
+      ['relay_memory_recall', 'relay_memory_save']
     );
-    await client.close();
+    assert.strictEqual(srv.registered.length, 2, 'no third tool may register');
+    assert.deepStrictEqual(
+      [...handle.toolNames].sort(),
+      ['relay_memory_recall', 'relay_memory_save']
+    );
+
+    // The registration carries Plan 03's contract: contracts Zod schema by
+    // identity (recall), a client-facing description, and a live handler.
+    // Save advertises the DERIVED schema (review fix 4): RememberArgsSchema
+    // minus pinned/source_run_id — MCP clients can never pin a memory.
+    const recall = srv.registered.find((r) => r.name === 'relay_memory_recall')!;
+    const save = srv.registered.find((r) => r.name === 'relay_memory_save')!;
+    assert.strictEqual(recall.config.inputSchema, RecallArgsSchema);
+    const saveShape = (save.config.inputSchema as typeof RememberArgsSchema).shape as Record<
+      string,
+      unknown
+    >;
+    assert.ok(!('pinned' in saveShape), 'pinned must not be client-settable over MCP');
+    assert.ok(!('source_run_id' in saveShape), 'source_run_id must not be client-settable over MCP');
+    assert.strictEqual(saveShape['content'], RememberArgsSchema.shape.content, 'single-source shape');
+    for (const reg of [recall, save]) {
+      assert.strictEqual(typeof reg.config.description, 'string');
+      assert.ok((reg.config.description ?? '').length > 0);
+      assert.strictEqual(typeof reg.handler, 'function');
+    }
+
+    // The injected transport was connected and started.
+    assert.strictEqual(transportInstances.length, 1);
+    assert.strictEqual(srv.connectedTransport, transportInstances[0]);
+    assert.strictEqual(transportInstances[0]!.started, true);
+
+    await handle.shutdown();
+  });
+});
+
+describe('startMcpServer — truthful identity (Test 2)', () => {
+  test('server name is relay and an injected version flows to the constructor', async () => {
+    const { sdk, serverInstances } = makeFakeSdk();
+    const handle = await startMcpServer({
+      sdk,
+      transport: new (sdk.StdioServerTransport)(),
+      version: '9.9.9-test',
+    });
+    const srv = serverInstances[0]!;
+    assert.strictEqual(srv.serverInfo.name, 'relay');
+    assert.strictEqual(srv.serverInfo.name, MCP_SERVER_NAME);
+    assert.strictEqual(srv.serverInfo.version, '9.9.9-test');
+    await handle.shutdown();
+  });
+
+  test('default version matches the CLI version (relay --version)', async () => {
+    const expected = cliVersion();
+    const { sdk, serverInstances } = makeFakeSdk();
+    const handle = await startMcpServer({ sdk, transport: new (sdk.StdioServerTransport)() });
+    const srv = serverInstances[0]!;
+    assert.strictEqual(srv.serverInfo.name, 'relay');
+    assert.strictEqual(
+      srv.serverInfo.version,
+      expected,
+      'an MCP client must see the same version the CLI reports'
+    );
+    await handle.shutdown();
+  });
+});
+
+describe('startMcpServer — resolved SDK surface (Test 3)', () => {
+  test('constructs via the injected SDK constructors — imports are not hardcoded', async () => {
+    const { sdk, serverInstances, transportInstances } = makeFakeSdk();
+    // No transport injected: the server must build one from the RESOLVED
+    // StdioServerTransport constructor (here the fake — proving the ctor in
+    // use is the one resolveMcpSdk returned, not a direct SDK import).
+    const handle = await startMcpServer({ sdk });
+
+    assert.strictEqual(serverInstances.length, 1, 'McpServer built from the injected SDK');
+    assert.strictEqual(handle.server, serverInstances[0]);
+    assert.strictEqual(transportInstances.length, 1, 'transport built from the injected SDK');
+    assert.strictEqual(serverInstances[0]!.connectedTransport, transportInstances[0]);
+
+    await handle.shutdown();
+  });
+});
+
+describe('startMcpServer — clean shutdown (Test 4)', () => {
+  test('client disconnect (transport close) resolves the closed promise', async () => {
+    const { sdk, transportInstances } = makeFakeSdk();
+    const transport = new (sdk.StdioServerTransport)() as FakeTransportShape;
+    const handle = await startMcpServer({ sdk, transport });
+
+    await transport.close(); // the client went away
+    await handle.closed; // must resolve — a hang here fails the test by timeout
+    assert.strictEqual(transportInstances[0]!.closed, true);
+
+    // shutdown after the connection already closed stays clean + idempotent.
+    await handle.shutdown();
+    await handle.shutdown();
+  });
+
+  test('proactive shutdown() closes the transport and resolves closed', async () => {
+    const { sdk, serverInstances } = makeFakeSdk();
+    const transport = new (sdk.StdioServerTransport)() as FakeTransportShape;
+    const handle = await startMcpServer({ sdk, transport });
+
+    await handle.shutdown();
+    await handle.closed;
+    assert.strictEqual(transport.closed, true);
+    assert.ok(serverInstances[0]!.closeCalls >= 1, 'server.close() drives the shutdown');
+  });
+
+  test("close() throwing the SDK's 'Not connected' is swallowed — shutdown resolves (review fix 6)", async () => {
+    const { sdk, serverInstances } = makeFakeSdk();
+    const transport = new (sdk.StdioServerTransport)() as FakeTransportShape;
+    const handle = await startMcpServer({ sdk, transport });
+
+    // The SDK 1.29.0 already-closed signal (shared/protocol.js literal).
+    serverInstances[0]!.close = async () => {
+      throw new Error('Not connected');
+    };
+
+    await handle.shutdown(); // must NOT reject
+    await handle.closed; // must resolve — no dangling
+  });
+
+  test('close() throwing a real error rejects shutdown() but still resolves closed (review fix 6)', async () => {
+    const { sdk, serverInstances } = makeFakeSdk();
+    const transport = new (sdk.StdioServerTransport)() as FakeTransportShape;
+    const handle = await startMcpServer({ sdk, transport });
+
+    serverInstances[0]!.close = async () => {
+      throw new Error('EPIPE: stream destroyed');
+    };
+
+    await assert.rejects(handle.shutdown(), /EPIPE: stream destroyed/);
+    await handle.closed; // the error travels via the rejection — closed never dangles
+    // Idempotent: a second shutdown() after the failed first stays clean.
+    await handle.shutdown();
+  });
+
+  test('installs no process signal listeners (signal handling is the CLI command layer)', async () => {
+    const sigintBefore = process.listenerCount('SIGINT');
+    const sigtermBefore = process.listenerCount('SIGTERM');
+    const { sdk } = makeFakeSdk();
+    const handle = await startMcpServer({ sdk });
+    assert.strictEqual(process.listenerCount('SIGINT'), sigintBefore);
+    assert.strictEqual(process.listenerCount('SIGTERM'), sigtermBefore);
+    await handle.shutdown();
+    assert.strictEqual(process.listenerCount('SIGINT'), sigintBefore);
+    assert.strictEqual(process.listenerCount('SIGTERM'), sigtermBefore);
   });
 });

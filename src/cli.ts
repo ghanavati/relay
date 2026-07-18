@@ -8,12 +8,20 @@
  */
 
 import { argv, exit, cwd } from 'node:process';
+import { readFileSync } from 'node:fs';
+import { formatFatal } from './errors.js';
+import { syncDbIfRemote } from './runtime/store/db.js';
 import type { CliIO } from './cli/commands.js';
 import { c, setColorMode, type ColorMode } from './cli/colors.js';
 // T50: env-driven cwd default for `relay memory recall` / `show-context`.
 import { resolveMemoryWorkdir } from './cli/resolve-memory-workdir.js';
 
-const VERSION = '0.1.2';
+// Version is read from package.json at runtime — never hardcode it (it drifts).
+const VERSION = (
+  JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+    version: string;
+  }
+).version;
 
 const io: CliIO = {
   cwd: cwd(),
@@ -116,7 +124,7 @@ ${c.cyan('MEMORY COMMANDS')}
     [--rules-file <path>]
 
   relay memory auto-extract --enable       Opt IN to auto-extraction (writes
-    [--allow-remote]                          .relay/auto-extract.json in workdir)
+    [--allow-remote] [--extractor <name>]      .relay/auto-extract.json in workdir)
     [--workdir <path>] [--json]
   relay memory auto-extract --from-stdin   CC SessionEnd hook entry point
     [--max-bytes <N>]                      (default: 32768)
@@ -178,15 +186,6 @@ ${c.cyan('CONTEXT COMMANDS')}
                                            memories from leaking into LLM context.
                                            Use 'any' to disable filter.)
 
-${c.cyan('MCP SERVER')}
-  relay mcp serve                          Serve memory tools over MCP stdio
-                                           (Claude Desktop, Cursor, Windsurf).
-                                           Tools: relay_recall, relay_remember,
-                                           relay_memory_search, relay_get_memory,
-                                           relay_corpus_query, relay_browse_runs,
-                                           relay_compare_runs + relay-context prompt.
-    [--selfcheck]                          In-process handshake check, exit 0/1
-
 ${c.cyan('DELEGATION COMMANDS')}
   relay run <task>                         Delegate a task to a worker
     [--provider codex|lmstudio|openrouter|anthropic] (default: codex)
@@ -198,6 +197,10 @@ ${c.cyan('DELEGATION COMMANDS')}
   relay parallel <spec.json>               Dispatch N tasks concurrently
     [--max-concurrency <N>]                (default: 4)
     [--json]
+
+  relay providers [--json]                 List available providers: builtin +
+                                           RELAY_PROVIDER_<NAME>_URL|KEY|TYPE|HEADER_*
+                                           env-discovered (keys masked)
 
 ${c.cyan('SESSION COMMANDS')} (universal control layer)
   relay session list                       List registered control sessions
@@ -233,6 +236,13 @@ ${c.cyan('SESSION COMMANDS')} (universal control layer)
   relay history [--limit N] [--provider P] [--status S] [--json]
   relay diff <run_id> [--json]             Show files_changed + diffs for a run
   relay compare <run_a> <run_b> [--json]   Side-by-side diff of two runs
+
+${c.cyan('MCP SERVER')}
+  relay mcp                                Start the stdio MCP server exposing memory
+                                           recall/save to MCP clients (logs on stderr)
+  relay mcp --http [--port N]              Same tools over token-gated HTTP (RELAY_MCP_TOKEN)
+  relay mcp --http --oauth [--port N]      Same tools behind OAuth 2.1 + PKCE (for ChatGPT);
+                                           /authorize gated by RELAY_MCP_OWNER_SECRET
 
 ${c.cyan('PROJECT')} (per-project privacy controls)
   relay project disable [--yes] [--json]   Write .relayignore, opt out of extract/recall/hook/share
@@ -294,11 +304,10 @@ async function dispatchRun(rest: readonly string[]): Promise<number> {
     io.stderr('relay run requires a task. Try: relay run "fix the failing test"\n');
     return 2;
   }
-  const provider = (lastOption(flags, 'provider') ?? 'codex') as 'codex' | 'openrouter' | 'lmstudio' | 'anthropic' | 'lmstudio-agentic' | 'omlx-agentic';
-  if (!['codex', 'openrouter', 'lmstudio', 'anthropic', 'lmstudio-agentic', 'omlx-agentic'].includes(provider)) {
-    io.stderr(`unsupported --provider: ${provider}. Try codex / openrouter / lmstudio / anthropic / lmstudio-agentic / omlx-agentic.\n`);
-    return 2;
-  }
+  // Provider names resolve through the registry inside cmd-run (DISPATCH-02):
+  // builtins + RELAY_PROVIDER_* env-discovered. Unknown names error there
+  // with the available-provider list.
+  const provider = lastOption(flags, 'provider') ?? 'codex';
   const timeoutMsRaw = lastOption(flags, 'timeout-ms');
   const timeoutMs = timeoutMsRaw ? Number.parseInt(timeoutMsRaw, 10) : 300_000;
 
@@ -323,7 +332,9 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     return 2;
   }
 
-  if (action === 'remember') {
+  // `save` aliases `remember` — the MCP tool is named relay_memory_save, so
+  // muscle memory from either surface works on the CLI.
+  if (action === 'remember' || action === 'save') {
     const content = flags.positionals.slice(1).join(' ').trim();
     if (!content) {
       io.stderr('relay memory remember requires <content>\n');
@@ -449,6 +460,7 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
       const { executeMemoryAutoExtractEnableCommand } = await import('./cli/cmd-memory-auto-extract-enable.js');
       return executeMemoryAutoExtractEnableCommand({
         allowRemote: isBool(flags, 'allow-remote'),
+        extractor: lastOption(flags, 'extractor'),
         workdir: lastOption(flags, 'workdir') ?? io.cwd,
         json: isBool(flags, 'json'),
       }, io);
@@ -462,7 +474,7 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
         json: isBool(flags, 'json'),
       }, io);
     }
-    io.stderr('relay memory auto-extract requires --enable [--allow-remote] OR --from-stdin\n');
+    io.stderr('relay memory auto-extract requires --enable [--allow-remote] [--extractor <name>] OR --from-stdin\n');
     return 2;
   }
 
@@ -610,7 +622,7 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     }, io);
   }
 
-  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, search, show-context, get, hook, to-rules, auto-extract, wipe, tail, recent, why, forget, rollback, consolidate, diff, chain, tag-stats\n`);
+  io.stderr(`relay memory: unknown action '${action}'. Try: remember (alias: save), recall, search, show-context, get, hook, to-rules, auto-extract, wipe, tail, recent, why, forget, rollback, consolidate, diff, chain, tag-stats\n`);
   return 2;
 }
 
@@ -757,12 +769,12 @@ async function main(): Promise<number> {
     return dispatchContext(rest);
   }
 
-  if (cmd === 'mcp') {
-    const { executeMcpCommand } = await import('./cli/cmd-mcp.js');
-    return executeMcpCommand(rest, io);
-  }
-
   if (cmd === 'run') return dispatchRun(rest);
+  if (cmd === 'providers') {
+    const flags = parseFlags(rest);
+    const { executeProvidersCommand } = await import('./cli/cmd-providers.js');
+    return executeProvidersCommand({ json: isBool(flags, 'json') }, io);
+  }
   if (cmd === 'session') return dispatchSession(rest);
   if (cmd === 'verify') return dispatchVerify(rest);
   if (cmd === 'doctor') {
@@ -864,6 +876,27 @@ async function main(): Promise<number> {
     const { executeTuiCommand } = await import('./cli/cmd-tui.js');
     return executeTuiCommand({ json: isBool(flags, 'json'), cwd: io.cwd, version: VERSION }, io);
   }
+  if (cmd === 'mcp') {
+    const flags = parseFlags(rest);
+    const { executeMcpCommand } = await import('./cli/cmd-mcp.js');
+    const portArg = lastOption(flags, 'port');
+    return executeMcpCommand(
+      {
+        version: VERSION,
+        http: isBool(flags, 'http'),
+        oauth: isBool(flags, 'oauth'),
+        port: portArg ? Number(portArg) : undefined,
+        token: process.env['RELAY_MCP_TOKEN'],
+        ownerSecret: process.env['RELAY_MCP_OWNER_SECRET'],
+        // Deliberate opt-in to run the OAuth door with NO owner secret
+        // (auto-approve). Only '1' or 'true' enables it; anything else is off so
+        // a stray empty/`0`/`false` value can't accidentally open the door.
+        allowNoAuth: ['1', 'true'].includes((process.env['RELAY_MCP_DANGEROUSLY_ALLOW_NO_AUTH'] ?? '').toLowerCase()),
+        publicUrl: process.env['RELAY_MCP_PUBLIC_URL'],
+      },
+      io,
+    );
+  }
   if (cmd === 'compare') {
     const flags = parseFlags(rest);
     const [runA, runB] = flags.positionals;
@@ -963,10 +996,18 @@ async function main(): Promise<number> {
 }
 
 main().then(
-  code => exit(code),
+  async code => {
+    // Remote-DB mode: flush this invocation's writes to the remote before the
+    // process exits. 'failed' = offline; the data is durable locally.
+    if ((await syncDbIfRemote()) === 'failed') {
+      io.stderr(
+        'relay: warning: could not sync to the remote database — changes are saved locally and will sync when it is reachable\n'
+      );
+    }
+    exit(code);
+  },
   err => {
-    io.stderr(`FATAL: ${(err as Error).message}\n`);
-    if ((err as Error).stack) io.stderr(`${(err as Error).stack}\n`);
+    io.stderr(formatFatal(err, process.env['RELAY_DEBUG'] === '1'));
     exit(2);
   }
 );

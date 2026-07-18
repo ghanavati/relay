@@ -1,18 +1,17 @@
 /**
  * Phase 9 (REQ-MCP-01/06 + pause sentinel) — protocol e2e against the real binary.
  *
- * Spawns `node dist/cli.js mcp serve` with an isolated HOME + file-backed DB,
+ * Spawns `node dist/cli.js mcp` with an isolated HOME + file-backed DB,
  * speaks raw newline-delimited JSON-RPC over stdio, and asserts:
  *   - initialize handshake (serverInfo.name === 'relay')
  *   - tools/list over the wire
  *   - remember → recall round-trip persists to the shared DB file
  *   - read audit row lands with read_source='mcp' (REQ-MCP-06)
  *   - pause sentinel (~/.relay/paused) blocks recall (privacy off-switch)
- *   - `mcp serve --selfcheck` exits 0
  */
 import { test, describe } from 'node:test';
 import * as assert from 'node:assert/strict';
-import Database from 'better-sqlite3';
+import Database from 'libsql';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -38,7 +37,7 @@ class McpProcess {
   private nextId = 1;
 
   constructor(env: Record<string, string | undefined>) {
-    this.child = spawn(process.execPath, [CLI, 'mcp', 'serve'], {
+    this.child = spawn(process.execPath, [CLI, 'mcp'], {
       env: { ...process.env, ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -84,10 +83,11 @@ class McpProcess {
 function textPayload(msg: JsonRpcMessage): Record<string, unknown> {
   const content = (msg.result as { content: Array<{ type: string; text: string }> }).content;
   assert.equal(content[0]!.type, 'text');
+  assert.ok(content[0]!.text.startsWith('{'), `MCP tool error: ${content[0]!.text}`);
   return JSON.parse(content[0]!.text) as Record<string, unknown>;
 }
 
-describe('mcp serve protocol e2e', () => {
+describe('mcp protocol e2e', () => {
   test('handshake, remember→recall round-trip, audit row, pause sentinel', async () => {
     const home = mkdtempSync(join(tmpdir(), 'relay-mcp-e2e-'));
     const dbPath = join(home, 'relay.db');
@@ -115,19 +115,19 @@ describe('mcp serve protocol e2e', () => {
 
       const list = await proc.request('tools/list', {});
       const tools = (list.result!['tools'] as Array<{ name: string }>).map(t => t.name);
-      assert.ok(tools.includes('relay_recall') && tools.includes('relay_remember'));
+      assert.ok(tools.includes('relay_memory_recall') && tools.includes('relay_memory_save'));
 
       const marker = `e2e-roundtrip-${Date.now()}`;
       const wrote = await proc.request('tools/call', {
-        name: 'relay_remember',
+        name: 'relay_memory_save',
         arguments: { content: `${marker} body`, memory_type: 'lesson', workdir },
       });
       const writePayload = textPayload(wrote);
       assert.ok(writePayload['memory_id'], 'memory_id returned over the wire');
 
       const recalled = await proc.request('tools/call', {
-        name: 'relay_recall',
-        arguments: { query: marker, workdir, min_trust: 'unverified' },
+        name: 'relay_memory_recall',
+        arguments: { query: marker, workdir, min_trust: 'unverified', token_budget: 1_000 },
       });
       const recallPayload = textPayload(recalled);
       const hits = (recallPayload['memories'] as Array<{ content: string }>).filter(
@@ -150,28 +150,13 @@ describe('mcp serve protocol e2e', () => {
         JSON.stringify({ paused_at: Date.now(), expires_at: null })
       );
       const paused = await proc.request('tools/call', {
-        name: 'relay_recall',
-        arguments: { query: marker, workdir, min_trust: 'unverified' },
+        name: 'relay_memory_recall',
+        arguments: { query: marker, workdir, min_trust: 'unverified', token_budget: 1_000 },
       });
       const pausedPayload = textPayload(paused);
       assert.equal(pausedPayload['paused'], true, 'pause sentinel must block MCP recall');
     } finally {
       proc.kill();
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  test('mcp serve --selfcheck exits 0', () => {
-    const home = mkdtempSync(join(tmpdir(), 'relay-mcp-self-'));
-    try {
-      const result = spawnSync(process.execPath, [CLI, 'mcp', 'serve', '--selfcheck'], {
-        env: { ...process.env, HOME: home, RELAY_DB_PATH: join(home, 'relay.db') },
-        encoding: 'utf8',
-        timeout: 30_000,
-      });
-      assert.equal(result.status, 0, `selfcheck failed: ${result.stdout} ${result.stderr}`);
-      assert.match(result.stdout, /"ok":\s*true/);
-    } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });

@@ -181,6 +181,12 @@ Human-driven control: spawn or register a session, open `relay tui`, select it i
 
 Model-requested control: a running model has no cross-session authority by default. When it needs to reach a peer it calls the `relay_control_request_grant` tool, which records a visible `control_requested` event — it appears in the Queue and the stream with an `llm` badge and a `pending` disposition. A human resolves it from the palette: `approve <request_id>` issues the grant, after which the model's next brokered `send` is delivered to the target; `deny <request_id>` closes it with no grant. A model cannot approve its own request — self-approval is rejected at the broker (`self_approval_blocked`), so authority only ever moves through a human. The control snapshot health and the pending grant-request queue depth are reported by `relay verify` and `relay doctor` as well (see below).
 
+## relay mcp
+
+### relay mcp
+Run Relay as a stdio MCP server. Exposes exactly two tools to the connected client: `relay_memory_recall` and `relay_memory_save` — thin wrappers over the same memory handlers and SQLite store the CLI uses, with the same `RELAY_MEMORY_ALLOWED_WORKDIRS` scoping. Blocks until the client disconnects (or SIGINT/SIGTERM); diagnostics on stderr, stdout reserved for protocol framing. Flags: `--http [--port <N>]` for the token-gated StreamableHTTP transport, `--oauth` for the OAuth variant (remote connectors) — plain stdio when none are given. Started by the MCP client (Claude Code, Claude Desktop, Cursor, ...), not by hand. `relay init` registers the server with detected clients automatically; manual registration recipe and security posture in [docs/mcp.md](./mcp.md).
+Example `.mcp.json` entry: `{"mcpServers": {"relay": {"command": "relay", "args": ["mcp"]}}}`.
+
 ## relay history / diff / compare
 
 ### relay history
@@ -262,6 +268,3 @@ Example: `relay doctor --json`.
 Emit shell completion script for the named shell.
 Example: `relay completion zsh > "${fpath[1]}/_relay"`.
 
-## Migration script
-
-`node dist/scripts/migrate-cc-memory.js [--inventory|--dry-run|--apply|--archive]` — see [docs/memory.md](./memory.md) for the 5-phase migration of Claude Code auto-memory.

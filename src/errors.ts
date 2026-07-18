@@ -42,6 +42,9 @@ export type ErrorCode =
   | "CONTROL_ADAPTER_DUPLICATE"
   // 08-fix — mutating `relay session` CLI refused inside an agentic sandbox.
   | "CONTROL_SANDBOX_DENIED"
+  // Phase 9 — provider registry (RELAY_PROVIDER_* env discovery).
+  | "UNKNOWN_PROVIDER"
+  | "PROVIDER_NAME_CONFLICT"
   | "UNKNOWN";
 
 export interface RelayError {
@@ -123,5 +126,18 @@ export const RELAY_ERROR_CODES: readonly ErrorCode[] = [
   "CONTROL_LOOP_DETECTED",
   "CONTROL_ADAPTER_DUPLICATE",
   "CONTROL_SANDBOX_DENIED",
+  "UNKNOWN_PROVIDER",
+  "PROVIDER_NAME_CONFLICT",
   "UNKNOWN",
 ] as const;
+
+/**
+ * Format an uncaught top-level error for the terminal. Message-only by
+ * default — stack traces are an opt-in via RELAY_DEBUG=1, never the default
+ * user-facing surface.
+ */
+export function formatFatal(err: unknown, debug: boolean): string {
+  const e = err instanceof Error ? err : new Error(String(err));
+  if (debug && e.stack) return `relay: ${e.message}\n${e.stack}\n`;
+  return `relay: ${e.message}\n(re-run with RELAY_DEBUG=1 for a stack trace)\n`;
+}

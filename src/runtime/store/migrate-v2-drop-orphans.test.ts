@@ -14,7 +14,7 @@ import { mkdtempSync, copyFileSync, rmSync, existsSync, statSync } from 'node:fs
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import Database from 'better-sqlite3';
+import Database from 'libsql';
 
 import { migrateDropOrphansV02 } from './migrate-v2-drop-orphans.js';
 import { readSchemaVersion, EXPECTED_SCHEMA_VERSION } from './schema-version.js';

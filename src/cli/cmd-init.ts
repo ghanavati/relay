@@ -365,6 +365,31 @@ export async function executeInitCommand(args: InitArgs, io: CliIO): Promise<num
     }
   }
 
+  // Step 6c — Register the Relay MCP server with detected MCP clients
+  // (Claude Code via its CLI, Claude Desktop, Cursor, Codex). Idempotent;
+  // per-client failures are reported, never abort init.
+  let mcpClientResults: import('./mcp-clients.js').McpWireResult[] = [];
+  {
+    let wantMcpWire = false;
+    if (rl) {
+      wantMcpWire = await ask(rl, '\nRegister the Relay memory MCP server with detected clients (Claude Code/Desktop, Cursor, Codex)?');
+    }
+    if (wantMcpWire) {
+      try {
+        const { wireMcpClients } = await import('./mcp-clients.js');
+        mcpClientResults = wireMcpClients();
+      } catch (err) {
+        if (!args.json) io.stderr(`(mcp client wiring failed: ${(err as Error).message})\n`);
+      }
+      if (!args.json) {
+        for (const r of mcpClientResults) {
+          const badge = r.status === 'wired' || r.status === 'already' ? '✓' : r.status === 'not-detected' ? '—' : '!';
+          io.stdout(`${badge} mcp ${r.client}: ${r.status}${r.status === 'not-detected' ? '' : ` (${r.detail})`}\n`);
+        }
+      }
+    }
+  }
+
   // Per-workdir auto-extract consent (--enable-auto-extract)
   let enabledAutoExtract = false;
   if (args.enableAutoExtract) {
@@ -379,16 +404,6 @@ export async function executeInitCommand(args: InitArgs, io: CliIO): Promise<num
     } catch (err) {
       if (!args.json) io.stderr(`(skipped auto-extract enable: ${(err as Error).message})\n`);
     }
-  }
-
-  // CC memory migration offer (unchanged)
-  let migrateMemory = false;
-  if (rl && ccMemory) {
-    migrateMemory = await ask(rl, `\nFound Claude Code auto-memory at ${ccMemoryPath}. Migrate to Relay's memory store?`);
-  }
-  if (migrateMemory) {
-    io.stdout('\nRun: node dist/scripts/migrate-cc-memory.js --apply\n');
-    io.stdout('(Run --inventory + --dry-run first to inspect.)\n');
   }
 
   // Persist config (providers + auto_extract.model if chosen)
@@ -413,6 +428,7 @@ export async function executeInitCommand(args: InitArgs, io: CliIO): Promise<num
         lm_model: chosenLmModel,
         auto_extract_enabled: enabledAutoExtract,
         llm_wiring: llmWiringResults,
+        mcp_clients: mcpClientResults,
         verify: { ok: verify.ok, detail: verify.detail },
       }) + '\n'
     );

@@ -1,120 +1,66 @@
-# MCP server — `relay mcp serve`
+# relay mcp — the MCP memory server
 
-Serve relay's memory tools over the [Model Context Protocol](https://modelcontextprotocol.io)
-so any MCP client — Claude Desktop, Cursor, Windsurf, Zed — can read and write
-the same SQLite memory store the CLI and hooks use.
+`relay mcp` runs Relay as a stdio MCP server. It exposes Relay's cross-session, cross-tool memory to any MCP client — the same SQLite store the CLI reads and writes, reachable from Claude Code, Claude Desktop, Cursor, and anything else that speaks MCP over stdio. The CLI is unchanged; this is a second front door onto the same store.
 
-**Honest scope.** MCP tools are *model-invoked*: the model calls `relay_recall`
-when it decides to, which is not every time it should. This is not ambient
-injection — for that, use the Claude Code `SessionStart` hook
-(`relay memory hook --install`). The `relay-context` prompt below is the
-one-tap middle ground for clients without hooks.
+Built on the official MCP TypeScript SDK (`@modelcontextprotocol/sdk@1.29.0`, exact-pinned, supply-chain verified before install).
 
-## Client setup
+## Registration
 
-Relay is not yet published to npm, so point your client at the built CLI by
-absolute path.
-
-**Claude Desktop** (`claude_desktop_config.json`):
+Claude Code — add to `.mcp.json` at the project root:
 
 ```json
 {
   "mcpServers": {
     "relay": {
-      "command": "node",
-      "args": ["/ABS/PATH/TO/relay/dist/cli.js", "mcp", "serve"],
-      "env": { "RELAY_MCP_DEFAULT_WORKDIR": "/ABS/PATH/TO/your-project" }
+      "command": "relay",
+      "args": ["mcp"],
+      "env": {
+        "RELAY_MEMORY_ALLOWED_WORKDIRS": "/Users/you/projects/app-a:/Users/you/projects/app-b"
+      }
     }
   }
 }
 ```
 
-**Cursor** (`.cursor/mcp.json` in your project):
+Claude Desktop — the same `mcpServers` block goes in `claude_desktop_config.json` (Settings → Developer → Edit Config). Other stdio MCP clients (Cursor, Codex, Windsurf) take the same `command` + `args` pair in their own config format.
 
-```json
-{
-  "mcpServers": {
-    "relay": {
-      "command": "node",
-      "args": ["/ABS/PATH/TO/relay/dist/cli.js", "mcp", "serve"],
-      "env": { "RELAY_MCP_DEFAULT_WORKDIR": "${workspaceFolder}" }
-    }
-  }
-}
-```
+`RELAY_MEMORY_ALLOWED_WORKDIRS` is optional but recommended: a colon-separated allowlist of project roots the server may read or write memory for. Without it, any workdir the client names is in scope. Set it so a client session in one project cannot pull another project's memory. The `env` field is per-entry, so different clients can get different scopes.
 
-Verify the wiring without a client:
-
-```bash
-relay mcp serve --selfcheck   # in-process handshake + tools/list, exit 0 on ok
-```
-
-## Workdir semantics (important)
-
-MCP clients have no meaningful working directory, so relay refuses to guess:
-
-1. an explicit `workdir` tool argument always wins (`'*'` = all projects, reads only);
-2. otherwise `RELAY_MCP_DEFAULT_WORKDIR` from the `env` block above;
-3. otherwise the call errors with instructions — **never** a silent global fallback.
-
-This is deliberate: a desktop client silently reading another project's memory
-is the failure mode the gate exists to prevent.
+Relay must already be provisioned for the client. If the client does not inherit
+your shell PATH, use the runtime's absolute executable path as `command`.
 
 ## Tools
 
+Exactly two tools, both thin wrappers over the same handlers the CLI uses:
+
 | Tool | What it does |
 |---|---|
-| `relay_recall` | Scored recall within a token budget (default 4000). |
-| `relay_memory_search` | Compact index (ID + tags + excerpt) — pair with `relay_get_memory`; ~10x cheaper for browsing. |
-| `relay_get_memory` | One entry, full content, by `memory_id`. |
-| `relay_remember` | Store a memory — quarantined, see below. |
-| `relay_corpus_query` | Query a corpus built with `relay corpus build` (read-only). |
-| `relay_browse_runs` | List recorded delegation runs. |
-| `relay_compare_runs` | Shared vs diverged files across runs. |
+| `relay_memory_recall` | Search memories (facts, decisions, lessons, context) for a project within a hard token budget. FTS5 keyword search with recency fallback. |
+| `relay_memory_save` | Persist a memory to the shared store so future sessions and other tools can recall it. Writes are deduplicated, rate-limited, and redacted by the store. |
 
-**Prompt:** `relay-context` — renders the recalled lessons + decisions for a
-workdir (same defaults as `relay memory show-context`) as a one-tap context
-loader in clients that surface MCP prompts.
+Saves arriving over MCP carry the `worker-mcp` source tag and start at `unverified` trust — the same trust model as every other non-human write. MCP clients cannot set `pinned` or `source_run_id`: the save schema omits both, and the handler forces `pinned: false` regardless. Pinning (which protects a row from decay, GC, and conflict resolution) stays a CLI/human action.
 
-## Trust quarantine on MCP writes
+There is no dispatch tool, no shell tool, and no session-control surface over MCP. Memory is the whole v1 surface.
 
-Every `relay_remember` over MCP enters as `memory_source='worker-mcp'` at
-trust `unverified`. Default recall (CLI, hooks, **and** MCP — the floor is
-`min_trust='provisional'` everywhere an LLM is on the other end) will not
-surface these entries until they are promoted by normal trust mechanics
-(successful recalls, or human pinning via the CLI). `pinned` and
-`source_run_id` are not accepted over MCP — pinning jumps the quarantine and
-`source_run_id` bypasses the write rate limit.
+## Getting Claude to use the tools automatically
 
-Practical effect: a prompt-injected model can write poisoned "lessons" all day;
-they sit invisible at `unverified` until a human (or proven use) promotes them.
-Review incoming MCP writes with:
+Models call tools whose descriptions say when to call them. Both tool descriptions carry that trigger language — recall before answering anything about past decisions, agreements, lessons, or project history; save when the user states or confirms something durable — so a client model reaches for memory without being told.
 
-```bash
-relay memory recent --limit 20        # look for source worker-mcp
-relay memory why <memory_id>          # score + provenance breakdown
-relay memory forget <memory_id>       # discard
-```
+Set `RELAY_MEMORY_ALLOWED_WORKDIRS` in the server's `env` (`.mcp.json` or `claude_desktop_config.json`, as above). With it set, a call that omits `workdir` defaults to the first allowed root — important for Claude Desktop, which launches the server from a junk cwd — and a forbidden-workdir error names the allowed roots so the model can retry with a valid path.
 
-## Pause switch
+For Claude Desktop there is also an optional skill at [docs/skills/relay-memory/](skills/relay-memory/) that teaches the model the recall-first habit.
 
-The privacy off-switch holds here too: while `~/.relay/paused` (or
-`<workdir>/.relay/paused`) exists and is unexpired, `relay_recall`,
-`relay_memory_search`, `relay_remember`, and the `relay-context` prompt all
-return a `paused: true` notice instead of touching memory. `relay resume`
-re-enables.
+## Reach
 
-## Audit
+stdio reaches any app that is an MCP client: Claude Desktop, Claude Code, Cursor, Codex, Windsurf — and harnesses that run those agents (Conductor and the like) when MCP config passes through to the agent layer.
 
-Every MCP read lands in `memory_reads` with `read_source='mcp'`; writes carry
-`memory_source='worker-mcp'`. `relay memory why <id>` shows surfacings as usual.
+ChatGPT and other web clients reach the same two tools over `relay mcp --http --oauth` — an OAuth 2.1 + PKCE door bound to localhost, exposed through a tunnel you run yourself (see `scripts/mcp-tunnel-supervisor.sh`). Client registrations and token hashes persist in `~/.relay/mcp-oauth-state.json` (owner-only 0600), so a server restart does not invalidate the connector. The stdio default stays fully local — plain `relay mcp` opens no port and serves only the process that spawned it.
 
-## Troubleshooting
+## Security posture
 
-- **Client shows no relay server** — check the absolute path in `args`; run
-  the selfcheck; on macOS ensure the client can run `node` (full path to the
-  binary if needed).
-- **`workdir required` errors** — set `RELAY_MCP_DEFAULT_WORKDIR` in the
-  server's `env` block, or have the model pass `workdir` explicitly.
-- **Writes don't show up in recall** — that's the quarantine working; pass
-  `min_trust: "unverified"` to see them, or promote them.
+- **Workdir scoping** — `RELAY_MEMORY_ALLOWED_WORKDIRS` applies over MCP exactly as in the CLI. A recall or save for a workdir outside the allowlist returns a `MEMORY_WORKDIR_FORBIDDEN` error, never data.
+- **No pinning over MCP** — `relay_memory_save` strips `pinned` and `source_run_id` (schema omission + handler force). An external client can never give its writes the score boost and GC/conflict protection pinned rows get, or claim run provenance.
+- **Boundary redaction** — every value crossing the MCP boundary (results and error messages) passes through the secret redactor on the way out.
+- **stderr-only logs** — diagnostics go to stderr; stdout carries only protocol framing, so a log line can never corrupt the client connection.
+- **stdio trusts the OS user** — any local process that can pipe into `relay mcp` stdin acts as you. That is the stdio trust model; see [SECURITY.md](../SECURITY.md).
+- **No dispatch/shell/control** — those surfaces are structurally absent from the MCP server, not gated off.

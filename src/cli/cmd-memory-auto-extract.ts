@@ -46,9 +46,16 @@ import {
 import { redactSecretsAndPII } from '../security/redaction-pii.js';
 import {
   extractLessonsViaLmStudio,
+  buildPrompt,
+  stripJsonFences,
   type ExtractionOptions,
   type ExtractionResult,
 } from '../memory/auto-extract-runner.js';
+import {
+  dispatchExtraction as dispatchExtractionDefault,
+  type DispatchExtractionOptions,
+} from '../memory/extract-dispatch.js';
+import { resolveProvider, type ProviderConfig } from '../workers/provider-registry.js';
 import {
   cleanupAndValidate,
   type CleanupResult,
@@ -136,6 +143,11 @@ export interface AutoExtractDeps {
   readonly loadTranscript?: (path: string, maxBytes: number) => TranscriptWindow;
   readonly redact?: (text: string) => string;
   readonly extractLessons?: (opts: ExtractionOptions) => Promise<ExtractionResult>;
+  readonly dispatchExtraction?: (
+    providerName: string,
+    prompt: string,
+    opts: DispatchExtractionOptions,
+  ) => Promise<string>;
   readonly cleanupAndValidate?: (raw: string, minConfidence: number) => CleanupResult;
   readonly checkBerry?: (opts: CheckLessonOptions) => Promise<BerryCheckResult>;
   readonly remember?: typeof handleRemember;
@@ -161,7 +173,8 @@ type ConsentLoadResultLike =
   | { ok: false; reason: string; detail?: string };
 
 const DEFAULT_ENDPOINT = 'http://localhost:1234';
-const DEFAULT_TIMEOUT_MS = 25_000;
+const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_NON_LMSTUDIO_TRANSCRIPT_CHAR_CAP = 600_000;
 const TTL_HOURS_30_DAYS = 30 * 24;
 const LMS_DISCOVERY_TIMEOUT_MS = 4_000;
 /** Hosts treated as local for T4 endpoint validation. IPv6 brackets stripped first. */
@@ -222,6 +235,11 @@ async function runPipeline(
   const now = deps.now ?? Date.now;
   const startedAt = now();
   const audit = (entry: AuditEntry): Promise<void> => appendAudit(entry, deps.auditPath);
+  let transcriptNote: string | undefined;
+  const emitResult = (
+    status: AutoExtractStatus,
+    entry: AuditEntry,
+  ): Promise<void> => emit(io, args, status, audit, withAuditNote(entry, transcriptNote));
 
   // 1. stdin → payload
   const payload = await readPayload(args, io, deps, audit);
@@ -237,7 +255,7 @@ async function runPipeline(
   // `consent.json` with `enabled:true` cannot override a project-level
   // opt-out — the explicit `disable` action is the stronger signal.
   if (await isProjectOptedOut(payload.value.cwd)) {
-    await emit(io, args, 'skipped:project-disabled', audit, {
+    await emitResult('skipped:project-disabled', {
       ts: new Date().toISOString(),
       session_id: payload.value.session_id,
       cwd: payload.value.cwd,
@@ -252,7 +270,7 @@ async function runPipeline(
   if (!consentResult.ok) {
     const status: AutoExtractStatus =
       consentResult.reason === 'no-file' ? 'skipped:no-consent' : 'skipped:no-consent';
-    await emit(io, args, status, audit, {
+    await emitResult(status, {
       ts: new Date().toISOString(),
       session_id: payload.value.session_id,
       cwd: payload.value.cwd,
@@ -265,7 +283,7 @@ async function runPipeline(
 
   const consent = consentResult.consent;
   if (consent.enabled === false) {
-    await emit(io, args, 'skipped:disabled', audit, {
+    await emitResult('skipped:disabled', {
       ts: new Date().toISOString(),
       session_id: payload.value.session_id,
       cwd: payload.value.cwd,
@@ -275,37 +293,53 @@ async function runPipeline(
     return 0;
   }
 
-  // 3. provider gating — v1 supports lmstudio only. allow_remote=false blocks anything else.
-  const provider = String(env['RELAY_AUTO_EXTRACT_PROVIDER'] ?? 'lmstudio');
-  if (provider !== 'lmstudio' && consent.allow_remote === false) {
-    await emit(io, args, 'skipped:no-llm', audit, {
+  // 3. provider resolution + remote gate. The extractor is an open provider
+  // name resolved through the same registry as `relay run`.
+  const provider = resolveAutoExtractBackend(env, consent);
+  let providerConfig: ProviderConfig;
+  try {
+    providerConfig = resolveProvider(provider, env);
+  } catch (err) {
+    await emitResult('skipped:no-llm', {
       ts: new Date().toISOString(),
       session_id: payload.value.session_id,
       cwd: payload.value.cwd,
       status: 'skipped:no-llm',
       provider,
       duration_ms: now() - startedAt,
-      error: `provider '${provider}' is remote and consent.allow_remote=false`,
+      error: (err as Error).message,
     });
     return 0;
   }
-  if (provider !== 'lmstudio') {
-    // Even with allow_remote=true, only lmstudio is implemented in v1.
-    await emit(io, args, 'skipped:no-llm', audit, {
+
+  const remoteEndpoint = remoteEndpointForProvider(providerConfig, env);
+  // codex/claude run as local subprocesses but EGRESS to their cloud service, so
+  // local-only consent (allow_remote:false) must block them exactly like a non-local
+  // HTTP endpoint — otherwise the privacy guard silently leaks the transcript to the
+  // cloud (the subprocess type bypassed the gate before this).
+  const cloudSubprocess = providerConfig.type === 'subprocess';
+  const isRemote =
+    cloudSubprocess || (remoteEndpoint !== null && !isLocalEndpoint(remoteEndpoint));
+  if (isRemote && consent.allow_remote !== true) {
+    const where = remoteEndpoint ?? `${provider} (cloud subprocess)`;
+    await emitResult('error:remote-llm-blocked', {
       ts: new Date().toISOString(),
       session_id: payload.value.session_id,
       cwd: payload.value.cwd,
-      status: 'skipped:no-llm',
+      status: 'error:remote-llm-blocked',
       provider,
       duration_ms: now() - startedAt,
-      error: `provider '${provider}' not supported in v1 (only lmstudio)`,
+      error:
+        `provider '${provider}' sends transcripts off-machine (${where}). ` +
+        `To allow this, set "allow_remote": true in <cwd>/.relay/auto-extract.json, ` +
+        `or choose a local extractor. Localhost hosts: 127.0.0.1, ::1, localhost.`,
     });
     return 0;
   }
 
   // 4. transcript exists?
   if (!existsSync(payload.value.transcript_path)) {
-    await emit(io, args, 'skipped:no-transcript', audit, {
+    await emitResult('skipped:no-transcript', {
       ts: new Date().toISOString(),
       session_id: payload.value.session_id,
       cwd: payload.value.cwd,
@@ -317,13 +351,20 @@ async function runPipeline(
     return 0;
   }
 
-  // 5. load trailing window
-  const window = (deps.loadTranscript ?? loadRecentTranscriptWindow)(
+  // 5. load transcript. Non-lmstudio providers receive the full transcript up
+  // to the 600k char cap; lmstudio keeps the old bounded recent window.
+  const transcriptLoad = await loadTranscriptForProvider(
+    provider,
     payload.value.transcript_path,
-    args.maxBytes ?? consent.max_bytes ?? DEFAULT_WINDOW_BYTES
+    args,
+    consent,
+    deps,
+    env,
   );
+  transcriptNote = transcriptLoad.note;
+  const window = transcriptLoad.window;
   if (window.turnsRead === 0) {
-    await emit(io, args, 'skipped:empty-window', audit, {
+    await emitResult('skipped:empty-window', {
       ts: new Date().toISOString(),
       session_id: payload.value.session_id,
       cwd: payload.value.cwd,
@@ -355,39 +396,21 @@ async function runPipeline(
   const redactedTranscript = redact(window.jsonl);
   const redactionHits = countRedactionHits(window.jsonl, redactedTranscript);
 
-  // 7. LM Studio extraction
-  const endpoint = String(env['RELAY_AUTO_EXTRACT_ENDPOINT'] ?? DEFAULT_ENDPOINT);
+  // 7. extraction
   const timeoutMs = parsePositiveInt(env['RELAY_AUTO_EXTRACT_TIMEOUT_MS']) ?? DEFAULT_TIMEOUT_MS;
-
-  // T4 — endpoint host validation. Refuse non-localhost endpoints unless the
-  // user has explicitly opted in via consent.allow_remote=true. This protects
-  // transcripts from being shipped to a remote LLM by accident (env var typo,
-  // shared shell config, malicious actor).
-  if (!isLocalEndpoint(endpoint) && consent.allow_remote !== true) {
-    await emit(io, args, 'error:remote-llm-blocked', audit, {
-      ts: new Date().toISOString(),
-      session_id: payload.value.session_id,
-      cwd: payload.value.cwd,
-      status: 'error:remote-llm-blocked',
-      provider,
-      turns_read: window.turnsRead,
-      transcript_bytes: window.bytes,
-      redaction_hits: redactionHits,
-      duration_ms: now() - startedAt,
-      error:
-        `endpoint '${endpoint}' is not localhost. To allow remote endpoints, ` +
-        `set "allow_remote": true in <cwd>/.relay/auto-extract.json. ` +
-        `Localhost hosts: 127.0.0.1, ::1, localhost.`,
-    });
-    return 0;
-  }
 
   // T9 — model resolution. Order: env var → consent.model → auto-discover
   // first IDLE local model via `lms ps --json`. No hard-coded default — if
   // every layer is empty we surface error:no-model with actionable guidance.
-  const modelResolution = await resolveModel(env, consent, deps);
-  if (modelResolution.kind === 'none') {
-    await emit(io, args, 'error:no-model', audit, {
+  const modelResolution =
+    providerConfig.type !== 'subprocess' || deps.extractLessons !== undefined
+      ? await resolveModel(env, consent, deps)
+      : { kind: 'none' as const };
+  if (
+    (providerConfig.type !== 'subprocess' || deps.extractLessons !== undefined) &&
+    modelResolution.kind === 'none'
+  ) {
+    await emitResult('error:no-model', {
       ts: new Date().toISOString(),
       session_id: payload.value.session_id,
       cwd: payload.value.cwd,
@@ -407,9 +430,9 @@ async function runPipeline(
     });
     return 0;
   }
-  const model = modelResolution.model;
+  const model = modelResolution.kind === 'ok' ? modelResolution.model : undefined;
 
-  const extract = deps.extractLessons ?? extractLessonsViaLmStudio;
+  const endpoint = String(env['RELAY_AUTO_EXTRACT_ENDPOINT'] ?? DEFAULT_ENDPOINT);
   // Phase 6 T4 — fetch existing memories to enable delta extraction. Default
   // pulls top candidates from MemoryStore for the workdir (~2000 token budget,
   // bounded by getCandidates 500-row hard cap). Failure: empty list, extractor
@@ -431,13 +454,54 @@ async function runPipeline(
       return [];
     }
   })();
-  const extraction = await extract({
-    transcript: redactedTranscript,
-    endpoint,
-    model,
-    timeoutMs,
-    existingMemories,
-  });
+  let extraction: ExtractionResult;
+  if (deps.extractLessons !== undefined) {
+    extraction = await deps.extractLessons({
+      transcript: redactedTranscript,
+      endpoint,
+      model: model ?? '',
+      timeoutMs,
+      existingMemories,
+    });
+  } else if (provider === 'lmstudio') {
+    extraction = await extractLessonsViaLmStudio({
+      transcript: redactedTranscript,
+      endpoint,
+      model: model ?? '',
+      timeoutMs,
+      existingMemories,
+    });
+  } else {
+    const prompt = buildPrompt(redactedTranscript, existingMemories);
+    const dispatch = deps.dispatchExtraction ?? dispatchExtractionDefault;
+    const dispatchStarted = now();
+    try {
+      const raw = await dispatch(provider, prompt, {
+        timeoutMs,
+        model,
+        workdir: payload.value.cwd,
+        env,
+      });
+      const rawOutput = stripJsonFences(raw);
+      extraction =
+        rawOutput.length > 0
+          ? { status: 'ok', rawOutput, durationMs: now() - dispatchStarted }
+          : {
+              status: 'error:empty',
+              durationMs: now() - dispatchStarted,
+              note: `${provider} returned empty output`,
+            };
+    } catch (err) {
+      const code = typeof (err as { code?: unknown }).code === 'string'
+        ? (err as { code: string }).code
+        : '';
+      extraction = {
+        status: code === 'TIMEOUT' ? 'error:timeout' : 'error:llm-down',
+        durationMs: now() - dispatchStarted,
+        note: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
 
   if (extraction.status !== 'ok' || !extraction.rawOutput) {
     const status: AutoExtractStatus =
@@ -448,7 +512,7 @@ async function runPipeline(
           : extraction.status === 'error:parse' || extraction.status === 'error:empty'
             ? 'error:parse'
             : 'error:llm-down';
-    await emit(io, args, status, audit, {
+    await emitResult(status, {
       ts: new Date().toISOString(),
       session_id: payload.value.session_id,
       cwd: payload.value.cwd,
@@ -476,7 +540,7 @@ async function runPipeline(
         : cleanup.reason === 'low-confidence'
           ? 'skipped:low-confidence'
           : 'error:schema';
-    await emit(io, args, status, audit, {
+    await emitResult(status, {
       ts: new Date().toISOString(),
       session_id: payload.value.session_id,
       cwd: payload.value.cwd,
@@ -552,7 +616,7 @@ async function runPipeline(
 
   if (survivors.length === 0) {
     const status: AutoExtractStatus = anyFlagged ? 'error:berry-flagged' : 'skipped:low-confidence';
-    await emit(io, args, status, audit, {
+    await emitResult(status, {
       ts: new Date().toISOString(),
       session_id: payload.value.session_id,
       cwd: payload.value.cwd,
@@ -615,7 +679,7 @@ async function runPipeline(
   // bucket; we keep `error:write` in the union for backward compat with consumers
   // reading old audit logs).
   if (failed > 0 && written === 0) {
-    await emit(io, args, 'error:write-all-failed', audit, {
+    await emitResult('error:write-all-failed', {
       ts: new Date().toISOString(),
       session_id: payload.value.session_id,
       cwd: payload.value.cwd,
@@ -637,7 +701,7 @@ async function runPipeline(
   // subsumed — write-side partial takes precedence because it surfaces a
   // recoverable but non-trivial state to the operator).
   if (failed > 0) {
-    await emit(io, args, 'partial:write', audit, {
+    await emitResult('partial:write', {
       ts: new Date().toISOString(),
       session_id: payload.value.session_id,
       cwd: payload.value.cwd,
@@ -670,7 +734,7 @@ async function runPipeline(
   }
   const note = noteParts.length > 0 ? noteParts.join('; ') : undefined;
 
-  await emit(io, args, finalStatus, audit, {
+  await emitResult(finalStatus, {
     ts: new Date().toISOString(),
     session_id: payload.value.session_id,
     cwd: payload.value.cwd,
@@ -683,6 +747,7 @@ async function runPipeline(
     lessons_written: written,
     duration_ms: now() - startedAt,
     ...(writeErrors.length > 0 ? { error: writeErrors.join(' | ') } : {}),
+    ...(note ? { note } : {}),
   });
   return 0;
 }
@@ -752,6 +817,112 @@ async function readAllStdin(): Promise<string> {
     chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
   }
   return Buffer.concat(chunks).toString('utf8');
+}
+
+export function resolveAutoExtractBackend(
+  env: NodeJS.ProcessEnv,
+  consent: ConsentConfig,
+): string {
+  // RELAY_AUTO_EXTRACT_BACKEND is the current var; RELAY_AUTO_EXTRACT_PROVIDER is the
+  // documented/legacy name — honor it as an alias so upgraded installs that already set
+  // it keep their configured backend instead of silently falling back to the default.
+  const fromEnv =
+    env['RELAY_AUTO_EXTRACT_BACKEND'] ?? env['RELAY_AUTO_EXTRACT_PROVIDER'];
+  if (typeof fromEnv === 'string' && fromEnv.trim().length > 0) {
+    return fromEnv.trim();
+  }
+  if (typeof consent.extractor === 'string' && consent.extractor.trim().length > 0) {
+    return consent.extractor.trim();
+  }
+  return 'codex';
+}
+
+function remoteEndpointForProvider(
+  config: ProviderConfig,
+  env: NodeJS.ProcessEnv,
+): string | null {
+  if (config.type === 'subprocess') return null;
+  if (config.name === 'lmstudio') {
+    const autoExtractEndpoint = env['RELAY_AUTO_EXTRACT_ENDPOINT']?.trim();
+    if (autoExtractEndpoint) return autoExtractEndpoint;
+  }
+  return config.url;
+}
+
+interface TranscriptLoad {
+  readonly window: TranscriptWindow;
+  readonly note?: string;
+}
+
+async function loadTranscriptForProvider(
+  provider: string,
+  path: string,
+  args: AutoExtractArgs,
+  consent: ConsentConfig,
+  deps: AutoExtractDeps,
+  env: NodeJS.ProcessEnv,
+): Promise<TranscriptLoad> {
+  if (provider === 'lmstudio') {
+    const maxBytes = args.maxBytes ?? consent.max_bytes ?? DEFAULT_WINDOW_BYTES;
+    return {
+      window: (deps.loadTranscript ?? loadRecentTranscriptWindow)(path, maxBytes),
+    };
+  }
+
+  const maxChars =
+    args.maxBytes ??
+    parsePositiveInt(env['RELAY_AUTO_EXTRACT_TRANSCRIPT_CHAR_CAP']) ??
+    // Honor the per-workdir consented cap before the 600k default — otherwise a
+    // remote (codex/claude/HTTP) extractor receives far more session content than
+    // the user consented to via consent.max_bytes.
+    consent.max_bytes ??
+    DEFAULT_NON_LMSTUDIO_TRANSCRIPT_CHAR_CAP;
+  if (deps.loadTranscript !== undefined) {
+    return { window: deps.loadTranscript(path, maxChars) };
+  }
+  return loadFullTranscriptCapped(path, maxChars);
+}
+
+async function loadFullTranscriptCapped(
+  path: string,
+  maxChars: number,
+): Promise<TranscriptLoad> {
+  if (maxChars <= 0) return { window: { jsonl: '', turnsRead: 0, bytes: 0 } };
+
+  let raw: string;
+  try {
+    raw = await readFile(path, 'utf8');
+  } catch (err) {
+    process.stderr.write(`auto-extract: cannot read transcript at ${path}: ${(err as Error).message}\n`);
+    return { window: { jsonl: '', turnsRead: 0, bytes: 0 } };
+  }
+
+  if (raw.length === 0) return { window: { jsonl: '', turnsRead: 0, bytes: 0 } };
+  const capped = raw.length > maxChars ? raw.slice(raw.length - maxChars) : raw;
+  const note =
+    raw.length > maxChars
+      ? `transcript capped at ${maxChars} chars (original ${raw.length} chars)`
+      : undefined;
+  return {
+    window: {
+      jsonl: capped,
+      turnsRead: countTranscriptLines(capped),
+      bytes: Buffer.byteLength(capped, 'utf8'),
+    },
+    ...(note ? { note } : {}),
+  };
+}
+
+function countTranscriptLines(text: string): number {
+  return text.split('\n').filter((line) => line.length > 0).length;
+}
+
+function withAuditNote(entry: AuditEntry, note: string | undefined): AuditEntry {
+  if (!note) return entry;
+  return {
+    ...entry,
+    note: entry.note ? `${entry.note}; ${note}` : note,
+  };
 }
 
 /**
@@ -967,6 +1138,3 @@ export function parseLmsPsOutput(stdout: string): string | null {
   }
   return null;
 }
-
-// Keep the imports above marked as used for downstream type references.
-void readFile;

@@ -25,14 +25,12 @@ See: .planning/PROJECT.md (updated 2026-05-18)
 
 ## Current Position
 
-Phase: 9 (MCP server — serve the orphaned relay-mcp tool handlers over stdio)
-Plan: PRD + single-cycle implementation complete (see phases/09-mcp-server/SUMMARY.md)
-Status: SHIPPED on branch claude/irys-stateful-swarms-assess-jwkcds. `relay mcp serve` + `--selfcheck`; 7 relay_* tools + relay-context prompt; workdir gate, write quarantine (worker-mcp → unverified, pinned/source_run_id unexposed), pause sentinel honored, reads audited. 21 new tests; full suite 1825 with zero new failures vs clean baseline (3 pre-existing container fails). New dep: @modelcontextprotocol/sdk. Found+fixed: runs.archived_at column never existed (RunStore.list threw on fresh DBs). Pending maintainer: version cut / npm publish (D-02), retroactive codex review of src/mcp/, SEED confirmation (D-05).
-Last activity: 2026-06-12
+Phase: 9 (v0.4 Lean Core — Agnostic Dispatch + MCP Memory Server)
+Plan: 5 of 5 executed on branch phase-9-v04 (+ cmd-parallel registry follow-up)
+Status: EXECUTED + CODEX-APPROVED (3 rounds: 6 findings → all fixed+verified, incl. value-based secret scrubbing; final verdict APPROVE, suite 1935/1935). Awaiting ONLY the MCP-05 human gate (live .mcp.json round-trip), then merge decision. Suite 1897/1897 all green (Phase 8 time-bomb fixtures defused in f9e502e). Shipped: agnostic provider registry (RELAY_PROVIDER_* env discovery, closed unions deleted from run + parallel paths, shared runner-factory), uniform raw usage receipt columns, `relay providers`, MCP SDK 1.29.0 exact-pinned + surface probe, boundary helpers, the two memory MCP tools, `relay mcp` stdio server (two tools, zero control coupling, stdout discipline), real-SDK-client integration test, docs (docs/mcp.md + .mcp.json recipe, commands/README/CHANGELOG/SECURITY). REQUIREMENTS check-offs deferred until gate approval.
+Last activity: 2026-06-10
 
-Phase 8 (prior): IMPLEMENTED + security-hardened, merged to main 2026-06-08 (commit ea85fa7), suite 1804.
-
-Progress: [██████████] phase 9 implementation complete — release decisions are maintainer's call
+Progress: [█████████░] 95% (phase 9) — human gate + Codex review + merge remain
 
 ## Performance Metrics
 

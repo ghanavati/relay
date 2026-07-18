@@ -6,7 +6,8 @@
  * STATE.md).
  */
 
-import Database from 'better-sqlite3';
+import Database from 'libsql';
+import { runAddColumn } from '../store/schema-version.js';
 
 /**
  * Individual DDL statements for capability routing tables.
@@ -58,8 +59,6 @@ export function migrateCapabilityTables(db: Database.Database): void {
   const info = db.prepare('PRAGMA table_info(capability_evidence)').all() as { name: string }[];
   const cols = new Set(info.map(r => r.name));
   if (!cols.has('consecutive_failures')) {
-    db.prepare(
-      'ALTER TABLE capability_evidence ADD COLUMN consecutive_failures INTEGER DEFAULT 0',
-    ).run();
+    runAddColumn(db, 'ALTER TABLE capability_evidence ADD COLUMN consecutive_failures INTEGER DEFAULT 0');
   }
 }

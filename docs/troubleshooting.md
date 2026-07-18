@@ -145,7 +145,7 @@ cd /path/to/relay
 npm run build
 which relay
 relay --version
-npm link            # re-link if needed
+Re-provision the evaluation runtime if its executable path is stale.
 ```
 
 ### LM Studio extraction fails
@@ -230,14 +230,10 @@ Cause: per-source-run-id write rate limit (default 10 per 5 minutes;
 Fix: don't pass `--source-run-id` on bulk writes — the limiter is keyed
 on it. Solo CLI users normally skip this flag.
 
-### `better-sqlite3` native build error on install
-`npm install -g github:ghanavati/relay` fails compiling better-sqlite3.
-
-```bash
-node --version                                  # must be 20+
-xcode-select --install                          # macOS
-sudo apt-get install build-essential python3    # Linux
-```
+### Public installation
+Relay does not yet have a supported public installation path. Follow the
+repository's development guidance only if you are intentionally evaluating or
+contributing to the source.
 
 ### Codex: "You've hit your usage limit"
 `error: You've hit your usage limit. Try again at HH:MM PM.`
