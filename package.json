@@ -31,6 +31,10 @@
   },
   "files": [
     "dist/",
+    "!dist/**/*.test.js",
+    "!dist/**/*.test.d.ts",
+    "!dist/**/*.test.js.map",
+    "!dist/**/__fixtures__/",
     "README.md",
     "LICENSE",
     "AGENTS.md",
