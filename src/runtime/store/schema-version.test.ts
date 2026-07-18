@@ -3,7 +3,7 @@
  */
 import { test, describe } from 'node:test';
 import * as assert from 'node:assert/strict';
-import Database from 'better-sqlite3';
+import Database from 'libsql';
 
 import {
   readSchemaVersion,

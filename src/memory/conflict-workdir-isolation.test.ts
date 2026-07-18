@@ -115,7 +115,7 @@ describe('Conflict-detection workdir isolation (PLAN-5 T7 / CONFLICT-05)', () =>
     const txt = readFileSync(srcPath, 'utf8');
     const imports = txt.match(/^import .* from .*$/gm) ?? [];
     for (const line of imports) {
-      assert.doesNotMatch(line, /better-sqlite3/i, `forbidden DB import: ${line}`);
+      assert.doesNotMatch(line, /better-sqlite3|libsql/i, `forbidden DB import: ${line}`);
       assert.doesNotMatch(line, /node:http|node-fetch|undici/i, `forbidden HTTP import: ${line}`);
       assert.doesNotMatch(line, /node:fs|node:path/i, `forbidden fs/path import: ${line}`);
       assert.doesNotMatch(line, /\.\.\/runtime\//i, `forbidden runtime import: ${line}`);

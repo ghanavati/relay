@@ -17,7 +17,7 @@
 import { getDb } from '../runtime/store/db.js';
 import { MemoryStore } from './memory-store.js';
 import type { RecallQuery, Memory } from './types.js';
-import type Database from 'better-sqlite3';
+import type Database from 'libsql';
 
 /** A single ranked hit returned by `CorpusStore.query()`. */
 export interface CorpusQueryResult {

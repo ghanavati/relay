@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import Database from 'libsql';
 import { mkdirSync, chmodSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -162,6 +162,7 @@ export function getDb(): Database.Database {
     }
   }
   _db = new Database(dbPath);
+  installNestableTransactions(_db);
   if (dbPath !== ':memory:') {
     try { chmodSync(dbPath, 0o600); } catch { /* best-effort */ }
   }
@@ -170,6 +171,43 @@ export function getDb(): Database.Database {
   _db.pragma('foreign_keys = ON');
   applySchema(_db);
   return _db;
+}
+
+/**
+ * libsql's `transaction()` issues a plain BEGIN even when a transaction is
+ * already open and throws "cannot start a transaction within a transaction".
+ * better-sqlite3 — whose API this codebase was written against — transparently
+ * downgrades nested transaction() calls to SAVEPOINTs. Restore that semantic
+ * once, at the factory, so every consumer keeps its nesting behavior.
+ * (No caller uses the .deferred/.immediate/.exclusive variants.)
+ */
+function installNestableTransactions(db: Database.Database): void {
+  let spSeq = 0;
+  const nestable = <A extends unknown[], R>(fn: (...args: A) => R) =>
+    (...args: A): R => {
+      if (!db.inTransaction) {
+        db.exec('BEGIN');
+        try {
+          const result = fn(...args);
+          db.exec('COMMIT');
+          return result;
+        } catch (err) {
+          if (db.inTransaction) { try { db.exec('ROLLBACK'); } catch { /* connection gone */ } }
+          throw err;
+        }
+      }
+      const sp = `relay_nested_${++spSeq}`;
+      db.exec(`SAVEPOINT ${sp}`);
+      try {
+        const result = fn(...args);
+        db.exec(`RELEASE ${sp}`);
+        return result;
+      } catch (err) {
+        try { db.exec(`ROLLBACK TO ${sp}`); db.exec(`RELEASE ${sp}`); } catch { /* connection gone */ }
+        throw err;
+      }
+    };
+  (db as { transaction: unknown }).transaction = nestable;
 }
 
 /**

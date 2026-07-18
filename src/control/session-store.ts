@@ -17,7 +17,7 @@
  *   - Policy (grant checks, TTL decisions, loop detection) lives in the
  *     broker (Plan 02). This store is mechanical persistence + transitions.
  */
-import type Database from 'better-sqlite3';
+import type Database from 'libsql';
 import { createHash, randomUUID } from 'node:crypto';
 import type { z } from 'zod';
 

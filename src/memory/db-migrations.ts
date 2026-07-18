@@ -5,7 +5,7 @@
  * Uses CREATE TABLE IF NOT EXISTS + PRAGMA table_info guard for ALTERs.
  */
 
-import type Database from 'better-sqlite3';
+import type Database from 'libsql';
 
 /**
  * Tables created up-front. Indexes/triggers that depend on optional columns

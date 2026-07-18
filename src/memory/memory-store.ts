@@ -9,7 +9,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { getDb } from '../runtime/store/db.js';
 import type { MemoryRow, MemoryType, Memory, RecallQuery, MemorySource, TrustLevel } from './types.js';
 import { estimateTokens } from './memory-engine.js';
-import type Database from 'better-sqlite3';
+import type Database from 'libsql';
 import { redactSecrets } from '../security/redaction.js';
 import { makeError, toRelayException } from '../errors.js';
 import { embedDocument as defaultEmbedDocument, type EmbeddingResult, type EmbedOptions } from './embedding-client.js';
@@ -93,6 +93,17 @@ function extractKeywords(text: string): string[] {
  */
 function escapeLikeWildcards(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+}
+
+/**
+ * libsql returns BLOB columns as ArrayBuffer on file-backed databases (but
+ * Buffer on :memory:). Normalize at the read boundary so every consumer sees
+ * the Buffer shape this codebase was written against. Buffer.from(ArrayBuffer)
+ * is a zero-copy view.
+ */
+function blobAsBuffer(v: Buffer | ArrayBuffer | null): Buffer | null {
+  if (v === null || Buffer.isBuffer(v)) return v;
+  return Buffer.from(v);
 }
 
 function rowToMemory(row: MemoryRow): Memory {
@@ -355,9 +366,12 @@ export class MemoryStore {
    */
   private updateEmbedding(memoryId: string, vector: Float32Array, model: string): void {
     const blob = Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
+    // libsql 0.5.x mis-binds Buffer/Uint8Array POSITIONAL parameters (NULL in
+    // multi-arg statements, native panic single-arg). Named parameters bind
+    // blobs correctly — keep this statement named until upstream fixes it.
     this.db
-      .prepare('UPDATE memories SET embedding_blob = ?, embedding_model = ? WHERE memory_id = ?')
-      .run(blob, model, memoryId);
+      .prepare('UPDATE memories SET embedding_blob = @blob, embedding_model = @model WHERE memory_id = @memoryId')
+      .run({ blob, model, memoryId });
   }
 
   /**
@@ -420,7 +434,9 @@ export class MemoryStore {
         embedding_model: string;
       }>;
     for (const row of rows) {
-      out.set(row.memory_id, { blob: row.embedding_blob, model: row.embedding_model });
+      const blob = blobAsBuffer(row.embedding_blob);
+      if (blob === null) continue;
+      out.set(row.memory_id, { blob, model: row.embedding_model });
     }
     return out;
   }
@@ -435,7 +451,8 @@ export class MemoryStore {
    * Caller treats null as "embedding missing" and falls back to Jaccard-only
    * verdict (DELTA-MEM-CONFLICT.md §4 W4 / PITFALL 2.5).
    */
-  private decodeEmbedding(blob: Buffer | null): Float32Array | null {
+  private decodeEmbedding(rawBlob: Buffer | ArrayBuffer | null): Float32Array | null {
+    const blob = blobAsBuffer(rawBlob);
     if (!blob) return null;
     const expectedBytes = EXPECTED_EMBEDDING_DIM * 4;
     if (blob.byteLength !== expectedBytes) return null;
