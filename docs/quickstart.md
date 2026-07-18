@@ -1,7 +1,8 @@
 # Quickstart
 
-> Relay does not yet have a supported public installation path. This guide is
-> for a development or evaluation runtime that has already been provisioned.
+> Relay’s public installation path is GitHub Releases—not npm. The first
+> release bundle is being prepared; until it is published, this guide assumes
+> Relay has already been provisioned for you.
 
 End-to-end walk: save a memory, verify recall, and wire Relay into an LLM.
 
