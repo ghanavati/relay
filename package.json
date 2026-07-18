@@ -1,6 +1,6 @@
 {
   "name": "relay",
-  "version": "0.3.0",
+  "version": "0.4.0-beta.1",
   "description": "Operations and control layer for AI coding agents: persistent cross-tool memory, multi-model dispatch (Codex, LM Studio, OpenRouter, Anthropic), audit trail, and steerable agentic execution. Local SQLite store.",
   "type": "module",
   "license": "AGPL-3.0-or-later",
@@ -43,6 +43,7 @@
   "scripts": {
     "build": "tsc && npm run --silent build:fixtures && (chmod +x dist/cli.js 2>/dev/null || true)",
     "build:fixtures": "mkdir -p dist/memory/__fixtures__ dist/tools/figma/__fixtures__ && (cp -p src/memory/__fixtures__/*.db dist/memory/__fixtures__/ 2>/dev/null || true) && (cp -p src/tools/figma/__fixtures__/*.json dist/tools/figma/__fixtures__/ 2>/dev/null || true)",
+    "release:bundle": "node scripts/release-bundle.mjs",
     "prepare": "npm run build",
     "test": "bash -c 'TEST_HOME=$(mktemp -d \"${TMPDIR:-/tmp}/relay-test-home.XXXXXX\") && trap \"rm -rf \\\"$TEST_HOME\\\"\" EXIT && HOME=\"$TEST_HOME\" env -u RELAY_MEMORY_ALLOWED_WORKDIRS -u RELAY_ALLOWED_ROOTS node --test --test-concurrency=1 $(find dist -type f -name \"*.test.js\")'",
     "typecheck": "tsc --noEmit",
