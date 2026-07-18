@@ -1,21 +1,20 @@
 # Quickstart
 
-End-to-end walk: install Relay, save a memory, verify recall, wire it into your LLM of choice.
+> Relay does not yet have a supported public installation path. This guide is
+> for a development or evaluation runtime that has already been provisioned.
+
+End-to-end walk: save a memory, verify recall, and wire Relay into an LLM.
 
 ## 1. Prerequisites
 
 - **Node >=20** — verify with `node --version`. No compiler or build tools needed: the SQLite driver (libsql) ships prebuilt binaries for macOS and Linux.
 - **Optional — local model:** [LM Studio](https://lmstudio.ai) for free local inference + auto-extract.
-- **Optional — Codex CLI:** `npm i -g @openai/codex` (then `codex login`) for delegated runs.
+- **Optional — Codex CLI:** install it using the official Codex instructions,
+  then run `codex login` for delegated runs.
 
-## 2. Install (one command after clone)
+## 2. Configure an existing runtime
 
 ```bash
-git clone https://github.com/ghanavati/relay.git
-cd relay
-npm install
-npm run build
-npm link
 relay setup --everything    # init + hooks (global) + auto-extract consent for cwd
 ```
 

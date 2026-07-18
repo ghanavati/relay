@@ -18,15 +18,13 @@ Built for one AI-heavy developer working across many tools. Local-first, no acco
 
 ## Install
 
-> Not published to npm. Install from source.
+> Relay is pre-release software and does not yet have a public distribution.
 
-```bash
-git clone https://github.com/ghanavati/relay.git && cd relay
-npm install && npm run build
-npm link        # makes 'relay' available globally from this checkout
-```
-
-Requires Node >=20. No compiler needed — the SQLite driver (libsql) ships prebuilt binaries for macOS and Linux. Full walkthrough: [docs/install.md](docs/install.md); bring your own database (local file or hosted): [docs/database.md](docs/database.md).
+The repository is available for development and evaluation, but there is no
+supported public installation path yet. Distribution and release packaging will
+be documented when Relay is ready for them. See [docs/install.md](docs/install.md)
+for the current status; [docs/database.md](docs/database.md) describes the
+local and hosted database modes once Relay is provisioned.
 
 ## Quickstart
 
