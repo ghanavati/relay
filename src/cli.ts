@@ -332,7 +332,9 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     return 2;
   }
 
-  if (action === 'remember') {
+  // `save` aliases `remember` — the MCP tool is named relay_memory_save, so
+  // muscle memory from either surface works on the CLI.
+  if (action === 'remember' || action === 'save') {
     const content = flags.positionals.slice(1).join(' ').trim();
     if (!content) {
       io.stderr('relay memory remember requires <content>\n');
@@ -620,7 +622,7 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     }, io);
   }
 
-  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, search, show-context, get, hook, to-rules, auto-extract, wipe, tail, recent, why, forget, rollback, consolidate, diff, chain, tag-stats\n`);
+  io.stderr(`relay memory: unknown action '${action}'. Try: remember (alias: save), recall, search, show-context, get, hook, to-rules, auto-extract, wipe, tail, recent, why, forget, rollback, consolidate, diff, chain, tag-stats\n`);
   return 2;
 }
 
