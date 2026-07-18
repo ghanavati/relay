@@ -28,6 +28,10 @@ test('resolves an exact model profile including template kwargs', async () => {
   const path = await profilePath(JSON.stringify({ models: {
     'gemma-test': {
       temperature: 0.2,
+      top_p: 0.95,
+      top_k: 40,
+      min_p: 0,
+      presence_penalty: 1.5,
       max_tokens: 4096,
       max_iterations: 8,
       chat_template_kwargs: { enable_thinking: false, nested: { mode: 'safe' } },
@@ -38,6 +42,10 @@ test('resolves an exact model profile including template kwargs', async () => {
 
   assert.deepEqual(actual, {
     temperature: 0.2,
+    top_p: 0.95,
+    top_k: 40,
+    min_p: 0,
+    presence_penalty: 1.5,
     max_tokens: 4096,
     max_iterations: 8,
     chat_template_kwargs: { enable_thinking: false, nested: { mode: 'safe' } },

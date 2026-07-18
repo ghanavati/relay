@@ -752,6 +752,31 @@ describe('T4 continuation — tools[] re-sent', () => {
   });
 });
 
+test('forwards model-specific sampling controls to every chat-completion request', async () => {
+  const { fetchImpl, requests } = makeScriptedFetch({
+    responses: [{ kind: 'ok', body: asstFinal('ok') }],
+  });
+  const runner = new LmStudioAgenticRunner({
+    fetchImpl,
+    profileForModel: async () => ({
+      temperature: 0.7,
+      top_p: 0.95,
+      top_k: 40,
+      min_p: 0,
+      presence_penalty: 1.5,
+    } as never),
+  });
+
+  await runner.run(baseTask());
+
+  const body = JSON.parse(requests.find((request) => request.url.endsWith('/v1/chat/completions'))?.init.body as string);
+  assert.equal(body.temperature, 0.7);
+  assert.equal(body.top_p, 0.95);
+  assert.equal(body.top_k, 40);
+  assert.equal(body.min_p, 0);
+  assert.equal(body.presence_penalty, 1.5);
+});
+
 // ─── T6: LFM2 SYSTEM-PROMPT NUDGE INTEGRATION ────────────────────────────
 
 describe('T6 — LFM2 nudge integration', () => {

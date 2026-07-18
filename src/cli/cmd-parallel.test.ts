@@ -66,3 +66,25 @@ test('parallel agentic runs register and end a Relay control session', async () 
   assert.ok(session, 'agentic parallel run registers a control session');
   assert.equal(session.state, 'ended');
 });
+
+test('parallel JSON includes an agentic runner error message', async () => {
+  const workdir = await mkdtemp(join(tmpdir(), 'relay-parallel-workdir.'));
+  tempPaths.push(workdir);
+  const specPath = await writeSpec({ tasks: [
+    { task: 'inspect the workdir', provider: 'lmstudio-agentic', model: 'test-model', workdir, timeout_ms: 1_000 },
+  ] });
+  const captured = makeIo(workdir);
+  const oldEndpoint = process.env['LMSTUDIO_ENDPOINT'];
+  process.env['LMSTUDIO_ENDPOINT'] = 'http://127.0.0.1:1';
+
+  try {
+    await executeParallelCommand({ specPath, maxConcurrency: 1, json: true }, captured.io);
+  } finally {
+    if (oldEndpoint === undefined) delete process.env['LMSTUDIO_ENDPOINT'];
+    else process.env['LMSTUDIO_ENDPOINT'] = oldEndpoint;
+  }
+
+  const response = JSON.parse(captured.stdout.join('')) as { runs: Array<{ status: string; error?: string }> };
+  assert.equal(response.runs[0]?.status, 'error');
+  assert.match(response.runs[0]?.error ?? '', /LM Studio/i);
+});
