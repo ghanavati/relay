@@ -8,7 +8,9 @@ Relay is the operations/control layer around AI coding agents. It makes agent wo
 
 **NOT a "solo CLI", NOT "local-only", NOT a security platform.** Local LM Studio execution is a cost/privacy wedge, not the headline. The product is the layer around agents, not another agent.
 
-Extracted from the relay-mcp monorepo on 2026-05-02. Repositioning to control-layer framing dated 2026-05-23 (see `.planning/research/EXTERNAL-TOOLS-ASSESSMENT.md`).
+Extracted from the relay-mcp monorepo on 2026-05-02. The public repository
+contains the product documentation; historical planning and extraction records
+are maintained in the local project archive.
 
 NOT in scope: compliance/regulatory artifacts, multi-tenant hosted mode, model registry lifecycle, billing, EU AI Act / SR 11-7 / DORA reports, oversight workflows.
 
@@ -24,7 +26,7 @@ NOT in scope: compliance/regulatory artifacts, multi-tenant hosted mode, model r
 
 ## Critical API patterns
 
-### better-sqlite3 — SYNCHRONOUS
+### Database adapter — synchronous-style store API
 
 ```typescript
 const row = db.prepare('SELECT * FROM runs WHERE run_id = ?').get(runId);
@@ -33,7 +35,9 @@ const tx = db.transaction(() => { db.prepare('...').run(...); });
 tx(); // sync — NOT await tx()
 ```
 
-NEVER use `async`/`await` on db operations. SQL inline as template strings.
+The current libSQL adapter preserves this synchronous-style store contract.
+Do not introduce `async`/`await` around existing `db.prepare(...).get/run/all`
+operations. SQL remains inline as template strings.
 
 ### node:test (no Jest patterns)
 
@@ -64,12 +68,12 @@ store.upsert({
 ## Dev environment tips
 
 ```bash
-npm install                                    # better-sqlite3 + zod + typescript
+npm install                                    # contributor dependencies
 npm run build                                  # tsc + chmod dist/cli.js
 npm link                                       # makes 'relay' available globally for testing
 ```
 
-Node >= 20 required (better-sqlite3 native module). On macOS install Xcode CLT first.
+Node >= 20 required.
 
 ## Testing instructions
 
@@ -79,7 +83,8 @@ RELAY_ALLOWED_ROOTS= npm test                  # skip env-gated tests
 npm run typecheck                              # fast tsc, no dist output
 ```
 
-Add or update tests for the code you change. v0.1.0 inherited tests from relay-mcp; many depend on dropped modules and need triage (see [Unreleased] in CHANGELOG.md).
+Add or update tests for the code you change. Some inherited tests still need
+ongoing triage; record any disposition in [Unreleased] in CHANGELOG.md.
 
 ## Recurrent failure patterns (across many sessions)
 
@@ -89,7 +94,9 @@ Add or update tests for the code you change. v0.1.0 inherited tests from relay-m
 4. **Code is truth, planning docs are intent.** Cite `src/file:line`, never planning docs.
 5. **State intent before directional changes.** No silent pivots.
 6. **`tsc --noEmit` is authoritative for compile claims.** Subagents miss split files. Always verify with the compiler.
-7. **Check worker state before retrying a "failed" dispatch.** `ps aux | grep <provider>`, `tail ~/.relay-mcp/run-*.log`, `ls ~/.relay/sessions/` — the worker may be alive even when the MCP tool returned an error.
+7. **Check worker state before retrying a "failed" dispatch.** Inspect the
+provider process, Relay's current run log, and `~/.relay/sessions/` — the
+worker may be alive even when the MCP tool returned an error.
 8. **Subagent worktree-cwd discipline:** subagents that land code MUST verify cwd is the worktree path before each Edit. Multiple wave-1 agents misdirected edits to the main repo.
 9. **Add-don't-refactor for shared files:** extending an existing file by adding new exports is safe. Replacing the file (T23 wave 2 doctor.ts) breaks consumers' tests.
 10. **Hook contract:** SessionStart stdout becomes additionalContext OR JSON `{hookSpecificOutput:{hookEventName:'SessionStart',additionalContext:'...'}}`. Raw `{memories:[...]}` is undocumented behavior — use `relay context emit --target cc`.
@@ -107,7 +114,8 @@ test protocol; it overrides historical model-fleet assumptions.
 
 ## Extraction history
 
-This repo was extracted from `relay-mcp` on 2026-05-02. If you need that context: `docs/findings/2026-05-02-extract-session-learnings.md`.
+This repo was extracted from `relay-mcp` on 2026-05-02. Historical extraction
+context is retained in the local archive, not the public documentation tree.
 
 ## What must not regress
 
@@ -128,7 +136,8 @@ This repo was extracted from `relay-mcp` on 2026-05-02. If you need that context
 
 ## Provenance
 
-Extracted from `github.com/ghanavati/relay-mcp` on 2026-05-02. See `docs/findings/2026-05-02-extract-session-learnings.md` for the extraction methodology.
+Extracted from `github.com/ghanavati/relay-mcp` on 2026-05-02. The extraction
+methodology is retained in the local archive.
 
 ## Wave 4 Lessons
 

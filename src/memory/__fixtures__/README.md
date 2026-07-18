@@ -45,9 +45,8 @@ real-looking secrets, even in committed binaries.
 
 ## Why a binary fixture?
 
-The CC.1 enforcement gate in `.planning/phases/01-schema-cleanup/PLAN.md`
-(PITFALLS.md:233-239) requires us to prove the v2 migration is lossless
-against an actual v0.1.2-shaped database. A synthetic in-memory schema would
-not catch issues the generator doesn't model (e.g. autoincrement values,
-trigger fire counts, FK constraint timing). A committed fixture is the
-cheapest way to make every test run hit the real layout.
+The schema-cleanup enforcement gate requires us to prove the v2 migration is
+lossless against an actual v0.1.2-shaped database. A synthetic in-memory schema
+would not catch issues the generator doesn't model (e.g. autoincrement values,
+trigger fire counts, FK constraint timing). A committed fixture is the cheapest
+way to make every test run hit the real layout.
