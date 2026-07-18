@@ -7,6 +7,11 @@ shared memory, deliberate delegation, and visible outcomes across the agents
 you already use. It is the layer behind your lead model, not another model to
 choose between.
 
+```bash
+curl -fsSL https://raw.githubusercontent.com/ghanavati/relay/main/scripts/install-release.sh | bash
+relay setup --everything
+```
+
 ## What Relay does
 
 - **Remember what matters:** carry durable decisions, lessons, facts, and
