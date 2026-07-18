@@ -9,28 +9,25 @@ Relay ships through [GitHub Releases](https://github.com/ghanavati/relay/release
 not npm. The archive includes Relay, its production dependencies, and its Node
 runtime.
 
-Choose the archive for your machine:
-
-- Apple Silicon Mac: `relay-<version>-darwin-arm64.tar.gz`
-- Intel Mac: `relay-<version>-darwin-x64.tar.gz`
-- Linux x64: `relay-<version>-linux-x64.tar.gz`
-
-Open the latest release, download the matching archive and `SHA256SUMS.txt`,
-then verify and install it. On an Apple Silicon Mac:
+Run this on a Mac or Linux machine:
 
 ```bash
-RELAY_ARCHIVE=relay-<version>-darwin-arm64.tar.gz
-shasum -a 256 -c SHA256SUMS.txt --ignore-missing
-tar -xzf "$RELAY_ARCHIVE"
-mkdir -p "$HOME/.local/bin"
-ln -sf "$PWD/${RELAY_ARCHIVE%.tar.gz}/relay" "$HOME/.local/bin/relay"
-export PATH="$HOME/.local/bin:$PATH"
+curl -fsSL https://raw.githubusercontent.com/ghanavati/relay/main/scripts/install-release.sh | bash
 relay setup --everything
 ```
 
-Add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile if it is not
-already there. For another platform, use the matching archive name above. To
-upgrade, repeat the same steps with the new archive.
+On Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/ghanavati/relay/main/scripts/install-release.ps1 | iex
+relay setup --everything
+```
+
+The installer detects Apple Silicon or Intel Macs, Linux x64, Linux ARM64, and
+Windows x64.
+It downloads the matching archive, verifies its checksum, and places `relay` in
+`~/.local/bin`. Add that directory to your shell profile if it is not already
+on PATH. Re-run the command to upgrade.
 
 ## After Relay is provisioned
 
