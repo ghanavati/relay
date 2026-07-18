@@ -26,7 +26,7 @@ npm install && npm run build
 npm link        # makes 'relay' available globally from this checkout
 ```
 
-Requires Node >=20 and `better-sqlite3` (native module). On macOS install Xcode CLT first.
+Requires Node >=20. No compiler needed — the SQLite driver (libsql) ships prebuilt binaries for macOS and Linux. Full walkthrough: [docs/install.md](docs/install.md); bring your own database (local file or hosted): [docs/database.md](docs/database.md).
 
 ## Quickstart
 

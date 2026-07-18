@@ -184,7 +184,7 @@ Model-requested control: a running model has no cross-session authority by defau
 ## relay mcp
 
 ### relay mcp
-Run Relay as a stdio MCP server. Exposes exactly two tools to the connected client: `relay_memory_recall` and `relay_memory_save` — thin wrappers over the same memory handlers and SQLite store the CLI uses, with the same `RELAY_MEMORY_ALLOWED_WORKDIRS` scoping. Blocks until the client disconnects (or SIGINT/SIGTERM); diagnostics on stderr, stdout reserved for protocol framing. No flags. Started by the MCP client (Claude Code, Claude Desktop, Cursor, ...), not by hand — registration recipe and security posture in [docs/mcp.md](./mcp.md).
+Run Relay as a stdio MCP server. Exposes exactly two tools to the connected client: `relay_memory_recall` and `relay_memory_save` — thin wrappers over the same memory handlers and SQLite store the CLI uses, with the same `RELAY_MEMORY_ALLOWED_WORKDIRS` scoping. Blocks until the client disconnects (or SIGINT/SIGTERM); diagnostics on stderr, stdout reserved for protocol framing. Flags: `--http [--port <N>]` for the token-gated StreamableHTTP transport, `--oauth` for the OAuth variant (remote connectors) — plain stdio when none are given. Started by the MCP client (Claude Code, Claude Desktop, Cursor, ...), not by hand. `relay init` registers the server with detected clients automatically; manual registration recipe and security posture in [docs/mcp.md](./mcp.md).
 Example `.mcp.json` entry: `{"mcpServers": {"relay": {"command": "relay", "args": ["mcp"]}}}`.
 
 ## relay history / diff / compare
