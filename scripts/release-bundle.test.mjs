@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import test from 'node:test';
 
 import { createBundlePlan } from './release-bundle.mjs';
@@ -25,4 +27,16 @@ test('rejects unsupported release targets', () => {
     () => createBundlePlan({ version: '0.4.0-beta.1', platform: 'win32', arch: 'x64' }),
     /Unsupported release target: win32-x64/,
   );
+});
+
+test('release workflow builds the supported archives and publishes a prerelease', async () => {
+  const workflow = await readFile(resolve('.github/workflows/release.yml'), 'utf8');
+
+  assert.match(workflow, /workflow_dispatch/);
+  assert.match(workflow, /darwin-arm64/);
+  assert.match(workflow, /darwin-x64/);
+  assert.match(workflow, /linux-x64/);
+  assert.match(workflow, /SHA256SUMS\.txt/);
+  assert.match(workflow, /gh release create/);
+  assert.match(workflow, /--prerelease/);
 });
