@@ -4,36 +4,34 @@
 
 Relay turns scattered AI coding sessions into a connected operating layer:
 shared memory, deliberate delegation, and visible outcomes across the agents
-you already use. It is the layer behind your lead model—not another model to
+you already use. It is the layer behind your lead model,not another model to
 choose between.
 
 ## Status
 
-Relay is preparing for its first public GitHub Release. That will be the
-supported way to get Relay: download a release for your platform directly from
-GitHub, then connect it to the coding tools you already use. No public npm
-install is planned.
+Relay is released through GitHub, not npm. Download the archive for your
+platform from [Relay v0.4.0-beta.1](https://github.com/ghanavati/relay/releases/tag/v0.4.0-beta.1),
+verify its checksum, and run `relay setup --everything`.
 
-Today, the repository is the place to follow development. The release bundles,
-checksums, and installation instructions are the next delivery step—not an
-unfinished product verdict.
+Each archive includes Relay, its production dependencies, and the Node runtime
+it needs. You do not need npm or a separate Node install to use Relay.
 
 ## What Relay does
 
-- **Remember what matters** — carry durable decisions, lessons, facts, and
+- **Remember what matters:** carry durable decisions, lessons, facts, and
   project context across sessions and tools with trust-aware recall.
-- **Start with the right context** — deliver useful memory through Claude Code
+- **Start with the right context:** deliver useful memory through Claude Code
   hooks, `relay context emit`, and an MCP memory server.
-- **Put the right model on the right job** — delegate bounded work across
+- **Put the right model on the right job:** delegate bounded work across
   supported providers and see the outcome in one durable run history.
-- **Command Central** — `relay tui` is the terminal operator console for
+- **Command Central:** `relay tui` is the terminal operator console for
   active work. Live stdin control is available only for Relay-owned processes
   launched with `relay session spawn`; every other adapter shows exactly what
   it can do.
-- **Make local models useful** — use LM Studio or oMLX as focused workers with
+- **Make local models useful:** use LM Studio or oMLX as focused workers with
   model-specific inference profiles and agentic tool loops, while your
   frontier lead model keeps the architectural judgment.
-- **See the work, not just the code** — retain task inputs, provider/model
+- **See the work, not just the code:** retain task inputs, provider/model
   identity, status, duration, tool-loop results, and memory read/write history.
 
 Relay is model-agnostic. The lead model (Codex, Claude Code, or another agent)
