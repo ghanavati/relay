@@ -1,7 +1,7 @@
 # Troubleshooting
 
-> Relay’s public installation path will be GitHub Releases, not npm. Until the
-> first release bundle is published, these notes apply to a provisioned runtime.
+> Install Relay from GitHub Releases, not npm. Start with the archive and
+> checksum steps in [install.md](./install.md).
 
 Symptom-first guide for users who installed Relay and something is wrong.
 Start at the top, work down.
@@ -13,7 +13,7 @@ Start at the top, work down.
 
 ## 1. First step always: `relay verify`
 
-End-to-end smoke test — exercises provider probes, DB write/read, hook fire,
+End-to-end smoke test , exercises provider probes, DB write/read, hook fire,
 and memory recall. Reports the first thing that breaks.
 
 ```bash
@@ -56,14 +56,14 @@ recalled-lessons block.
 Causes: duplicate hook entries, or recall returned empty (silent no-op).
 
 ```bash
-# Inspect — look for duplicates
+# Inspect , look for duplicates
 jq '.hooks.SessionStart' ~/.claude/settings.json
 
 # Wave 4: clean reinstall
 relay setup --clean
 relay memory hook --install --global
 
-# Or re-run install (idempotent — strips stale entries)
+# Or re-run install (idempotent , strips stale entries)
 relay memory hook --install
 
 # Confirm recall returns content
@@ -73,7 +73,7 @@ relay memory recall '' --token-budget 800 --type lesson --type fact --type decis
 `executeMemoryHookCommand()` in `src/cli/cmd-memory-ops.ts` strips legacy
 `{id, run}` shapes and current-format entries whose inner `hooks[]` matches
 the canonical `HOOK_SCRIPT`. If duplicates persist, your file's command
-string does not match `HOOK_SCRIPT` exactly — copy-paste it. Empty recall
+string does not match `HOOK_SCRIPT` exactly , copy-paste it. Empty recall
 means an empty memory store; populate via `relay memory remember` or run
 the migration in `docs/memory.md`.
 
@@ -95,7 +95,7 @@ tail -f ~/.relay/auto-extract.log
 ```
 
 If the log shows `model_not_loaded`, see LM Studio below. If the log is
-empty, the hook is not firing — re-check `relay memory hook --install`.
+empty, the hook is not firing , re-check `relay memory hook --install`.
 
 ### Memories not surfacing in CC sessions
 Hook fires (visible in `~/.relay/relay.ndjson`), but the recalled-lessons
@@ -105,7 +105,7 @@ Causes: hook's `--type` filter excludes them, `--min-trust` filter excludes
 them, or workdir mismatch.
 
 ```bash
-# Inspect hook command — defaults: --type lesson --type fact --type decision
+# Inspect hook command , defaults: --type lesson --type fact --type decision
 grep -A1 SessionStart ~/.claude/settings.json
 
 # Recall with no filters
@@ -125,7 +125,7 @@ To widen the hook permanently, edit `.claude/settings.json` and add more
 Cause: `RELAY_MEMORY_ALLOWED_WORKDIRS` is set (SHIP-70 sandboxing) but the
 hook command is missing `--workdir` or the cwd is not in the allowlist.
 
-Fix — pick one:
+Fix , pick one:
 ```bash
 # (a) Unset for this shell
 unset RELAY_MEMORY_ALLOWED_WORKDIRS
@@ -222,7 +222,7 @@ sqlite3 "$DB" < /tmp/relay-dump.sql
 ```
 
 If still failing, move the broken DB aside and let Relay create a fresh
-one — you lose history but keep the binary.
+one , you lose history but keep the binary.
 
 ### `MEMORY_WRITE_RATE_EXCEEDED`
 Bulk write loop fails after 10 entries.
@@ -230,14 +230,13 @@ Bulk write loop fails after 10 entries.
 Cause: per-source-run-id write rate limit (default 10 per 5 minutes;
 `src/memory/memory-store.ts`).
 
-Fix: don't pass `--source-run-id` on bulk writes — the limiter is keyed
+Fix: don't pass `--source-run-id` on bulk writes , the limiter is keyed
 on it. Solo CLI users normally skip this flag.
 
 ### Public installation
-Relay will be installed from [GitHub Releases](https://github.com/ghanavati/relay/releases).
-The first platform bundles are being prepared. Until then, follow the
-repository's development guidance only if you are intentionally contributing to
-the source.
+Download the platform archive and `SHA256SUMS.txt` from the
+[v0.4.0-beta.1 release](https://github.com/ghanavati/relay/releases/tag/v0.4.0-beta.1),
+then follow the checksum and setup commands in [install.md](./install.md).
 
 ### Codex: "You've hit your usage limit"
 `error: You've hit your usage limit. Try again at HH:MM PM.`
@@ -253,7 +252,7 @@ at https://platform.openai.com/account/billing.
 
 Cause: TS version mismatch (tsconfig set for TS 6.0 but installed is 5.x).
 
-Fix: edit `tsconfig.json` — change `"ignoreDeprecations": "6.0"` to
+Fix: edit `tsconfig.json` , change `"ignoreDeprecations": "6.0"` to
 `"5.0"`. Or pass `--ignoreDeprecations 5.0` on the command line.
 
 ### `RELAY_DB_PATH` issues
@@ -275,8 +274,8 @@ relay doctor --json | jq '.checks[] | select(.name=="db")'
 
 | Path | Format | Lifecycle |
 |---|---|---|
-| `~/.relay/relay.ndjson` | NDJSON, one event per line | Centralized log, post Wave 4 — every dispatch, hook fire, memory write |
-| `~/.relay/auto-extract.log` | Plain text | Legacy, removed in Wave 4b — use `relay.ndjson` and filter `event` field |
+| `~/.relay/relay.ndjson` | NDJSON, one event per line | Centralized log, post Wave 4 , every dispatch, hook fire, memory write |
+| `~/.relay/auto-extract.log` | Plain text | Legacy, removed in Wave 4b , use `relay.ndjson` and filter `event` field |
 | `~/.relay/relay.db` | SQLite | DB itself; override with `RELAY_DB_PATH` |
 | `<project>/.claude/settings.json` | JSON | Per-project hook config |
 | `~/.claude/settings.json` | JSON | Global hook config (when installed with `--global`) |
@@ -300,6 +299,6 @@ uname -a
 tail -200 ~/.relay/relay.ndjson > /tmp/relay-tail.ndjson
 ```
 
-Open an issue at the repo's bug tracker (link TBD — see project README).
+Open an issue at the repo's bug tracker (link TBD , see project README).
 Attach `/tmp/relay-verify.txt` and the tail. Redact any API keys before
 sharing.
