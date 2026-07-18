@@ -130,3 +130,14 @@ export const RELAY_ERROR_CODES: readonly ErrorCode[] = [
   "PROVIDER_NAME_CONFLICT",
   "UNKNOWN",
 ] as const;
+
+/**
+ * Format an uncaught top-level error for the terminal. Message-only by
+ * default — stack traces are an opt-in via RELAY_DEBUG=1, never the default
+ * user-facing surface.
+ */
+export function formatFatal(err: unknown, debug: boolean): string {
+  const e = err instanceof Error ? err : new Error(String(err));
+  if (debug && e.stack) return `relay: ${e.message}\n${e.stack}\n`;
+  return `relay: ${e.message}\n(re-run with RELAY_DEBUG=1 for a stack trace)\n`;
+}
