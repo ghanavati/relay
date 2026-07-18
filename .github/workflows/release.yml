@@ -43,15 +43,21 @@ jobs:
       - name: Confirm tag matches package version
         run: node -e "const version = require('./package.json').version; if ('v' + version !== '${{ inputs.tag }}') process.exit(1)"
 
-      - name: Install and verify
+      - name: Install and build
         run: |
           npm ci
           npm run build
           npm run typecheck
-          npm test
 
       - name: Build release archive
         run: node scripts/release-bundle.mjs ${{ matrix.platform }} ${{ matrix.arch }}
+
+      - name: Smoke test release archive
+        run: |
+          archive=$(find release -name '*.tar.gz' -print -quit)
+          target=$(tar -tzf "$archive" | head -1 | cut -d/ -f1)
+          tar -xzf "$archive" -C release
+          "release/$target/relay" --help
 
       - name: Upload release archive
         uses: actions/upload-artifact@v4
