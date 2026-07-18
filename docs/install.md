@@ -3,7 +3,7 @@
 Relay is the control layer for AI coding: shared memory, deliberate delegation,
 and visible multi-model work.
 
-## Install v0.4.0-beta.1
+## Install Relay
 
 Relay ships through [GitHub Releases](https://github.com/ghanavati/relay/releases),
 not npm. The archive includes Relay, its production dependencies, and its Node
@@ -11,27 +11,26 @@ runtime.
 
 Choose the archive for your machine:
 
-- Apple Silicon Mac: `relay-v0.4.0-beta.1-darwin-arm64.tar.gz`
-- Intel Mac: `relay-v0.4.0-beta.1-darwin-x64.tar.gz`
-- Linux x64: `relay-v0.4.0-beta.1-linux-x64.tar.gz`
+- Apple Silicon Mac: `relay-<version>-darwin-arm64.tar.gz`
+- Intel Mac: `relay-<version>-darwin-x64.tar.gz`
+- Linux x64: `relay-<version>-linux-x64.tar.gz`
 
-On an Apple Silicon Mac, download, verify, and install it like this:
+Open the latest release, download the matching archive and `SHA256SUMS.txt`,
+then verify and install it. On an Apple Silicon Mac:
 
 ```bash
-curl -fL -O https://github.com/ghanavati/relay/releases/download/v0.4.0-beta.1/relay-v0.4.0-beta.1-darwin-arm64.tar.gz
-curl -fL -O https://github.com/ghanavati/relay/releases/download/v0.4.0-beta.1/SHA256SUMS.txt
+RELAY_ARCHIVE=relay-<version>-darwin-arm64.tar.gz
 shasum -a 256 -c SHA256SUMS.txt --ignore-missing
-tar -xzf relay-v0.4.0-beta.1-darwin-arm64.tar.gz
+tar -xzf "$RELAY_ARCHIVE"
 mkdir -p "$HOME/.local/bin"
-ln -sf "$PWD/relay-v0.4.0-beta.1-darwin-arm64/relay" "$HOME/.local/bin/relay"
+ln -sf "$PWD/${RELAY_ARCHIVE%.tar.gz}/relay" "$HOME/.local/bin/relay"
 export PATH="$HOME/.local/bin:$PATH"
 relay setup --everything
 ```
 
 Add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile if it is not
-already there. For another platform, replace `darwin-arm64` with the matching
-archive name above. To upgrade, download the newer archive, verify it, and
-update the symlink.
+already there. For another platform, use the matching archive name above. To
+upgrade, repeat the same steps with the new archive.
 
 ## After Relay is provisioned
 
@@ -40,7 +39,7 @@ An interactive `relay init` can:
 1. write `~/.relay/config.json`,
 2. installs the Claude Code session hooks so past lessons load automatically,
 3. detects your LLM CLIs (Codex, LM Studio, OpenRouter, Anthropic) and wires them,
-4. offers to register the Relay MCP server with every MCP client it can find , Claude Code, Claude Desktop, Cursor, Codex.
+4. offers to register the Relay MCP server with every MCP client it can find: Claude Code, Claude Desktop, Cursor, Codex.
 
 Re-running it is safe; it never duplicates entries and never touches config it
 can't parse. `--auto` skips MCP client registration because those are global
