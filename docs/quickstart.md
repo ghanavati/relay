@@ -1,7 +1,7 @@
 # Quickstart
 
 > Install Relay from GitHub Releases. See [install.md](./install.md) for the
-> v0.4.0-beta.1 archive and checksum steps. You do not need npm or Node.
+> archive and checksum steps. You do not need npm or Node.
 
 End-to-end walk: save a memory, verify recall, and wire Relay into an LLM.
 
