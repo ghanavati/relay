@@ -1,30 +1,25 @@
-# Install Relay from GitHub Releases
+# Install Relay
 
 Relay is the control layer for AI coding: shared memory, deliberate delegation,
 and visible multi-model work.
 
 ## Install Relay
 
-Relay ships through [GitHub Releases](https://github.com/ghanavati/relay/releases),
-not npm. The archive includes Relay, its production dependencies, and its Node
-runtime.
+Relay installs from your terminal. It needs Git, Node 20 or newer, and npm.
 
-Run this on a Mac or Linux machine:
+Run this once:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ghanavati/relay/main/scripts/install-release.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ghanavati/relay/main/scripts/install.sh | bash -s -- --yes
+```
+
+Open a new terminal, then run:
+
+```bash
 relay setup --everything
 ```
 
-On Windows PowerShell:
-
-```powershell
-irm https://raw.githubusercontent.com/ghanavati/relay/main/scripts/install-release.ps1 | iex
-relay setup --everything
-```
-
-The installer detects Apple Silicon or Intel Macs, Linux x64, Linux ARM64, and
-Windows x64.
+On Windows, use Git Bash or WSL for the same command.
 It downloads the matching archive, verifies its checksum, and places `relay` in
 `~/.local/bin`. Add that directory to your shell profile if it is not already
 on PATH. Re-run the command to upgrade.
