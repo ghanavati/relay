@@ -235,8 +235,8 @@ on it. Solo CLI users normally skip this flag.
 
 ### Public installation
 Download the platform archive and `SHA256SUMS.txt` from the
-[v0.4.0-beta.1 release](https://github.com/ghanavati/relay/releases/tag/v0.4.0-beta.1),
-then follow the checksum and setup commands in [install.md](./install.md).
+[Releases page](https://github.com/ghanavati/relay/releases), then follow the
+checksum and setup commands in [install.md](./install.md).
 
 ### Codex: "You've hit your usage limit"
 `error: You've hit your usage limit. Try again at HH:MM PM.`
