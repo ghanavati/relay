@@ -550,6 +550,19 @@ export async function executeDoctorCommand(args: DoctorArgs, io: CliIO): Promise
   //     queue depth, the data source behind `relay tui` (Phase 8 / D-12, D-14)
   record(await checkCommandCentral());
 
+  // 16. MCP client registration — is the relay server wired into each
+  //     detected client? Read-only probes; `relay init` does the writing.
+  {
+    const { probeMcpClients } = await import('./mcp-clients.js');
+    for (const p of probeMcpClients()) {
+      record({
+        name: `mcp-${p.client}`,
+        status: p.registered === true ? 'ok' : 'missing',
+        detail: p.detail,
+      });
+    }
+  }
+
   // Output
   if (args.json) {
     io.stdout(JSON.stringify({ checks, summary }) + '\n');

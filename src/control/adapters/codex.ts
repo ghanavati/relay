@@ -54,7 +54,7 @@ export const RELAY_MANAGED_END = '<!-- relay-managed-end -->';
  * variants — nothing else. A foreign server whose name merely contains
  * "relay" must not count (never overclaim).
  */
-const RELAY_MCP_ENTRY = /^\s*\[mcp_servers\.["']?relay(?:-mcp)?["']?\]/m;
+export const RELAY_MCP_ENTRY = /^\s*\[mcp_servers\.["']?relay(?:-mcp)?["']?\]/m;
 
 /** Result of probing the local Codex integration surfaces. */
 export interface CodexControlProbe {
