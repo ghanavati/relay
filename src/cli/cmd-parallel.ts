@@ -264,6 +264,7 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
           status: result.status,
           duration_ms: result.duration_ms,
           output: result.output,
+          ...(result.error ? { error: result.error.message } : {}),
           provider: run.provider,
           model: run.model ?? null,
         };

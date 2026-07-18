@@ -28,7 +28,11 @@ the model ID served by the endpoint; only exact matches apply.
 {
   "models": {
     "gemma-4-31b-it-UD-MLX-4bit": {
-      "temperature": 0.2,
+      "temperature": 0.7,
+      "top_p": 0.95,
+      "top_k": 40,
+      "min_p": 0,
+      "presence_penalty": 0,
       "max_tokens": 4096,
       "max_iterations": 8,
       "chat_template_kwargs": { "enable_thinking": false }
@@ -38,7 +42,9 @@ the model ID served by the endpoint; only exact matches apply.
 ```
 
 `chat_template_kwargs` are intentionally per-model: Relay does not assume a
-universal thinking flag.
+universal thinking flag. Sampling controls (`temperature`, `top_p`, `top_k`,
+`min_p`, and `presence_penalty`) are sent only when present in the profile;
+use only controls supported by the serving runtime for that exact model.
 
 ### Auto-extract pipeline
 

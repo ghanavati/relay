@@ -10,6 +10,10 @@ const JsonValueSchema: z.ZodType<unknown> = z.lazy(() => z.union([
 
 const ModelProfileSchema = z.object({
   temperature: z.number().finite().min(0).max(2).optional(),
+  top_p: z.number().finite().min(0).max(1).optional(),
+  top_k: z.number().int().positive().max(1_000).optional(),
+  min_p: z.number().finite().min(0).max(1).optional(),
+  presence_penalty: z.number().finite().min(-2).max(2).optional(),
   max_tokens: z.number().int().positive().max(131_072).optional(),
   max_iterations: z.number().int().positive().max(100).optional(),
   chat_template_kwargs: z.record(JsonValueSchema).optional(),

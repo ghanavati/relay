@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Agentic profile and parallel receipts:** oMLX/LM Studio agentic profiles can
+  now set validated sampling controls (`top_p`, `top_k`, `min_p`, and
+  `presence_penalty`), and `relay parallel --json` includes the worker error
+  message when an agentic run does not complete.
 - **Control E2E grant expiry:** test grants are minted at the live wall clock,
   matching the tool path's expiry validation.
 - **Parallel agentic dispatch:** agentic jobs now receive the same Relay control

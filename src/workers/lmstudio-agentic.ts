@@ -768,6 +768,10 @@ export class LmStudioAgenticRunner implements WorkerRunner {
           tool_choice: 'auto',
           stream: false,
           ...(profile.temperature === undefined ? { temperature: 0.2 } : { temperature: profile.temperature }),
+          ...(profile.top_p === undefined ? {} : { top_p: profile.top_p }),
+          ...(profile.top_k === undefined ? {} : { top_k: profile.top_k }),
+          ...(profile.min_p === undefined ? {} : { min_p: profile.min_p }),
+          ...(profile.presence_penalty === undefined ? {} : { presence_penalty: profile.presence_penalty }),
           ...(profile.max_tokens === undefined ? {} : { max_tokens: profile.max_tokens }),
           ...(profile.chat_template_kwargs === undefined ? {} : { chat_template_kwargs: profile.chat_template_kwargs }),
         };
