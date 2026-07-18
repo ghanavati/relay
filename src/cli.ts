@@ -178,6 +178,15 @@ ${c.cyan('CONTEXT COMMANDS')}
                                            memories from leaking into LLM context.
                                            Use 'any' to disable filter.)
 
+${c.cyan('MCP SERVER')}
+  relay mcp serve                          Serve memory tools over MCP stdio
+                                           (Claude Desktop, Cursor, Windsurf).
+                                           Tools: relay_recall, relay_remember,
+                                           relay_memory_search, relay_get_memory,
+                                           relay_corpus_query, relay_browse_runs,
+                                           relay_compare_runs + relay-context prompt.
+    [--selfcheck]                          In-process handshake check, exit 0/1
+
 ${c.cyan('DELEGATION COMMANDS')}
   relay run <task>                         Delegate a task to a worker
     [--provider codex|lmstudio|openrouter|anthropic] (default: codex)
@@ -746,6 +755,11 @@ async function main(): Promise<number> {
 
   if (cmd === 'context') {
     return dispatchContext(rest);
+  }
+
+  if (cmd === 'mcp') {
+    const { executeMcpCommand } = await import('./cli/cmd-mcp.js');
+    return executeMcpCommand(rest, io);
   }
 
   if (cmd === 'run') return dispatchRun(rest);
