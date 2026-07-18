@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { resolveDbTarget, assertRemoteWritable, _setReplicaOfflineForTest } from './db.js';
+import { MemoryStore } from '../../memory/memory-store.js';
 
 describe('resolveDbTarget — RELAY_DB_URL boundary', () => {
   test('unset → local default under ~/.relay', () => {
@@ -73,6 +74,22 @@ describe('resolveDbTarget — RELAY_DB_URL boundary', () => {
           return true;
         }
       );
+    } finally {
+      _setReplicaOfflineForTest(false);
+    }
+  });
+
+  test('offline replica refuses memory mutations while read bookkeeping can remain best-effort', () => {
+    _setReplicaOfflineForTest(true);
+    try {
+      const store = new MemoryStore();
+      assert.throws(() => store.forget('00000000-0000-0000-0000-000000000000'), /saving is paused/);
+      assert.throws(
+        () => store.remember({ content: 'must not be persisted offline', memory_type: 'lesson' }),
+        /saving is paused/
+      );
+      assert.doesNotThrow(() => store.touchMemories(['00000000-0000-0000-0000-000000000000']));
+      assert.doesNotThrow(() => store.logReads(['00000000-0000-0000-0000-000000000000'], {}));
     } finally {
       _setReplicaOfflineForTest(false);
     }
