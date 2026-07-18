@@ -7,19 +7,19 @@ and visible multi-model work.
 
 Relay installs from your terminal. It needs Git, Node 20 or newer, and npm.
 
-Run this once:
+**Mac or Linux**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ghanavati/relay/main/scripts/install.sh | bash -s -- --yes
 ```
 
-Open a new terminal, then run:
+**Windows PowerShell**
 
-```bash
-relay setup --everything
+```powershell
+irm https://raw.githubusercontent.com/ghanavati/relay/main/scripts/install.ps1 | iex
 ```
 
-On Windows, use Git Bash or WSL for the same command.
+Each command completes setup. Open a new terminal, then run `relay --help`.
 It downloads the matching archive, verifies its checksum, and places `relay` in
 `~/.local/bin`. Add that directory to your shell profile if it is not already
 on PATH. Re-run the command to upgrade.

@@ -9,22 +9,23 @@ choose between.
 
 ## Get started
 
-Relay installs from your terminal. Run this once:
+Relay installs from your terminal and completes setup automatically.
+
+**Mac or Linux**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ghanavati/relay/main/scripts/install.sh | bash -s -- --yes
 ```
 
-Then open a new terminal and run:
+**Windows PowerShell**
 
-```bash
-relay setup --everything
+```powershell
+irm https://raw.githubusercontent.com/ghanavati/relay/main/scripts/install.ps1 | iex
 ```
 
-It installs Relay locally, then the setup command creates your memory store and
-offers to connect the coding tools you already use. It works in any terminal
-with Git, Node 20 or newer, and npm, including macOS, Linux, and Windows through
-Git Bash or WSL.
+Each command installs Relay, creates your memory store, and offers to connect
+the coding tools you already use. Open a new terminal afterwards, then run
+`relay --help`.
 
 ## What Relay does
 
