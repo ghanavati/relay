@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Public documentation cleanup** — replaced the README with the current
+  control-layer positioning and pre-release distribution status; removed
+  historical planning, findings, and obsolete recipes from the public tree.
+  The removed material is preserved in the local project archive.
+
 ### Added — MCP memory server (Phase 9, v0.4 lean core)
 
 - **`relay mcp`** — Relay runs as a stdio MCP server exposing exactly two tools to MCP clients: `relay_memory_recall` and `relay_memory_save`. Thin wrappers over the same memory handlers and SQLite store the CLI uses — same workdir scoping (`RELAY_MEMORY_ALLOWED_WORKDIRS`), secrets redacted on every value crossing the boundary, diagnostics on stderr only (stdout carries protocol framing). No dispatch, shell, or session-control surface over MCP. Built on `@modelcontextprotocol/sdk@1.29.0` (exact-pinned, import surface verified against the installed package at startup). Additive: the CLI surface is unchanged. Registration recipe in [docs/mcp.md](docs/mcp.md).
@@ -23,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Beyond v0.2 (planned)
 - v0.3.0: per-session cost / usage rollups in Command Central; full-TTY live control via opt-in PTY
-- later: skill packs (slim), `relay run --pipe`, `relay queue cron`, `relay watch <dir>`, brew formula (v0.4.0 was rescoped to the lean core shipped above — see `.planning/RELAY-V04-SCOPE.md`)
+- later: skill packs (slim), `relay run --pipe`, `relay queue cron`, `relay watch <dir>`, brew formula
 - v1.0.0: stable surface, public if not already
 
 ## [0.1.2] — 2026-05-11
