@@ -21,6 +21,8 @@ import type { ProviderConfig } from '../workers/provider-registry.js';
 import { AGENTIC_SANDBOX_ENV } from '../security/env-sanitize.js';
 import { runnerForProvider, type RunnerFactoryOpts } from './runner-factory.js';
 
+const AGENTIC_LOCAL_PROVIDERS = new Set(['lmstudio-agentic', 'omlx-agentic']);
+
 export interface RunCommandArgs {
   task: string;
   provider: string;
@@ -84,7 +86,7 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
   let runner;
   try {
     const factoryOpts: RunnerFactoryOpts = {};
-    if (args.provider === 'lmstudio-agentic') {
+    if (AGENTIC_LOCAL_PROVIDERS.has(args.provider)) {
       // 08-fix HIGH — mark this process as an agentic sandbox. shell_exec children
       // inherit it (and defaultShellExec force-injects it per child), so any `relay`
       // CLI a model shells into refuses mutating control subcommands.
@@ -144,7 +146,7 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
   // Phase 7: when registerFigmaTools returned handlers, merge their ToolDefs into
   // the tools[] presented to the model (additive — preserves shell_exec).
   let tools;
-  if (args.provider === 'lmstudio-agentic') {
+  if (AGENTIC_LOCAL_PROVIDERS.has(args.provider)) {
     const { DEFAULT_AGENTIC_TOOLS } = await import('../workers/lmstudio-agentic.js');
     const { registerFigmaTools } = await import('../tools/figma/index.js');
     const { CONTROL_TOOL_DEFS } = await import('../control/tools.js');
@@ -179,7 +181,7 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
       finished_at: Date.now(),
     });
     // Phase 8 — close the run's control session on the throw path too.
-    if (args.provider === 'lmstudio-agentic') {
+    if (AGENTIC_LOCAL_PROVIDERS.has(args.provider)) {
       const { endControlSessionForRun } = await import('../control/tools.js');
       endControlSessionForRun(run_id);
     }
@@ -220,7 +222,7 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
   }
 
   // Phase 8 — the run is over: mark its control session ended (audited).
-  if (args.provider === 'lmstudio-agentic') {
+  if (AGENTIC_LOCAL_PROVIDERS.has(args.provider)) {
     const { endControlSessionForRun } = await import('../control/tools.js');
     endControlSessionForRun(run_id);
   }

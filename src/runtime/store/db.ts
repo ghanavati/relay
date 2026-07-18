@@ -414,6 +414,22 @@ function migrateRunsVerificationStatus(db: Database.Database): void {
   }
 }
 
+/**
+ * Phase 9 — PRAGMA-guarded migration for runs.archived_at.
+ *
+ * `RunStore.list()` has filtered on `archived_at IS NULL` since the relay-mcp
+ * extraction, but no DDL or migration ever created the column, so the default
+ * (non-archived) listing threw SQLITE_ERROR on every fresh DB. Latent until
+ * phase 9 re-served `handleBrowseRuns` over MCP — its only caller.
+ */
+function migrateRunsArchivedAt(db: Database.Database): void {
+  const info = db.prepare('PRAGMA table_info(runs)').all() as { name: string }[];
+  const cols = new Set(info.map(r => r.name));
+  if (!cols.has('archived_at')) {
+    db.prepare('ALTER TABLE runs ADD COLUMN archived_at INTEGER').run();
+  }
+}
+
 // migrateVerificationsConfidenceScore / migrateVerificationsSource /
 // migrateProxyRequestsFullBody removed — their target tables are DROPped
 // in migrate-v2-drop-orphans.ts.
@@ -492,6 +508,7 @@ export function applySchema(db: Database.Database): void {
   // 3) Long-standing PRAGMA-guarded migrations that target tables we keep.
   migrateIdempotencyExpiresAt(db);
   migrateRunsVerificationStatus(db);
+  migrateRunsArchivedAt(db);
   migrateCapabilityTables(db);
   migrateMemoryTables(db);
   migrateSessionFields(db);

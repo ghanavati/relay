@@ -280,11 +280,11 @@ describe('executeParallelCommand — registry-resolved spec providers', () => {
     for (const def of DEFAULT_AGENTIC_TOOLS) {
       assert.ok(names.includes(def.function.name), `default agentic tool ${def.function.name} must be offered`);
     }
-    // cmd-parallel wires Figma (env-gated) but NOT the run-bound relay_*
-    // control tools — that wiring is cmd-run-only. Guard the divergence.
+    // Every Relay-owned local agentic run is also a control session, including
+    // a parallel lane. The model must receive the run-bound control tools.
     assert.ok(
-      !names.some((n) => n?.startsWith('relay_')),
-      `parallel dispatch must not offer relay_* control tools (saw: ${names.join(', ')})`
+      names.some((n) => n === 'relay_session_list'),
+      `parallel dispatch must offer relay_* control tools (saw: ${names.join(', ')})`
     );
   });
 });

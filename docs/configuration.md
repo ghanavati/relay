@@ -17,6 +17,34 @@ Relay reads config from three sources, in order of precedence (most specific win
 | `RELAY_RECALLED_LESSONS` | (unset) | Set to `1` to enable the recalled_lessons context layer for delegated tasks. |
 | `RELAY_RUN_HISTORY_LAYERS` | (unset) | Set to `1` to inject last 5 successful runs as context for delegated tasks. |
 | `RELAY_COLOR` | (unset) | `auto`, `always`, or `never`. CLI flag `--color=...` overrides. |
+| `RELAY_INFERENCE_PROFILES_PATH` | (unset) | Optional JSON file of exact model-ID inference profiles: sampling, output/iteration limits, and model-specific chat-template kwargs. Invalid files fail dispatch with `CONFIG_ERROR`; absent file means no profile. |
+
+### Model inference profiles
+
+Profiles are user-owned and model-agnostic in Relay source. They are keyed by
+the model ID served by the endpoint; only exact matches apply.
+
+```json
+{
+  "models": {
+    "gemma-4-31b-it-UD-MLX-4bit": {
+      "temperature": 0.7,
+      "top_p": 0.95,
+      "top_k": 40,
+      "min_p": 0,
+      "presence_penalty": 0,
+      "max_tokens": 4096,
+      "max_iterations": 8,
+      "chat_template_kwargs": { "enable_thinking": false }
+    }
+  }
+}
+```
+
+`chat_template_kwargs` are intentionally per-model: Relay does not assume a
+universal thinking flag. Sampling controls (`temperature`, `top_p`, `top_k`,
+`min_p`, and `presence_penalty`) are sent only when present in the profile;
+use only controls supported by the serving runtime for that exact model.
 
 ### Auto-extract pipeline
 
@@ -39,6 +67,8 @@ The auto-extract pipeline calls a local model on session-end to extract candidat
 | `OPENROUTER_API_KEY` | (unset) | Required for OpenRouter provider. Get from https://openrouter.ai. |
 | `LMSTUDIO_ENDPOINT` | `http://localhost:1234` | LM Studio API endpoint for delegated runs. (Distinct from `RELAY_AUTO_EXTRACT_ENDPOINT`.) |
 | `LMSTUDIO_API_KEY` | (unset) | Only needed if LM Studio is behind a reverse proxy with auth. |
+| `OMLX_ENDPOINT` | (unset) | Required base URL for `omlx-agentic`, for example `http://127.0.0.1:8000`. |
+| `OMLX_API_KEY` | (unset) | Optional bearer token for the oMLX server. |
 | `ANTHROPIC_API_KEY` | (unset) | Required for `anthropic` provider. |
 | `RELAY_CODEX_NETWORK_MODE` | (unset) | Set to `dangerous` to skip Codex approval flow (recommended for solo). |
 
