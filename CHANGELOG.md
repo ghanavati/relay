@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   control-layer positioning and pre-release distribution status; removed
   historical planning, findings, and obsolete recipes from the public tree.
   The removed material is preserved in the local project archive.
+- **Product positioning** — refreshed the GitHub About text and public
+  distribution language around Relay's memory, delegation, and observable
+  multi-model work.
 
 ### Added — MCP memory server (Phase 9, v0.4 lean core)
 

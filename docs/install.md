@@ -1,16 +1,17 @@
 # Distribution status
 
-Relay is a pre-release CLI and MCP server for shared, persistent AI-work memory.
+Relay is the pre-release control layer for AI coding: shared memory, deliberate
+delegation, and visible multi-model work.
 
-## Not publicly installable yet
+## Public packaging is next
 
-Relay is not currently published through a public package registry and does not
-yet have a supported end-user installation path. The repository is available
-for development and evaluation while release packaging is decided.
+Relay is not yet published through a public package registry. The core is ready
+for maintained development and evaluation environments while public packaging
+is prepared.
 
 Once Relay is distributed, this page will document the supported installation,
-upgrade, and removal process. Until then, avoid treating a source checkout as
-a stable end-user install.
+upgrade, and removal process. Until then, use a provisioned runtime rather than
+treating a source checkout as a general end-user installer.
 
 ## After Relay is provisioned
 
