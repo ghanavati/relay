@@ -10,6 +10,7 @@
 import { argv, exit, cwd } from 'node:process';
 import { readFileSync } from 'node:fs';
 import { formatFatal } from './errors.js';
+import { syncDbIfRemote } from './runtime/store/db.js';
 import type { CliIO } from './cli/commands.js';
 import { c, setColorMode, type ColorMode } from './cli/colors.js';
 // T50: env-driven cwd default for `relay memory recall` / `show-context`.
@@ -993,7 +994,16 @@ async function main(): Promise<number> {
 }
 
 main().then(
-  code => exit(code),
+  async code => {
+    // Remote-DB mode: flush this invocation's writes to the remote before the
+    // process exits. 'failed' = offline; the data is durable locally.
+    if ((await syncDbIfRemote()) === 'failed') {
+      io.stderr(
+        'relay: warning: could not sync to the remote database — changes are saved locally and will sync when it is reachable\n'
+      );
+    }
+    exit(code);
+  },
   err => {
     io.stderr(formatFatal(err, process.env['RELAY_DEBUG'] === '1'));
     exit(2);
