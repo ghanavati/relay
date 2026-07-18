@@ -120,6 +120,6 @@ Top blast-radius pitfalls to enforce at gate (research §4):
 
 ## Session Continuity
 
-Last session: 2026-06-08 (orchestrated parallel wave execution, paused on user hold)
-Stopped at: 08-07 complete + verified — full suite 1718/1718. PAUSED before round 4. Next: {08-05 ∥ 08-08} parallel (write sets disjoint, build-lock protocol), then 08-09 close-out. Follow-up flagged: cmd-session.ts (970) + broker.ts (985) exceed 800-line cap — split in a refactor plan. User direction pending on terminal-vs-web Command Central emphasis; delegation-first framing (grants/audit are edge-gates, not the product).
+Last session: 2026-06-09 (v0.4 rescope: scrutiny killed cost/trader/Berry-builtin/MCP-bridge/control-over-MCP; Phase 9 plans rewritten to the lean set)
+Stopped at: Phase 9 plan set complete (09-01..05 + CONTEXT + RESEARCH rewritten; old 09-06/AUDIT deleted; REQUIREMENTS DISPATCH-01..04 + MCP-01..05). Next: execute wave 1 — 09-01 (dispatch) ∥ 09-02 (SDK pin, needs install approval). Carried follow-up: cmd-session.ts (970) + broker.ts (985) exceed 800-line cap — split in a future refactor plan.
 Resume file: None
