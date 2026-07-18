@@ -9,6 +9,7 @@
 
 import { argv, exit, cwd } from 'node:process';
 import { readFileSync } from 'node:fs';
+import { formatFatal } from './errors.js';
 import type { CliIO } from './cli/commands.js';
 import { c, setColorMode, type ColorMode } from './cli/colors.js';
 // T50: env-driven cwd default for `relay memory recall` / `show-context`.
@@ -994,8 +995,7 @@ async function main(): Promise<number> {
 main().then(
   code => exit(code),
   err => {
-    io.stderr(`FATAL: ${(err as Error).message}\n`);
-    if ((err as Error).stack) io.stderr(`${(err as Error).stack}\n`);
+    io.stderr(formatFatal(err, process.env['RELAY_DEBUG'] === '1'));
     exit(2);
   }
 );
