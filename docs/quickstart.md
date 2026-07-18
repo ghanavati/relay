@@ -4,9 +4,7 @@ End-to-end walk: install Relay, save a memory, verify recall, wire it into your 
 
 ## 1. Prerequisites
 
-- **Node >=20** — verify with `node --version`. Required for `better-sqlite3` native module.
-- **macOS:** Xcode CLT (`xcode-select --install`).
-- **Linux:** `build-essential python3` for the native module.
+- **Node >=20** — verify with `node --version`. No compiler or build tools needed: the SQLite driver (libsql) ships prebuilt binaries for macOS and Linux.
 - **Optional — local model:** [LM Studio](https://lmstudio.ai) for free local inference + auto-extract.
 - **Optional — Codex CLI:** `npm i -g @openai/codex` (then `codex login`) for delegated runs.
 
@@ -53,7 +51,11 @@ relay context emit --target cc --workdir "$PWD"
 
 Returns the JSON `{additionalContext: "..."}` shape Claude Code's SessionStart hook expects. Run with `--target codex` for plain markdown, `--target lmstudio-http` for an OpenAI-compatible system fragment, or `--target lmstudio-cli` for single-line text.
 
-## 6. Per-LLM pointers
+## 6. The MCP server (memory in every tool)
+
+`relay init` registers Relay's MCP server — two tools, `relay_memory_recall` and `relay_memory_save` — with every client it detects: Claude Code, Claude Desktop, Cursor, Codex. Restart the client and ask it to recall; it reads the same store your terminal writes. Manual registration and details: [mcp.md](./mcp.md); pointing the store at a hosted database: [database.md](./database.md).
+
+## 7. Per-LLM pointers
 
 Each frontier CLI has its own wiring. `relay setup --everything` covers Claude Code; for the rest:
 
@@ -63,7 +65,7 @@ Each frontier CLI has its own wiring. `relay setup --everything` covers Claude C
 - **OpenRouter:** `relay setup-llm openrouter --write` — probes API key, lists available models. See [cookbook.md](./cookbook.md#openrouter).
 - **Anthropic API direct:** `relay setup-llm anthropic --write` — probes API key. See [cookbook.md](./cookbook.md#anthropic).
 
-## 7. Where to next
+## 8. Where to next
 
 - `relay info` — health check: hook status, provider reachability, last activity
 - `relay memory tail` — live view of recent memory writes / hook activity
