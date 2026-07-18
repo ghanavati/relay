@@ -1,5 +1,9 @@
 /**
  * `relay parallel <spec.json>` — dispatch N tasks concurrently with bounded concurrency.
+ *
+ * Spec providers resolve through src/workers/provider-registry.ts (09-01
+ * follow-up): the five builtins plus any RELAY_PROVIDER_<NAME>_* env-declared
+ * endpoint. Runners come from the shared ./runner-factory.js mapping.
  */
 
 import type { CliIO } from './commands.js';
@@ -7,9 +11,12 @@ import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { RunStore } from '../runtime/store/run-store.js';
-import type { WorkerRunner } from '../workers/runner.js';
 import type { WorkerResult } from '../workers/types.js';
 import { AGENTIC_SANDBOX_ENV } from '../security/env-sanitize.js';
+import { resolveProvider, type ProviderConfig } from '../workers/provider-registry.js';
+import { runnerForProvider, type RunnerFactoryOpts } from './runner-factory.js';
+
+const AGENTIC_LOCAL_PROVIDERS = new Set(['lmstudio-agentic', 'omlx-agentic']);
 
 export interface ParallelArgs {
   specPath: string;
@@ -19,7 +26,8 @@ export interface ParallelArgs {
 
 interface SpecTask {
   task: string;
-  provider: 'codex' | 'lmstudio' | 'openrouter' | 'anthropic' | 'lmstudio-agentic' | 'omlx-agentic';
+  /** Registry-resolved provider name (builtin or RELAY_PROVIDER_* env-declared). */
+  provider: string;
   model?: string;
   workdir?: string;
   timeout_ms?: number;
@@ -34,62 +42,6 @@ interface RunOutcome {
   error?: string;
   provider: string;
   model: string | null;
-}
-
-interface AgenticRunContext {
-  run_id: string;
-  workdir: string;
-  model?: string;
-  label: string;
-}
-
-async function getRunner(
-  provider: SpecTask['provider'],
-  agentic?: AgenticRunContext,
-): Promise<WorkerRunner> {
-  if (provider === 'codex') {
-    const { CodexRunner } = await import('../workers/codex.js');
-    return new CodexRunner();
-  }
-  if (provider === 'lmstudio') {
-    const { LmStudioRunner } = await import('../workers/lmstudio.js');
-    return new LmStudioRunner();
-  }
-  if (provider === 'openrouter') {
-    const { OpenRouterRunner } = await import('../workers/openrouter.js');
-    return new OpenRouterRunner();
-  }
-  if (provider === 'anthropic') {
-    const { AnthropicRunner } = await import('../workers/anthropic.js');
-    return new AnthropicRunner();
-  }
-  if (provider === 'lmstudio-agentic' || provider === 'omlx-agentic') {
-    if (!agentic) throw new Error(`${provider} requires run context`);
-    const { LmStudioAgenticRunner } = await import('../workers/lmstudio-agentic.js');
-    const { OmlxAgenticRunner } = await import('../workers/omlx-agentic.js');
-    // Phase 7 — env-gated Figma REST tools. Null when PAT absent (FIGMA-03 graceful).
-    const { registerFigmaTools } = await import('../tools/figma/index.js');
-    const { loadPat } = await import('../tools/figma/pat-loader.js');
-    const { homedir } = await import('node:os');
-    const figmaHandlers = registerFigmaTools(process.env, homedir());
-    const figmaPat = loadPat(process.env, homedir()) ?? '';
-    const extraToolHandlers = figmaHandlers
-      ? figmaHandlers.map((h) => ({
-          name: h.def.function.name,
-          pat: figmaPat,
-          handle: h.handle as (a: unknown, c: { workdir: string; pat: string }) => Promise<unknown>,
-        }))
-      : undefined;
-    const { createControlSessionForRun, registerControlTools, toNamedToolHandlers } =
-      await import('../control/tools.js');
-    createControlSessionForRun(agentic);
-    const controlHandlers = toNamedToolHandlers(registerControlTools(agentic.run_id));
-    const opts = {
-      extraToolHandlers: [...(extraToolHandlers ?? []), ...controlHandlers],
-    };
-    return provider === 'omlx-agentic' ? new OmlxAgenticRunner(opts) : new LmStudioAgenticRunner(opts);
-  }
-  throw new Error(`unsupported provider: ${provider as string}`);
 }
 
 async function runWithLimit<T, R>(
@@ -121,7 +73,7 @@ function fmtDuration(ms: number | undefined): string {
 function sharedAgenticWorkdir(tasks: readonly SpecTask[], cwd: string): string | null {
   const seen = new Set<string>();
   for (const task of tasks) {
-    if (task.provider !== 'lmstudio-agentic' && task.provider !== 'omlx-agentic') continue;
+    if (!AGENTIC_LOCAL_PROVIDERS.has(task.provider)) continue;
     const workdir = resolve(task.workdir ?? cwd);
     if (seen.has(workdir)) return workdir;
     seen.add(workdir);
@@ -151,24 +103,36 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
     return 2;
   }
 
-  const validProviders = new Set(['codex', 'lmstudio', 'openrouter', 'anthropic', 'lmstudio-agentic', 'omlx-agentic']);
-  const httpProviders = new Set(['lmstudio', 'openrouter', 'anthropic', 'lmstudio-agentic', 'omlx-agentic']);
+  // Resolve every spec provider through the registry BEFORE any run row
+  // exists (mirrors cmd-run, DISPATCH-02): unknown names fail with the
+  // available-provider list; builtin/env collisions error (D-04). The model
+  // gate keys on the resolved wire type — only subprocess (codex) is exempt.
+  const providerConfigs = new Map<string, ProviderConfig>();
   for (const [idx, t] of spec.tasks.entries()) {
     if (!t.task?.trim()) { io.stderr(`task[${idx}].task is empty\n`); return 2; }
-    if (!validProviders.has(t.provider)) { io.stderr(`task[${idx}].provider must be codex|lmstudio|openrouter|anthropic|lmstudio-agentic\n`); return 2; }
-    if (httpProviders.has(t.provider) && !t.model) { io.stderr(`task[${idx}].model required for provider=${t.provider}\n`); return 2; }
+    let config = providerConfigs.get(t.provider);
+    if (!config) {
+      try {
+        config = resolveProvider(t.provider);
+      } catch (err) {
+        io.stderr(`task[${idx}].provider: ${(err as Error).message}\n`);
+        return 2;
+      }
+      providerConfigs.set(t.provider, config);
+    }
+    if (config.type !== 'subprocess' && !t.model) { io.stderr(`task[${idx}].model required for provider=${t.provider}\n`); return 2; }
   }
 
+  // 08-fix HIGH — if any task runs the agentic shell loop, mark this process as an
+  // agentic sandbox so a model that shells into the `relay` CLI is refused mutating
+  // control subcommands (shell_exec children inherit + force-inject the marker).
   const sharedWorkdir = sharedAgenticWorkdir(spec.tasks, io.cwd);
   if (sharedWorkdir) {
     io.stderr(`agentic parallel tasks require a separate workdir per task; duplicate: ${sharedWorkdir}\n`);
     return 2;
   }
 
-  // 08-fix HIGH — if any task runs the agentic shell loop, mark this process as an
-  // agentic sandbox so a model that shells into the `relay` CLI is refused mutating
-  // control subcommands (shell_exec children inherit + force-inject the marker).
-  if (spec.tasks.some((t) => t.provider === 'lmstudio-agentic' || t.provider === 'omlx-agentic')) {
+  if (spec.tasks.some((t) => AGENTIC_LOCAL_PROVIDERS.has(t.provider))) {
     process.env[AGENTIC_SANDBOX_ENV] = '1';
   }
 
@@ -203,12 +167,37 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
       store.recordEvent(run.run_id, 'started', { provider: run.provider, model: run.model ?? null });
 
       try {
-        const runner = await getRunner(run.provider, {
-          run_id: run.run_id,
-          workdir: run.workdir,
-          model: run.model,
-          label: run.task_excerpt,
-        });
+        const config = providerConfigs.get(run.provider);
+        if (!config) throw new Error(`unresolved provider: ${run.provider}`); // unreachable — validated above
+        const factoryOpts: RunnerFactoryOpts = {};
+        if (AGENTIC_LOCAL_PROVIDERS.has(run.provider)) {
+          // Phase 7 — env-gated Figma REST tools. Null when PAT absent (FIGMA-03 graceful).
+          const { registerFigmaTools } = await import('../tools/figma/index.js');
+          const { loadPat } = await import('../tools/figma/pat-loader.js');
+          const { homedir } = await import('node:os');
+          const figmaHandlers = registerFigmaTools(process.env, homedir());
+          const figmaPat = loadPat(process.env, homedir()) ?? '';
+          const figmaNamed = figmaHandlers
+            ? figmaHandlers.map((h) => ({
+              name: h.def.function.name,
+              pat: figmaPat,
+              handle: h.handle as (a: unknown, c: { workdir: string; pat: string }) => Promise<unknown>,
+            }))
+            : [];
+          const { createControlSessionForRun, registerControlTools, toNamedToolHandlers } =
+            await import('../control/tools.js');
+          createControlSessionForRun({
+            run_id: run.run_id,
+            workdir: run.workdir,
+            model: run.model,
+            label: run.task_excerpt,
+          });
+          factoryOpts.agenticExtraToolHandlers = [
+            ...figmaNamed,
+            ...toNamedToolHandlers(registerControlTools(run.run_id)),
+          ];
+        }
+        const runner = await runnerForProvider(config, factoryOpts);
         const { buildDelegatedTask } = await import('../context/layers.js');
         const built = await buildDelegatedTask({
           workdir: run.workdir,
@@ -219,15 +208,17 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
         // runner has a shell_exec tool to offer the model. Worker rejects empty tools[].
         // Phase 7: when registerFigmaTools returned handlers, merge their ToolDefs.
         let tools;
-        if (run.provider === 'lmstudio-agentic' || run.provider === 'omlx-agentic') {
+        if (AGENTIC_LOCAL_PROVIDERS.has(run.provider)) {
           const { DEFAULT_AGENTIC_TOOLS } = await import('../workers/lmstudio-agentic.js');
           const { registerFigmaTools } = await import('../tools/figma/index.js');
           const { CONTROL_TOOL_DEFS } = await import('../control/tools.js');
           const { homedir } = await import('node:os');
           const figmaHandlers = registerFigmaTools(process.env, homedir());
-          tools = figmaHandlers
-            ? [...DEFAULT_AGENTIC_TOOLS, ...figmaHandlers.map((h) => h.def), ...CONTROL_TOOL_DEFS]
-            : [...DEFAULT_AGENTIC_TOOLS, ...CONTROL_TOOL_DEFS];
+          tools = [
+            ...DEFAULT_AGENTIC_TOOLS,
+            ...(figmaHandlers ? figmaHandlers.map((h) => h.def) : []),
+            ...CONTROL_TOOL_DEFS,
+          ];
         }
         const result = await runner.run({
           task: built.bareTask,
@@ -240,7 +231,7 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
           provider: run.provider,
           ...(tools ? { tools } : {}),
         });
-        if (run.provider === 'lmstudio-agentic' || run.provider === 'omlx-agentic') {
+        if (AGENTIC_LOCAL_PROVIDERS.has(run.provider)) {
           const { endControlSessionForRun } = await import('../control/tools.js');
           endControlSessionForRun(run.run_id);
         }
@@ -252,6 +243,9 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
           duration_ms: result.duration_ms,
           exit_code: result.exit_code,
           token_usage: result.token_usage ?? null,
+          // Review fix 3: full uniform usage receipt, matching cmd-run (DISPATCH-04).
+          prompt_tokens: result.prompt_tokens ?? null,
+          completion_tokens: result.completion_tokens ?? null,
           ...(result.error ? { error_code: result.error.code, error_message: result.error.message } : {}),
         });
         if (!args.json) {
@@ -264,13 +258,12 @@ export async function executeParallelCommand(args: ParallelArgs, io: CliIO): Pro
           status: result.status,
           duration_ms: result.duration_ms,
           output: result.output,
-          ...(result.error ? { error: result.error.message } : {}),
           provider: run.provider,
           model: run.model ?? null,
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        if (run.provider === 'lmstudio-agentic' || run.provider === 'omlx-agentic') {
+        if (AGENTIC_LOCAL_PROVIDERS.has(run.provider)) {
           const { endControlSessionForRun } = await import('../control/tools.js');
           endControlSessionForRun(run.run_id);
         }

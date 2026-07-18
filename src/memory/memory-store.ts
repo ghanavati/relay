@@ -6,10 +6,10 @@
  */
 
 import { randomUUID, createHash } from 'node:crypto';
-import { getDb } from '../runtime/store/db.js';
+import { assertRemoteWritable, getDb, isRemoteReplicaOffline } from '../runtime/store/db.js';
 import type { MemoryRow, MemoryType, Memory, RecallQuery, MemorySource, TrustLevel } from './types.js';
 import { estimateTokens } from './memory-engine.js';
-import type Database from 'better-sqlite3';
+import type Database from 'libsql';
 import { redactSecrets } from '../security/redaction.js';
 import { makeError, toRelayException } from '../errors.js';
 import { embedDocument as defaultEmbedDocument, type EmbeddingResult, type EmbedOptions } from './embedding-client.js';
@@ -93,6 +93,17 @@ function extractKeywords(text: string): string[] {
  */
 function escapeLikeWildcards(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+}
+
+/**
+ * libsql returns BLOB columns as ArrayBuffer on file-backed databases (but
+ * Buffer on :memory:). Normalize at the read boundary so every consumer sees
+ * the Buffer shape this codebase was written against. Buffer.from(ArrayBuffer)
+ * is a zero-copy view.
+ */
+function blobAsBuffer(v: Buffer | ArrayBuffer | null): Buffer | null {
+  if (v === null || Buffer.isBuffer(v)) return v;
+  return Buffer.from(v);
 }
 
 function rowToMemory(row: MemoryRow): Memory {
@@ -355,9 +366,12 @@ export class MemoryStore {
    */
   private updateEmbedding(memoryId: string, vector: Float32Array, model: string): void {
     const blob = Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
+    // libsql 0.5.x mis-binds Buffer/Uint8Array POSITIONAL parameters (NULL in
+    // multi-arg statements, native panic single-arg). Named parameters bind
+    // blobs correctly — keep this statement named until upstream fixes it.
     this.db
-      .prepare('UPDATE memories SET embedding_blob = ?, embedding_model = ? WHERE memory_id = ?')
-      .run(blob, model, memoryId);
+      .prepare('UPDATE memories SET embedding_blob = @blob, embedding_model = @model WHERE memory_id = @memoryId')
+      .run({ blob, model, memoryId });
   }
 
   /**
@@ -420,7 +434,9 @@ export class MemoryStore {
         embedding_model: string;
       }>;
     for (const row of rows) {
-      out.set(row.memory_id, { blob: row.embedding_blob, model: row.embedding_model });
+      const blob = blobAsBuffer(row.embedding_blob);
+      if (blob === null) continue;
+      out.set(row.memory_id, { blob, model: row.embedding_model });
     }
     return out;
   }
@@ -435,7 +451,8 @@ export class MemoryStore {
    * Caller treats null as "embedding missing" and falls back to Jaccard-only
    * verdict (DELTA-MEM-CONFLICT.md §4 W4 / PITFALL 2.5).
    */
-  private decodeEmbedding(blob: Buffer | null): Float32Array | null {
+  private decodeEmbedding(rawBlob: Buffer | ArrayBuffer | null): Float32Array | null {
+    const blob = blobAsBuffer(rawBlob);
     if (!blob) return null;
     const expectedBytes = EXPECTED_EMBEDDING_DIM * 4;
     if (blob.byteLength !== expectedBytes) return null;
@@ -679,6 +696,7 @@ export class MemoryStore {
     memory_source?: MemorySource;
     files?: readonly string[];
   }): string {
+    assertRemoteWritable();
     // Guards run OUTSIDE the transaction — they protect against bad inputs
     // before any state changes; if they throw we don't want a half-committed tx.
     this.assertWriteRateLimit(params.source_run_id);
@@ -789,6 +807,7 @@ export class MemoryStore {
     memory_source?: MemorySource;
     files?: readonly string[];
   }): string {
+    assertRemoteWritable();
     this.assertWriteRateLimit(params.source_run_id);
     assertWorkdirAllowed(params.workdir);
     const now = Date.now();
@@ -1139,6 +1158,7 @@ export class MemoryStore {
    *  human-sourced write can mark them trusted. The `tags_json LIKE '%"auto-extract"%'`
    *  match relies on the tag being JSON-encoded as a quoted string in the array. */
   markRecallSuccess(memoryIds: readonly string[]): void {
+    if (isRemoteReplicaOffline()) return;
     if (memoryIds.length === 0) return;
     const update = this.db.prepare('UPDATE memories SET success_recall_count = success_recall_count + 1 WHERE memory_id = ?');
     const autoPin = this.db.prepare(
@@ -1179,6 +1199,7 @@ export class MemoryStore {
   /** Demote a previously auto-pinned memory: clear pin flag and reset success_recall_count to 0.
    *  Use when a recalled memory proved incorrect. After demotion it becomes eligible for GC again. */
   demoteMemory(memoryId: string): void {
+    assertRemoteWritable();
     this.db.prepare(
       'UPDATE memories SET pinned = 0, success_recall_count = 0, trust_level = ? WHERE memory_id = ?'
     ).run('unverified', memoryId);
@@ -1186,6 +1207,7 @@ export class MemoryStore {
 
   /** SHIP-67 — write the current computed trust_level back to the DB column (used for SQL-level filtering). */
   upgradeTrust(memoryId: string): void {
+    assertRemoteWritable();
     const row = this.db.prepare(
       'SELECT memory_source, success_recall_count, pinned FROM memories WHERE memory_id = ?'
     ).get(memoryId) as { memory_source: string; success_recall_count: number; pinned: number } | undefined;
@@ -1213,6 +1235,7 @@ export class MemoryStore {
 
   /** SHIP-65 — append to memory read audit log. Best-effort, never throws on empty input. */
   logReads(memoryIds: readonly string[], opts: { run_id?: string; source?: string; workdir?: string }): void {
+    if (isRemoteReplicaOffline()) return;
     if (memoryIds.length === 0) return;
     const stmt = this.db.prepare('INSERT INTO memory_reads (memory_id, run_id, read_source, workdir, created_at) VALUES (?, ?, ?, ?, ?)');
     const now = Date.now();
@@ -1222,6 +1245,7 @@ export class MemoryStore {
   }
 
   touchMemories(memoryIds: readonly string[]): void {
+    if (isRemoteReplicaOffline()) return;
     if (memoryIds.length === 0) return;
     const now = Date.now();
     const extendedExpiry = now + this.maxAutoAgeMs;
@@ -1294,6 +1318,7 @@ export class MemoryStore {
    * Hard-mode `found=false` means the id does not exist at all.
    */
   forget(memoryId: string, options?: { hard?: boolean }): { found: boolean; mode: 'soft' | 'hard' } {
+    assertRemoteWritable();
     const mode = options?.hard ? 'hard' : 'soft';
     if (mode === 'hard') {
       const result = this.db
@@ -1324,6 +1349,7 @@ export class MemoryStore {
     workdir: string,
     options: { hard?: boolean; tag?: string } = {}
   ): { soft_deleted: number; hard_deleted: number } {
+    assertRemoteWritable();
     if (!workdir || workdir === '*') {
       throw toRelayException(makeError(
         'INVALID_ARGS',
@@ -1412,6 +1438,7 @@ export class MemoryStore {
    * Returns the count of entries marked as superseded.
    */
   gcPinned(maxAgeMs: number): number {
+    assertRemoteWritable();
     const threshold = Date.now() - maxAgeMs;
     const rows = this.db
       .prepare(
@@ -1490,6 +1517,7 @@ export class MemoryStore {
       .all(runId) as Array<{ memory_id: string }>;
     const ids = rows.map(r => r.memory_id);
     if (opts.dryRun || ids.length === 0) return ids;
+    assertRemoteWritable();
     if (opts.hard) {
       const stmt = this.db.prepare('DELETE FROM memories WHERE memory_id = ?');
       for (const id of ids) stmt.run(id);
@@ -1518,6 +1546,7 @@ export class MemoryStore {
       .all(sinceMs) as Array<{ memory_id: string }>;
     const ids = rows.map(r => r.memory_id);
     if (opts.dryRun || ids.length === 0) return ids;
+    assertRemoteWritable();
     if (opts.hard) {
       const stmt = this.db.prepare('DELETE FROM memories WHERE memory_id = ?');
       for (const id of ids) stmt.run(id);
@@ -1713,6 +1742,7 @@ export class MemoryStore {
     }
 
     if (!dryRun && actions.length > 0) {
+      assertRemoteWritable();
       const stmt = this.db.prepare(
         'UPDATE memories SET superseded_by = ? WHERE memory_id = ? AND superseded_by IS NULL'
       );
@@ -1743,6 +1773,7 @@ export class MemoryStore {
    * Called automatically by remember() as a soft ceiling.
    */
   gcByTokenBudget(maxTokens: number = MAX_MEMORY_TOKENS): number {
+    if (isRemoteReplicaOffline()) return 0;
     const current = this.totalTokens();
     if (current <= maxTokens) return 0;
 

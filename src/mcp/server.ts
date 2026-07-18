@@ -1,252 +1,173 @@
-/**
- * Phase 9 — Relay MCP server (REQ-MCP-01..07).
- *
- * Serves the existing `src/tools/*` handlers (extracted from relay-mcp, where
- * they were born as MCP tools) over the Model Context Protocol via the
- * official SDK. Stdio transport only — wiring lives in cli/cmd-mcp.ts.
- *
- * Security posture (PRD D-03 + REQ-MCP-03/05):
- *  - writes enter as memory_source='worker-mcp' → trust 'unverified'
- *  - `pinned` and `source_run_id` are NOT exposed — pinning jumps quarantine
- *    (pinned ⇒ trusted) and source_run_id bypasses the write rate limit
- *  - recall defaults to min_trust='provisional' (Wave 4 lesson 10), so
- *    MCP-written entries cannot surface over MCP until promoted
- *  - the `relay pause` sentinel blocks recall/search/remember/prompt
- */
-import { z } from 'zod';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { recallSchema, rememberSchema, GetMemoryArgsSchema } from '../contracts/memory.js';
-import { corpusQuerySchema } from '../contracts/corpus.js';
-import { browseRunsSchema } from '../contracts/browse_runs.js';
-import { compareRunsSchema } from '../contracts/compare-runs.js';
-import { handleRecall } from '../tools/recall.js';
-import { handleMemorySearch } from '../tools/memory_search.js';
-import { handleGetMemory } from '../tools/get_memory.js';
-import { handleCorpusQuery } from '../tools/corpus_query.js';
-import { handleBrowseRuns } from '../tools/browse_runs.js';
-import { handleCompareRuns } from '../tools/compare-runs.js';
-import { handleRemember } from '../tools/remember.js';
-import { resolveMcpWorkdir } from './workdir.js';
-import { isPaused } from '../cli/cmd-pause.js';
-import type { RecallArgs, RememberArgs } from '../contracts/memory.js';
-import type { CorpusQueryArgs } from '../contracts/corpus.js';
-import type { BrowseRunsArgs } from '../contracts/browse_runs.js';
-import type { CompareRunsArgs } from '../contracts/compare-runs.js';
+// src/mcp/server.ts — assemble the stdio MCP server (Phase 9 / Plan 04).
+//
+// On start: resolve the verified SDK surface (resolveMcpSdk — never a direct
+// SDK import, MCP-05/T-09-12), build an McpServer with a truthful identity,
+// register EXACTLY the two memory tools from Plan 03 (D-07: the killed scope
+// stays structurally absent — this module imports nothing beyond the probe,
+// the tool builders, and the error helpers), then connect the transport.
+//
+// Wire discipline (T-09-11): the MCP protocol owns the process's standard
+// streams once the transport connects. This module writes to NEITHER stream —
+// no logging of any kind lives here; the human-facing notice is the CLI
+// command layer's job and goes to its error stream.
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { resolveMcpSdk } from './sdk-probe.js';
+import type { ResolvedMcpSdk } from './sdk-probe.js';
+import { buildMemoryMcpTools } from './tools-memory.js';
+import { makeError, toRelayException } from '../errors.js';
 
-/** Version reported in serverInfo. Reconciled with package.json in 09-04. */
-export const RELAY_MCP_SERVER_VERSION = '0.1.2';
-
-export const MCP_TOOL_NAMES: readonly string[] = [
-  'relay_recall',
-  'relay_memory_search',
-  'relay_get_memory',
-  'relay_corpus_query',
-  'relay_browse_runs',
-  'relay_compare_runs',
-  'relay_remember',
-];
-
-type McpToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
+/** Server identity an MCP client sees on initialize. */
+export const MCP_SERVER_NAME = 'relay';
 
 /**
- * REQ-MCP-01 — error mapping. RelayError-shaped throws become isError tool
- * results carrying code+message; everything is logged to stderr (stdout is
- * protocol-only in stdio mode; "no silent error swallowing" per AGENTS.md).
+ * The slice of the SDK's McpServer this module relies on. The constructors
+ * from resolveMcpSdk are deliberately loose (the probe is SDK-shape-agnostic);
+ * this interface pins the verified 1.29.0 call surface structurally.
+ *
+ * Note on the handler boundary: Plan 03's handlers return a readonly-content
+ * McpToolResult while the SDK's CallToolResult content is mutable — the
+ * runtime shapes are identical, so the adaptation happens HERE at the
+ * registration call site (params typed unknown), never by loosening the
+ * result.ts / tools-memory.ts contracts (09-03 caveat).
  */
-function guard<TArgs>(
-  name: string,
-  fn: (args: TArgs) => McpToolResult | Promise<McpToolResult>
-): (args: TArgs) => Promise<McpToolResult> {
-  return async (args: TArgs): Promise<McpToolResult> => {
+interface McpServerLike {
+  registerTool(name: string, config: unknown, handler: unknown): unknown;
+  connect(transport: unknown): Promise<void>;
+  close(): Promise<void>;
+  readonly server?: { onclose?: (() => void) | undefined };
+}
+
+export interface StartMcpServerDeps {
+  /**
+   * Server version reported to clients. The CLI dispatcher passes its VERSION
+   * constant (the `relay --version` truth); when absent, the version is read
+   * from this package's own package.json — the same file npm versions, so the
+   * identity stays truthful for direct callers too.
+   */
+  readonly version?: string;
+  /** Injected SDK surface for tests; defaults to resolveMcpSdk(). */
+  readonly sdk?: ResolvedMcpSdk;
+  /** Injected transport for tests; defaults to a new stdio transport. */
+  readonly transport?: unknown;
+}
+
+export interface McpServerHandle {
+  /** The constructed McpServer (loose-typed: the SDK owns its surface). */
+  readonly server: unknown;
+  /** Exactly the tool names registered, in registration order. */
+  readonly toolNames: readonly string[];
+  /** Resolves when the connection closes — client disconnect or shutdown(). */
+  readonly closed: Promise<void>;
+  /**
+   * Proactively close the server. Idempotent. Rejects when the SDK close
+   * fails for a real reason (review fix 6); an already-closed connection
+   * (the SDK's 'Not connected') is swallowed. `closed` resolves either way
+   * — the failure travels via this rejection, never as a dangling promise.
+   */
+  readonly shutdown: () => Promise<void>;
+}
+
+/**
+ * The SDK's only "already gone" signal: @modelcontextprotocol/sdk@1.29.0
+ * raises Error('Not connected') from its protocol layer when the transport
+ * is already detached (shared/protocol.js literal — verified against the
+ * installed package). Anything else is a real close failure.
+ */
+function isAlreadyClosedError(err: unknown): boolean {
+  return err instanceof Error && /not connected/i.test(err.message);
+}
+
+/**
+ * Read the version of the relay package this module ships in: walk up from
+ * the compiled file to the first package.json carrying a string version
+ * (skips any extensionless stubs; node_modules sit below us, never above).
+ */
+function readOwnVersion(): string {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (;;) {
     try {
-      return await fn(args);
-    } catch (err) {
-      const e = err as Partial<{ code: string; message: string }>;
-      const code = typeof e.code === 'string' ? e.code : 'UNKNOWN';
-      const message = typeof e.message === 'string' ? e.message : String(err);
-      process.stderr.write(`[relay-mcp] ${name}: ${code} ${message}\n`);
-      return {
-        content: [{ type: 'text', text: JSON.stringify({ error: code, message }) }],
-        isError: true,
+      const parsed = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as {
+        version?: unknown;
       };
+      if (typeof parsed.version === 'string' && parsed.version.length > 0) {
+        return parsed.version;
+      }
+    } catch {
+      // No package.json at this level — keep walking up.
     }
-  };
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  throw toRelayException(
+    makeError(
+      'CONFIG_ERROR',
+      'MCP_SERVER_VERSION_UNRESOLVED: could not locate a package.json with a version above ' +
+        'the compiled server module — pass an explicit version to startMcpServer().',
+      false,
+      'mcp'
+    )
+  );
 }
 
-function pausedResult(): McpToolResult {
-  return {
-    content: [{
-      type: 'text',
-      text: JSON.stringify({
-        paused: true,
-        memories: [],
-        message: 'relay is paused (~/.relay/paused) — run `relay resume` to re-enable memory',
-      }),
-    }],
-  };
-}
+/**
+ * Build, register, connect. Resolves once the transport is connected and
+ * returns a handle the caller blocks on (`closed`) and shuts down with.
+ */
+export async function startMcpServer(deps: StartMcpServerDeps = {}): Promise<McpServerHandle> {
+  const sdk = deps.sdk ?? (await resolveMcpSdk());
+  const version = deps.version ?? readOwnVersion();
+  const server = new sdk.McpServer({ name: MCP_SERVER_NAME, version }) as McpServerLike;
 
-/** Pause sentinel check — '*' scope checks the global sentinel only. */
-async function pausedFor(workdir: string): Promise<boolean> {
-  return isPaused(workdir === '*' ? undefined : workdir);
-}
+  const toolNames: string[] = [];
+  for (const tool of buildMemoryMcpTools()) {
+    server.registerTool(tool.name, tool.config, tool.handler);
+    toolNames.push(tool.name);
+  }
 
-// REQ-MCP-02 — MCP-friendly recall shape: token_budget becomes optional with
-// the CLI's default; everything else is the canonical contract, untouched.
-const mcpRecallShape = {
-  ...recallSchema,
-  token_budget: z.number().int().min(100).max(50_000).optional().default(4000)
-    .describe('Hard cap on total tokens returned (default 4000)'),
-};
-
-// REQ-MCP-03 — restricted remember shape. `pinned` (jumps quarantine: pinned
-// ⇒ trusted) and `source_run_id` (bypasses write rate limit) are deliberately
-// absent; the SDK's Zod parse strips them if a client sends them anyway.
-const mcpRememberShape = {
-  content: rememberSchema.content,
-  memory_type: rememberSchema.memory_type,
-  tags: rememberSchema.tags,
-  workdir: rememberSchema.workdir,
-  expires_in_hours: rememberSchema.expires_in_hours,
-};
-
-type McpRecallArgs = Omit<RecallArgs, 'token_budget'> & { token_budget: number };
-
-function toRecallArgs(args: McpRecallArgs, workdir: string): RecallArgs {
-  return {
-    ...args,
-    workdir,
-    // Wave 4 lesson 10 — provisional floor for LLM-facing surfaces. Explicit
-    // min_trust='unverified' is the documented opt-in to raw MCP writes.
-    min_trust: args.min_trust ?? 'provisional',
-  };
-}
-
-export function buildMcpServer(): McpServer {
-  const server = new McpServer({ name: 'relay', version: RELAY_MCP_SERVER_VERSION });
-
-  server.registerTool('relay_recall', {
-    description:
-      'Recall scored memories for a project workdir within a token budget. ' +
-      "Defaults min_trust='provisional' — pass 'unverified' to include raw MCP/auto writes.",
-    inputSchema: mcpRecallShape,
-  }, guard('relay_recall', async (args: McpRecallArgs) => {
-    const workdir = resolveMcpWorkdir(args.workdir, 'read');
-    if (await pausedFor(workdir)) return pausedResult();
-    return handleRecall(toRecallArgs(args, workdir));
-  }));
-
-  server.registerTool('relay_memory_search', {
-    description:
-      'Compact index search over memories (ID + tags + excerpt). Pair with ' +
-      'relay_get_memory for full content — ~10x cheaper than relay_recall for browsing.',
-    inputSchema: mcpRecallShape,
-  }, guard('relay_memory_search', async (args: McpRecallArgs) => {
-    const workdir = resolveMcpWorkdir(args.workdir, 'read');
-    if (await pausedFor(workdir)) return pausedResult();
-    return handleMemorySearch(toRecallArgs(args, workdir));
-  }));
-
-  server.registerTool('relay_get_memory', {
-    description: 'Fetch one memory entry in full by memory_id.',
-    inputSchema: GetMemoryArgsSchema.shape,
-  }, guard('relay_get_memory', async (args: { memory_id: string }) =>
-    handleGetMemory(args)
-  ));
-
-  server.registerTool('relay_corpus_query', {
-    description: 'Query a named corpus built with `relay corpus build` (read-only).',
-    inputSchema: corpusQuerySchema,
-  }, guard('relay_corpus_query', async (args: CorpusQueryArgs) =>
-    handleCorpusQuery(args)
-  ));
-
-  server.registerTool('relay_browse_runs', {
-    description: 'List recorded delegation runs (provider, model, status, files changed).',
-    inputSchema: browseRunsSchema,
-  }, guard('relay_browse_runs', async (args: BrowseRunsArgs) =>
-    handleBrowseRuns(args)
-  ));
-
-  server.registerTool('relay_compare_runs', {
-    description: 'Compare 2+ runs by run_id: shared vs diverged files changed.',
-    inputSchema: compareRunsSchema,
-  }, guard('relay_compare_runs', async (args: CompareRunsArgs) =>
-    handleCompareRuns(args)
-  ));
-
-  server.registerTool('relay_remember', {
-    description:
-      'Store a memory for a project workdir. MCP writes enter quarantined ' +
-      "(source 'worker-mcp', trust 'unverified') and do not surface at default " +
-      'recall until promoted — see `relay memory why` / trust tiers.',
-    inputSchema: mcpRememberShape,
-  }, guard('relay_remember', async (args: {
-    content: string;
-    memory_type: RememberArgs['memory_type'];
-    tags: string[];
-    workdir?: string;
-    expires_in_hours?: number;
-  }) => {
-    const workdir = resolveMcpWorkdir(args.workdir, 'write');
-    if (await pausedFor(workdir)) return pausedResult();
-    const rememberArgs: RememberArgs = {
-      content: args.content,
-      memory_type: args.memory_type,
-      tags: args.tags ?? [],
-      pinned: false,
-      workdir,
-      ...(args.expires_in_hours !== undefined ? { expires_in_hours: args.expires_in_hours } : {}),
-    };
-    return handleRemember(rememberArgs, 'worker-mcp');
-  }));
-
-  // REQ-MCP-07 — one-tap context loading for clients without hooks
-  // (Claude Desktop). Mirrors `relay memory show-context` defaults:
-  // lesson+decision, 800-token budget, provisional floor.
-  server.registerPrompt('relay-context', {
-    description:
-      "Load relay's recalled lessons + decisions for a project workdir into the conversation.",
-    argsSchema: {
-      workdir: z.string().optional().describe(
-        'Project workdir to load context for (falls back to RELAY_MCP_DEFAULT_WORKDIR)'
-      ),
-      query: z.string().optional().describe('Optional focus query to bias recall'),
-    },
-  }, async (args: { workdir?: string; query?: string }) => {
-    const workdir = resolveMcpWorkdir(args.workdir, 'read');
-    if (await pausedFor(workdir)) {
-      return {
-        messages: [{
-          role: 'user' as const,
-          content: { type: 'text' as const, text: 'Relay is paused — no context loaded. Run `relay resume` to re-enable.' },
-        }],
-      };
-    }
-    const recallArgs: RecallArgs = {
-      query: args.query,
-      tags: [],
-      types: ['lesson', 'decision'],
-      token_budget: 800,
-      workdir,
-      include_expired: false,
-      min_trust: 'provisional',
-    };
-    const result = await handleRecall(recallArgs);
-    const payload = JSON.parse(result.content[0]!.text) as {
-      memories: Array<{ memory_type: string; content: string; tags: string[] }>;
-      omitted_count: number;
-    };
-    const lines = payload.memories.map(
-      m => `- [${m.memory_type}] ${m.content}${m.tags.length > 0 ? ` (tags: ${m.tags.join(', ')})` : ''}`
-    );
-    const text = lines.length > 0
-      ? `# Relay context — ${workdir}\n\n${lines.join('\n')}\n\n(${payload.omitted_count} entries omitted by budget/trust floor)`
-      : `# Relay context — ${workdir}\n\nNo provisional-or-better lessons/decisions stored for this workdir yet.`;
-    return {
-      messages: [{ role: 'user' as const, content: { type: 'text' as const, text } }],
-    };
+  // The SDK chains transport close → underlying protocol server onclose; hook
+  // it before connect so a client disconnect resolves `closed` and the process
+  // can exit instead of dangling on a dead connection.
+  let resolveClosed!: () => void;
+  const closed = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
   });
+  const underlying = server.server;
+  if (underlying) {
+    const prior = underlying.onclose;
+    underlying.onclose = () => {
+      prior?.();
+      resolveClosed();
+    };
+  }
 
-  return server;
+  const transport = deps.transport ?? new sdk.StdioServerTransport();
+  await server.connect(transport);
+
+  let shutdownStarted = false;
+  const shutdown = async (): Promise<void> => {
+    if (!shutdownStarted) {
+      shutdownStarted = true;
+      try {
+        await server.close();
+      } catch (err) {
+        if (!isAlreadyClosedError(err)) {
+          // Review fix 6: a real close failure must surface, not vanish —
+          // but `closed` resolves regardless so callers blocking on it
+          // never dangle; the error travels via this rejection.
+          resolveClosed();
+          throw err;
+        }
+        // Already closed (e.g. the client disconnected first) — fine.
+      }
+      // Belt and suspenders: never leave `closed` dangling even if an SDK
+      // variant skipped the onclose chain.
+      resolveClosed();
+    }
+    return closed;
+  };
+
+  return { server, toolNames, closed, shutdown };
 }

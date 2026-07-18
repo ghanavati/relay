@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { redactSecrets, REDACTION_PATTERNS } from './redaction.js';
+import { redactSecrets, scrubKnownValues, REDACTION_PATTERNS } from './redaction.js';
 
 describe('redactSecrets — existing patterns (no regression)', () => {
   test('AWS access key is redacted', () => {
@@ -128,6 +128,45 @@ describe('redactSecrets — figma_pat pattern (Phase 7)', () => {
   test('figma_pat pattern is registered in REDACTION_PATTERNS', () => {
     const names = REDACTION_PATTERNS.map((p) => p.name);
     assert.ok(names.includes('figma_pat'), 'figma_pat must be a registered pattern');
+  });
+});
+
+describe('scrubKnownValues — value-based scrubbing (Codex round 2)', () => {
+  test('replaces every occurrence of each known value', () => {
+    const out = scrubKnownValues('a SECRETVAL b SECRETVAL c OTHERVAL', [
+      'SECRETVAL',
+      'OTHERVAL',
+    ]);
+    assert.strictEqual(out, 'a [REDACTED:KNOWN] b [REDACTED:KNOWN] c [REDACTED:KNOWN]');
+  });
+
+  test('values shorter than 4 chars are left alone (trivia guard)', () => {
+    const input = 'ab abort cab';
+    assert.strictEqual(scrubKnownValues(input, ['ab']), input);
+  });
+
+  test('a 4-char value IS scrubbed (guard boundary)', () => {
+    assert.strictEqual(scrubKnownValues('x abcd y', ['abcd']), 'x [REDACTED:KNOWN] y');
+  });
+
+  test('regex metacharacters in the value are matched literally', () => {
+    const value = 'p@$$.w0rd+(1)';
+    const out = scrubKnownValues(`key=${value} end`, [value]);
+    assert.strictEqual(out, 'key=[REDACTED:KNOWN] end');
+    // A string the UNescaped pattern would match (`.` as wildcard) stays put.
+    assert.strictEqual(scrubKnownValues('abXcd here', ['ab.cd']), 'abXcd here');
+  });
+
+  test('longer values are scrubbed before shorter overlapping ones (no partial leak)', () => {
+    const out = scrubKnownValues('x secret-12345 y secret z', ['secret', 'secret-12345']);
+    assert.ok(!out.includes('12345'), 'suffix of the longer value must not survive');
+    assert.strictEqual(out, 'x [REDACTED:KNOWN] y [REDACTED:KNOWN] z');
+  });
+
+  test('no values / empty-string value → input unchanged', () => {
+    const input = 'plain text';
+    assert.strictEqual(scrubKnownValues(input, []), input);
+    assert.strictEqual(scrubKnownValues(input, ['']), input);
   });
 });
 

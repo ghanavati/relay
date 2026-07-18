@@ -2,7 +2,8 @@
 
 Every recipe is copy-paste ready and validated against the v0.1.0 surface (CLI commands actually wired in `src/cli.ts`). Each block: what + why, install, verify, sample output, common gotcha.
 
-> Recipes assume `relay` is on `$PATH` (run `npm link` from the source checkout) and `RELAY_DB_PATH=$HOME/.relay/relay.db` (default).
+> Recipes assume Relay has already been provisioned and is on `$PATH`, with
+> `RELAY_DB_PATH=$HOME/.relay/relay.db` (default).
 
 ---
 

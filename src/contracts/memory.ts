@@ -19,12 +19,13 @@ export const rememberSchema = {
     .default(false)
     .describe('Pinned memories never decay in relevance'),
   source_run_id: z.string().optional().describe('Relay run that produced this memory'),
-  workdir: z.string().optional().describe('Project scope. Defaults to relay workdir. Null = global.'),
+  workdir: z.string().nullable().optional().describe('Project scope. Defaults to relay workdir. Null = global.'),
   expires_in_hours: z
     .number()
     .int()
     .min(1)
     .max(8760)
+    .nullable()
     .optional()
     .describe('Auto-expire after N hours. Null = never expires.'),
 };

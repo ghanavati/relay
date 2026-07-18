@@ -165,7 +165,7 @@ describe('executeMemoryAutoExtractCommand', () => {
     await mkdir(join(projectCwd, '.relay'), { recursive: true });
     await writeFile(
       join(projectCwd, '.relay', 'auto-extract.json'),
-      JSON.stringify({ enabled: true }),
+      JSON.stringify({ enabled: true, extractor: 'lmstudio' }),
       'utf8'
     );
 
@@ -192,7 +192,7 @@ describe('executeMemoryAutoExtractCommand', () => {
     await mkdir(join(projectCwd, '.relay'), { recursive: true });
     await writeFile(
       join(projectCwd, '.relay', 'auto-extract.json'),
-      JSON.stringify({ enabled: true }),
+      JSON.stringify({ enabled: true, extractor: 'lmstudio' }),
       'utf8'
     );
     const transcriptPath = join(projectCwd, 'transcript.jsonl');
@@ -220,14 +220,23 @@ describe('executeMemoryAutoExtractCommand', () => {
     process.env['RELAY_AUTO_EXTRACT_ENDPOINT'] = 'http://127.0.0.1:1';
     process.env['RELAY_AUTO_EXTRACT_MODEL'] = 'qwen/qwen3-coder-next';
     try {
+      let calls = 0;
       const cap = makeIO(tmp);
       const code = await withStdin(payload, () =>
         executeMemoryAutoExtractCommand(
           { fromStdin: true, maxBytes: undefined, json: true },
-          cap.io
+          cap.io,
+          {
+            extractLessons: async (opts) => {
+              calls += 1;
+              assert.strictEqual(opts.endpoint, 'http://127.0.0.1:1');
+              return { status: 'error:llm-down', durationMs: 1, note: 'closed test endpoint' };
+            },
+          }
         )
       );
       assert.strictEqual(code, 0);
+      assert.strictEqual(calls, 1);
       const parsed = JSON.parse(cap.stdout.join('').trim()) as {
         status: string;
         session_id: string;
@@ -256,7 +265,7 @@ describe('executeMemoryAutoExtractCommand', () => {
     // allow_remote omitted → defaults to false via Zod schema
     await writeFile(
       join(projectCwd, '.relay', 'auto-extract.json'),
-      JSON.stringify({ enabled: true }),
+      JSON.stringify({ enabled: true, extractor: 'lmstudio' }),
       'utf8'
     );
     const transcriptPath = join(projectCwd, 'transcript.jsonl');
@@ -277,14 +286,22 @@ describe('executeMemoryAutoExtractCommand', () => {
     process.env['RELAY_AUTO_EXTRACT_ENDPOINT'] = 'https://api.openai.com';
     process.env['RELAY_AUTO_EXTRACT_MODEL'] = 'gpt-4';
     try {
+      let calls = 0;
       const cap = makeIO(tmp);
       const code = await withStdin(payload, () =>
         executeMemoryAutoExtractCommand(
           { fromStdin: true, maxBytes: undefined, json: true },
-          cap.io
+          cap.io,
+          {
+            extractLessons: async () => {
+              calls += 1;
+              return { status: 'error:llm-down', durationMs: 1, note: 'must not be called' };
+            },
+          }
         )
       );
       assert.strictEqual(code, 0, 'hooks must never block — exit 0 even when blocking remote');
+      assert.strictEqual(calls, 0, 'remote gate must block before extraction');
       const out = JSON.parse(cap.stdout.join('').trim()) as {
         status: string;
         error?: string;
@@ -306,7 +323,7 @@ describe('executeMemoryAutoExtractCommand', () => {
     await mkdir(join(projectCwd, '.relay'), { recursive: true });
     await writeFile(
       join(projectCwd, '.relay', 'auto-extract.json'),
-      JSON.stringify({ enabled: true, allow_remote: true }),
+      JSON.stringify({ enabled: true, extractor: 'lmstudio', allow_remote: true }),
       'utf8'
     );
     const transcriptPath = join(projectCwd, 'transcript.jsonl');
@@ -328,14 +345,23 @@ describe('executeMemoryAutoExtractCommand', () => {
     process.env['RELAY_AUTO_EXTRACT_ENDPOINT'] = 'http://198.51.100.1:1';
     process.env['RELAY_AUTO_EXTRACT_MODEL'] = 'qwen/qwen3-coder-next';
     try {
+      let calls = 0;
       const cap = makeIO(tmp);
       const code = await withStdin(payload, () =>
         executeMemoryAutoExtractCommand(
           { fromStdin: true, maxBytes: undefined, json: true },
-          cap.io
+          cap.io,
+          {
+            extractLessons: async (opts) => {
+              calls += 1;
+              assert.strictEqual(opts.endpoint, 'http://198.51.100.1:1');
+              return { status: 'error:llm-down', durationMs: 1, note: 'allowed remote test endpoint' };
+            },
+          }
         )
       );
       assert.strictEqual(code, 0);
+      assert.strictEqual(calls, 1, 'allow_remote=true should reach extraction');
       const out = JSON.parse(cap.stdout.join('').trim()) as { status: string };
       assert.notStrictEqual(out.status, 'error:remote-llm-blocked',
         'allow_remote=true must let the request through to LM Studio call');

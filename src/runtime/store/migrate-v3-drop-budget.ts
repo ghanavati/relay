@@ -22,7 +22,7 @@
  * Users who need their cost history can restore that backup file out-of-band
  * before adopting the budget-stripped binary.
  */
-import type Database from 'better-sqlite3';
+import type Database from 'libsql';
 
 import { readSchemaVersion, writeSchemaVersion } from './schema-version.js';
 

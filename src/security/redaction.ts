@@ -75,3 +75,43 @@ export function redactSecrets(
   }
   return result;
 }
+
+/**
+ * Values shorter than this are never scrubbed: replacing 2-3 char fragments
+ * would shred unrelated text (`ab` inside `abort`) for no real protection.
+ */
+const MIN_KNOWN_VALUE_LENGTH = 4;
+
+function escapeRegExpLiteral(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Value-based scrubbing (Codex round 2): replace every occurrence of each
+ * KNOWN sensitive value with `[REDACTED:KNOWN]`.
+ *
+ * redactSecrets is pattern-matching — it only catches values that LOOK like
+ * secrets. A provider/proxy echoing request headers back leaks values that
+ * match no pattern (arbitrary RELAY_PROVIDER_<NAME>_HEADER_* values, short
+ * x-api-key strings inside JSON echoes). Callers that constructed the
+ * request know the exact values they sent; this scrubs those verbatim.
+ *
+ * Longest value first, so a shorter value that is a prefix/substring of a
+ * longer one cannot split the longer one and leak its tail. Values are
+ * escaped — matched as literals, never as regex patterns. Run this BEFORE
+ * redactSecrets: a pattern can partially consume a known value and leave a
+ * fragment behind that the exact match would then miss.
+ */
+export function scrubKnownValues(text: string, values: readonly string[]): string {
+  const candidates = [...new Set(values)]
+    .filter((v) => v.length >= MIN_KNOWN_VALUE_LENGTH)
+    .sort((a, b) => b.length - a.length);
+  let result = text;
+  for (const value of candidates) {
+    result = result.replace(
+      new RegExp(escapeRegExpLiteral(value), "g"),
+      "[REDACTED:KNOWN]"
+    );
+  }
+  return result;
+}

@@ -1,0 +1,473 @@
+/**
+ * Phase 9 / Plan 03 — MCP memory tools: relay_memory_recall + relay_memory_save.
+ *
+ * The tools are THIN wrappers over the existing handlers (handleRecall /
+ * handleRemember) — these tests prove the wrapper contract, not the engine:
+ *   - store-backed results (shared :memory: DB via the getDb() singleton)
+ *   - inputSchema IS the contracts Zod object (same-object identity, MCP-03)
+ *   - workdir scoping inherited from MemoryStore.assertWorkdirAllowed
+ *     (MCP-02, T-09-08): forbidden workdir → isError MEMORY_WORKDIR_FORBIDDEN,
+ *     never another project's memory
+ *   - boundary redaction (MCP-04, T-09-09): the handlers do NOT redact; the
+ *     MCP wrapper must — on success AND error paths.
+ *
+ * Tests share a single :memory: DB connection (control/tools.test.ts idiom).
+ * Distinct content strings + per-concern workdirs avoid the store's 60s
+ * content-hash dedup and cross-test bleed.
+ */
+
+process.env['RELAY_DB_PATH'] = ':memory:';
+delete process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'];
+delete process.env['RELAY_EMBEDDING_MODEL'];
+
+import { describe, test, afterEach } from 'node:test';
+import * as assert from 'node:assert/strict';
+import { buildMemoryMcpTools } from './tools-memory.js';
+import { RecallArgsSchema, RememberArgsSchema } from '../contracts/memory.js';
+import { MemoryStore } from '../memory/memory-store.js';
+import { getDb } from '../runtime/store/db.js';
+
+// Secret-shaped fixtures built at runtime from string parts (result.test.ts
+// idiom) — no literal credential-looking value sits in source.
+const figmaSecret = (): string => ['figd', 'AAAA1111BBBB2222cccc'].join('_');
+
+const WORKDIR = '/tmp/relay-mcp-tools-test/project-a';
+const SECRET_WORKDIR = '/tmp/relay-mcp-tools-test/secret-project';
+const ALLOWED_ONLY = '/tmp/relay-mcp-tools-test/the-only-allowed';
+
+afterEach(() => {
+  // Forbidden-workdir tests set the allow-list; never let it leak forward.
+  delete process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'];
+});
+
+describe('relay_memory_recall', () => {
+  test('returns store-backed memories for the workdir within the token budget (Test 1)', async () => {
+    const store = new MemoryStore();
+    store.remember({
+      content: 'quasar alignment heuristics guide relay dispatch routing',
+      memory_type: 'fact',
+      tags: ['mcp-recall-test'],
+      workdir: WORKDIR,
+    });
+
+    const [recall] = buildMemoryMcpTools();
+    const result = await recall.handler(
+      RecallArgsSchema.parse({ token_budget: 2000, query: 'quasar alignment', workdir: WORKDIR })
+    );
+
+    assert.notStrictEqual(result.isError, true);
+    const text = result.content[0].text;
+    const parsed = JSON.parse(text) as {
+      memories: Array<{ content: string; memory_type: string }>;
+      total_tokens: number;
+      budget_remaining: number;
+      omitted_count: number;
+      candidate_count: number;
+    };
+    assert.ok(
+      parsed.memories.some(m => m.content.includes('quasar alignment heuristics')),
+      `expected the seeded memory in: ${text}`
+    );
+    assert.strictEqual(typeof parsed.total_tokens, 'number');
+    assert.strictEqual(typeof parsed.budget_remaining, 'number');
+  });
+
+  test('inputSchema IS RecallArgsSchema from contracts/memory.ts — same object (Test 2)', () => {
+    const [recall] = buildMemoryMcpTools();
+    assert.strictEqual(recall.name, 'relay_memory_recall');
+    assert.strictEqual(recall.config.inputSchema, RecallArgsSchema);
+  });
+
+  test('forbidden workdir → isError MEMORY_WORKDIR_FORBIDDEN, no cross-workdir leak (Test 3)', async () => {
+    // Seed a canary in WORKDIR, then allow ONLY a different root: the request
+    // for WORKDIR must surface the coded error — never the canary's content.
+    const store = new MemoryStore();
+    store.remember({
+      content: 'canary memory that must never cross a forbidden workdir boundary',
+      memory_type: 'fact',
+      workdir: WORKDIR,
+    });
+    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = ALLOWED_ONLY;
+
+    const [recall] = buildMemoryMcpTools();
+    const result = await recall.handler(
+      RecallArgsSchema.parse({ token_budget: 2000, workdir: WORKDIR })
+    );
+
+    assert.strictEqual(result.isError, true);
+    const parsed = JSON.parse(result.content[0].text) as { ok: boolean; code: string };
+    assert.strictEqual(parsed.ok, false);
+    assert.strictEqual(parsed.code, 'MEMORY_WORKDIR_FORBIDDEN');
+    assert.ok(
+      !result.content[0].text.includes('canary memory'),
+      'a forbidden workdir must not leak memory content'
+    );
+  });
+
+  test('secret-shaped memory content is redacted at the MCP boundary (Test 4)', async () => {
+    // The store redacts on SAVE, so a secret written today never reaches disk
+    // raw. The boundary threat (T-09-09) is rows the save-side patterns missed
+    // — e.g. rows written before a redaction pattern existed. Simulate one by
+    // updating the row UNDER the store's sanitizer, then prove the WRAPPER
+    // redacts on the way out (handleRecall itself does not redact).
+    const secret = figmaSecret();
+    const store = new MemoryStore();
+    const id = store.remember({
+      content: 'placeholder row for boundary redaction proof',
+      memory_type: 'fact',
+      workdir: SECRET_WORKDIR,
+    });
+    getDb()
+      .prepare('UPDATE memories SET content = ? WHERE memory_id = ?')
+      .run(`legacy row carrying token ${secret} in plain text`, id);
+
+    const [recall] = buildMemoryMcpTools();
+    const result = await recall.handler(
+      RecallArgsSchema.parse({ token_budget: 2000, workdir: SECRET_WORKDIR })
+    );
+
+    assert.notStrictEqual(result.isError, true);
+    const text = result.content[0].text;
+    assert.ok(!text.includes(secret), 'raw secret must not cross the MCP boundary');
+    assert.ok(text.includes('[REDACTED:FIGMA_PAT]'), `expected placeholder in: ${text}`);
+  });
+});
+
+describe('relay_memory_save', () => {
+  test('persists through the same SQLite store with the worker-mcp source (Test 1)', async () => {
+    const [, save] = buildMemoryMcpTools();
+    const result = await save.handler(
+      RememberArgsSchema.parse({
+        content: 'relay mcp save persistence proof nonce-7f3a',
+        memory_type: 'decision',
+        workdir: WORKDIR,
+      })
+    );
+
+    assert.notStrictEqual(result.isError, true);
+    const parsed = JSON.parse(result.content[0].text) as {
+      memory_id: string;
+      memory_type: string;
+      store_stats: { total_memories: number; total_tokens: number };
+    };
+    assert.ok(parsed.memory_id.length > 0, 'save must return the new memory_id');
+    assert.strictEqual(parsed.memory_type, 'decision');
+
+    // Same SQLite store the CLI uses: read the row back through the shared
+    // getDb() connection, and pin the MCP provenance + trust contract.
+    const row = getDb()
+      .prepare(
+        'SELECT content, memory_source, trust_level, workdir FROM memories WHERE memory_id = ?'
+      )
+      .get(parsed.memory_id) as
+      | { content: string; memory_source: string; trust_level: string; workdir: string }
+      | undefined;
+    assert.ok(row, 'saved row must exist in the shared store');
+    assert.ok(row.content.includes('nonce-7f3a'));
+    assert.strictEqual(row.workdir, WORKDIR);
+    // Pins MCP_MEMORY_SOURCE's literal value: no MCP-specific MemorySource
+    // exists, so saves carry the closest worker-mcp tag — and the trust model
+    // keeps non-human sources unverified-by-default.
+    assert.strictEqual(row.memory_source, 'worker-mcp');
+    assert.strictEqual(row.trust_level, 'unverified');
+  });
+
+  test('inputSchema derives from RememberArgsSchema minus pinned/source_run_id (Test 2, review fix 4)', () => {
+    const [, save] = buildMemoryMcpTools();
+    assert.strictEqual(save.name, 'relay_memory_save');
+    // The advertised MCP surface must not offer pinning or run attribution:
+    // pinned rows gain score boost + GC/conflict protection — an external
+    // client setting pinned would amplify memory poisoning.
+    const shape = save.config.inputSchema.shape as Record<string, unknown>;
+    assert.ok(!('pinned' in shape), 'pinned must not be client-settable over MCP');
+    assert.ok(!('source_run_id' in shape), 'source_run_id must not be client-settable over MCP');
+    // Single-source: every remaining field is the SAME schema object as the
+    // contracts definition (zod .omit reuses shape entries by reference).
+    for (const key of Object.keys(shape)) {
+      assert.strictEqual(
+        shape[key],
+        RememberArgsSchema.shape[key as keyof typeof RememberArgsSchema.shape],
+        `${key} must be the contracts schema object by identity`
+      );
+    }
+    assert.deepStrictEqual(
+      Object.keys(shape).sort(),
+      Object.keys(RememberArgsSchema.shape)
+        .filter(k => k !== 'pinned' && k !== 'source_run_id')
+        .sort(),
+      'exactly pinned + source_run_id are omitted — nothing else'
+    );
+  });
+
+  test('pinned:true and source_run_id from a client persist as UNpinned, unattributed (review fix 4)', async () => {
+    const [recall, save] = buildMemoryMcpTools();
+    // Worst case: a client smuggles the fields past schema validation and the
+    // handler receives them anyway — the store must still see pinned=false
+    // and no source_run_id.
+    const smuggled = RememberArgsSchema.parse({
+      content: 'mcp client attempting a pinned write nonce-4b8e',
+      memory_type: 'fact',
+      pinned: true,
+      source_run_id: 'spoofed-run-id-1234',
+      workdir: WORKDIR,
+    });
+    const result = await save.handler(smuggled);
+
+    assert.notStrictEqual(result.isError, true);
+    const parsed = JSON.parse(result.content[0].text) as { memory_id: string };
+    const row = getDb()
+      .prepare('SELECT pinned, source_run_id FROM memories WHERE memory_id = ?')
+      .get(parsed.memory_id) as { pinned: number; source_run_id: string | null } | undefined;
+    assert.ok(row, 'the save itself must succeed (write allowed, flags stripped)');
+    assert.strictEqual(row.pinned, 0, 'MCP saves can never be pinned');
+    assert.strictEqual(row.source_run_id, null, 'MCP saves can never claim run attribution');
+
+    // Recall confirms the row landed as a normal unpinned memory.
+    const recalled = await recall.handler(
+      RecallArgsSchema.parse({ token_budget: 2000, query: 'nonce-4b8e', workdir: WORKDIR })
+    );
+    assert.notStrictEqual(recalled.isError, true);
+    assert.ok(
+      recalled.content[0].text.includes('nonce-4b8e'),
+      'the unpinned row must be recallable'
+    );
+  });
+
+  test('forbidden workdir → isError MEMORY_WORKDIR_FORBIDDEN, write rejected (Test 3)', async () => {
+    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = ALLOWED_ONLY;
+    const countBefore = (
+      getDb().prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number }
+    ).n;
+
+    const [, save] = buildMemoryMcpTools();
+    const result = await save.handler(
+      RememberArgsSchema.parse({
+        content: 'this write must be rejected by the workdir gate',
+        memory_type: 'fact',
+        workdir: WORKDIR,
+      })
+    );
+
+    assert.strictEqual(result.isError, true);
+    const parsed = JSON.parse(result.content[0].text) as { ok: boolean; code: string };
+    assert.strictEqual(parsed.ok, false);
+    assert.strictEqual(parsed.code, 'MEMORY_WORKDIR_FORBIDDEN');
+
+    const countAfter = (
+      getDb().prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number }
+    ).n;
+    assert.strictEqual(countAfter, countBefore, 'a forbidden save must not insert a row');
+  });
+
+  test('explicit null workdir is accepted and stored as global (schema says "Null = global")', async () => {
+    // ChatGPT's connector sent workdir: null (following the field's own
+    // description) and got a Zod validation error, because .optional() only
+    // allows omission, not null. Reproduces that failure at the schema layer.
+    const [, save] = buildMemoryMcpTools();
+    const result = await save.handler(
+      RememberArgsSchema.parse({
+        content: 'client sends explicit null workdir nonce-6a2f',
+        memory_type: 'fact',
+        workdir: null,
+      })
+    );
+
+    assert.notStrictEqual(result.isError, true, result.content[0].text);
+    const parsed = JSON.parse(result.content[0].text) as { memory_id: string };
+    const row = getDb()
+      .prepare('SELECT workdir FROM memories WHERE memory_id = ?')
+      .get(parsed.memory_id) as { workdir: string | null } | undefined;
+    assert.ok(row, 'the save must insert a row');
+    assert.strictEqual(row.workdir, null, 'explicit null must mean global, same as omitted');
+  });
+
+  test('explicit null expires_in_hours is accepted and never expires (schema says "Null = never expires")', async () => {
+    const [, save] = buildMemoryMcpTools();
+    const result = await save.handler(
+      RememberArgsSchema.parse({
+        content: 'client sends explicit null expiry nonce-3d9c',
+        memory_type: 'fact',
+        expires_in_hours: null,
+        workdir: WORKDIR,
+      })
+    );
+
+    assert.notStrictEqual(result.isError, true, result.content[0].text);
+    const parsed = JSON.parse(result.content[0].text) as { expires_at: number | null };
+    assert.strictEqual(parsed.expires_at, null, 'explicit null must mean never-expires');
+  });
+
+  test('success result is redacted at the MCP boundary (Test 4)', async () => {
+    // handleRemember echoes args.tags into its response — a secret-shaped tag
+    // is the input field that round-trips into the success envelope, proving
+    // the wrapper redacts the SUCCESS path (the handler itself does not).
+    const secret = figmaSecret();
+    const [, save] = buildMemoryMcpTools();
+    const result = await save.handler(
+      RememberArgsSchema.parse({
+        content: 'memory whose tag carries a secret-shaped token nonce-9c1d',
+        memory_type: 'fact',
+        tags: [secret],
+        workdir: WORKDIR,
+      })
+    );
+
+    assert.notStrictEqual(result.isError, true);
+    const text = result.content[0].text;
+    assert.ok(!text.includes(secret), 'raw secret must not cross the MCP boundary');
+    assert.ok(text.includes('[REDACTED:FIGMA_PAT]'), `expected placeholder in: ${text}`);
+  });
+});
+
+describe('workdir default from RELAY_MEMORY_ALLOWED_WORKDIRS (Desktop ergonomics)', () => {
+  // Claude Desktop launches the server with a junk cwd and its model often
+  // omits workdir. With the allow-list configured, an omitted workdir must
+  // mean "the configured project" (FIRST entry), never FORBIDDEN-by-default.
+  const ROOT_A = '/tmp/relay-mcp-tools-test/allowed-root-a';
+  const ROOT_B = '/tmp/relay-mcp-tools-test/allowed-root-b';
+
+  test('omitted workdir on save lands in the FIRST allowed root', async () => {
+    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = `${ROOT_A}:${ROOT_B}`;
+    const [, save] = buildMemoryMcpTools();
+    const result = await save.handler(
+      RememberArgsSchema.parse({
+        content: 'omitted workdir must default to the first allowed root nonce-e5d2',
+        memory_type: 'fact',
+      })
+    );
+
+    assert.notStrictEqual(result.isError, true, result.content[0].text);
+    const parsed = JSON.parse(result.content[0].text) as { memory_id: string };
+    const row = getDb()
+      .prepare('SELECT workdir FROM memories WHERE memory_id = ?')
+      .get(parsed.memory_id) as { workdir: string | null } | undefined;
+    assert.ok(row, 'the defaulted save must insert a row');
+    assert.strictEqual(row.workdir, ROOT_A, 'omitted workdir = FIRST entry of the allow-list');
+  });
+
+  test('omitted workdir on recall scopes to the FIRST allowed root', async () => {
+    // Seed one row per allowed root while the gate is open, then close it:
+    // an omitted workdir must read as ROOT_A scope — never ROOT_B's rows.
+    const store = new MemoryStore();
+    store.remember({
+      content: 'aurora flux memo for the first allowed root nonce-b7c4',
+      memory_type: 'fact',
+      workdir: ROOT_A,
+    });
+    store.remember({
+      content: 'umbra drift memo for the second allowed root nonce-d913',
+      memory_type: 'fact',
+      workdir: ROOT_B,
+    });
+    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = `${ROOT_A}:${ROOT_B}`;
+
+    const [recall] = buildMemoryMcpTools();
+    const result = await recall.handler(RecallArgsSchema.parse({ token_budget: 5000 }));
+
+    assert.notStrictEqual(result.isError, true, result.content[0].text);
+    const text = result.content[0].text;
+    assert.ok(text.includes('nonce-b7c4'), `first-root memory must be in scope: ${text}`);
+    assert.ok(!text.includes('nonce-d913'), 'second-root memory must NOT be in scope');
+  });
+
+  test('omitted workdir with the env var unset keeps the existing default path', async () => {
+    // Env is unset (file preamble + afterEach). Today an MCP save without a
+    // workdir persists as a global row (workdir NULL) — that must not change.
+    const [, save] = buildMemoryMcpTools();
+    const result = await save.handler(
+      RememberArgsSchema.parse({
+        content: 'no allow-list configured so the save keeps the old path nonce-90af',
+        memory_type: 'fact',
+      })
+    );
+
+    assert.notStrictEqual(result.isError, true, result.content[0].text);
+    const parsed = JSON.parse(result.content[0].text) as { memory_id: string };
+    const row = getDb()
+      .prepare('SELECT workdir FROM memories WHERE memory_id = ?')
+      .get(parsed.memory_id) as { workdir: string | null } | undefined;
+    assert.ok(row, 'the save must insert a row');
+    assert.strictEqual(row.workdir, null, 'env unset → the handler must not invent a workdir');
+  });
+
+  test('forbidden workdir error names the allowed roots so the model can self-correct', async () => {
+    process.env['RELAY_MEMORY_ALLOWED_WORKDIRS'] = `${ROOT_A}:${ROOT_B}`;
+    const forbidden = '/tmp/relay-mcp-tools-test/not-on-the-list';
+    const [recall, save] = buildMemoryMcpTools();
+
+    const recalled = await recall.handler(
+      RecallArgsSchema.parse({ token_budget: 2000, workdir: forbidden })
+    );
+    assert.strictEqual(recalled.isError, true);
+    const recallText = recalled.content[0].text;
+    const recallParsed = JSON.parse(recallText) as { ok: boolean; code: string };
+    assert.strictEqual(recallParsed.code, 'MEMORY_WORKDIR_FORBIDDEN');
+    assert.ok(recallText.includes(ROOT_A), `recall error must list root A: ${recallText}`);
+    assert.ok(recallText.includes(ROOT_B), `recall error must list root B: ${recallText}`);
+
+    const saved = await save.handler(
+      RememberArgsSchema.parse({
+        content: 'write aimed at a forbidden workdir nonce-77aa',
+        memory_type: 'fact',
+        workdir: forbidden,
+      })
+    );
+    assert.strictEqual(saved.isError, true);
+    const saveText = saved.content[0].text;
+    const saveParsed = JSON.parse(saveText) as { ok: boolean; code: string };
+    assert.strictEqual(saveParsed.code, 'MEMORY_WORKDIR_FORBIDDEN');
+    assert.ok(
+      saveText.includes(ROOT_A) && saveText.includes(ROOT_B),
+      `save error must list the allowed roots: ${saveText}`
+    );
+  });
+});
+
+describe('tool descriptions carry trigger language (Desktop adoption)', () => {
+  // Desktop's model only calls tools whose descriptions say WHEN to call them.
+  // These pin the intent (trigger phrases), not the exact prose.
+  test('recall description tells the model when to reach for memory unprompted', () => {
+    const [recall] = buildMemoryMcpTools();
+    const d = recall.config.description.toLowerCase();
+    assert.ok(d.includes('before answering'), 'must trigger BEFORE answering, not after');
+    assert.ok(d.includes('decisions'), 'must name past decisions as a trigger');
+    assert.ok(d.includes('lessons'), 'must name lessons as a trigger');
+    assert.ok(d.includes('cross-tool'), 'must say the memory spans tools');
+    assert.ok(
+      d.includes('this conversation does not'),
+      'must say the store holds context the conversation lacks'
+    );
+    assert.ok(d.includes('omit'), 'must say workdir can be omitted for the default project');
+    assert.ok(d.includes('800'), 'must suggest a typical token_budget');
+  });
+
+  test('save description tells the model what to persist and what never to', () => {
+    const [, save] = buildMemoryMcpTools();
+    const d = save.config.description.toLowerCase();
+    assert.ok(d.includes('decisions'), 'must name decisions as save-worthy');
+    assert.ok(d.includes('lessons'), 'must name lessons as save-worthy');
+    assert.ok(
+      d.includes('other tools') && d.includes('future sessions'),
+      'must say other tools and future sessions see the save'
+    );
+    assert.ok(d.includes('memory_type'), 'must explain memory_type semantics');
+    assert.ok(d.includes('never save secrets'), 'must ban secrets/credentials');
+  });
+});
+
+describe('buildMemoryMcpTools surface', () => {
+  test('exposes exactly relay_memory_recall and relay_memory_save, in order (Test 5)', () => {
+    const tools = buildMemoryMcpTools();
+    assert.strictEqual(tools.length, 2);
+    assert.deepStrictEqual(
+      tools.map(t => t.name),
+      ['relay_memory_recall', 'relay_memory_save']
+    );
+    // The killed scope stays killed: no control tools, no dispatch tool,
+    // no shell surface — and every registration is client-ready.
+    for (const tool of tools) {
+      assert.strictEqual(typeof tool.handler, 'function');
+      assert.ok(tool.config.description.length > 0, `${tool.name} needs a description`);
+    }
+  });
+});

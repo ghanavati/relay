@@ -1,24 +1,31 @@
 /**
- * `relay run <task>` — single-task delegation to codex / openrouter / lmstudio.
+ * `relay run <task>` — single-task delegation.
  *
  * Flow:
- *   1. Validate args (task non-empty, provider known, model required for HTTP providers)
+ *   1. Validate args (task non-empty, provider resolved through the registry,
+ *      model required for HTTP-wire providers)
  *   2. Generate run_id, insert pending run row
  *   3. Dispatch to the matching worker
  *   4. Capture WorkerResult, complete/error the run row
  *   5. Emit JSON or human-readable output
  *
- * Supported providers in v0.1.0: codex, openrouter, lmstudio.
- * Anthropic deferred (no tool-loop in slim distro).
+ * Providers resolve through src/workers/provider-registry.ts (DISPATCH-02):
+ * the five builtins map to their existing runner classes; any
+ * RELAY_PROVIDER_<NAME>_* env-declared endpoint rides the parameterized
+ * GenericHttpRunner (single-shot in v1).
  */
 
 import { randomUUID } from 'node:crypto';
 import type { CliIO } from './commands.js';
+import type { ProviderConfig } from '../workers/provider-registry.js';
 import { AGENTIC_SANDBOX_ENV } from '../security/env-sanitize.js';
+import { runnerForProvider, type RunnerFactoryOpts } from './runner-factory.js';
+
+const AGENTIC_LOCAL_PROVIDERS = new Set(['lmstudio-agentic', 'omlx-agentic']);
 
 export interface RunCommandArgs {
   task: string;
-  provider: 'codex' | 'openrouter' | 'lmstudio' | 'anthropic' | 'lmstudio-agentic' | 'omlx-agentic';
+  provider: string;
   model?: string;
   workdir: string;
   timeoutMs: number;
@@ -26,16 +33,24 @@ export interface RunCommandArgs {
   json: boolean;
 }
 
-const HTTP_PROVIDERS = new Set(['openrouter', 'lmstudio', 'anthropic', 'lmstudio-agentic', 'omlx-agentic']);
-const AGENTIC_LOCAL_PROVIDERS = new Set(['lmstudio-agentic', 'omlx-agentic']);
-
 export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promise<number> {
   // 1. Validate
   if (!args.task.trim()) {
     io.stderr('relay run requires a non-empty task\n');
     return 2;
   }
-  if (HTTP_PROVIDERS.has(args.provider) && !args.model) {
+  // Resolve through the registry BEFORE any run row exists — unknown names
+  // fail with the available-provider list; builtin/env collisions error (D-04).
+  const { resolveProvider } = await import('../workers/provider-registry.js');
+  let providerConfig: ProviderConfig;
+  try {
+    providerConfig = resolveProvider(args.provider);
+  } catch (err) {
+    io.stderr(`${(err as Error).message}\n`);
+    return 2;
+  }
+  // Every HTTP-wire provider needs --model; only subprocess (codex) does not.
+  if (providerConfig.type !== 'subprocess' && !args.model) {
     io.stderr(`relay run requires --model when --provider is ${args.provider}\n`);
     return 2;
   }
@@ -65,28 +80,17 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
 
   const started_at = Date.now();
 
-  // 3. Get the worker
+  // 3. Get the worker — builtin names keep their existing runner classes
+  //    (behavior parity, DISPATCH-02); env-sourced configs ride the
+  //    parameterized GenericHttpRunner (DISPATCH-01).
   let runner;
   try {
-    if (args.provider === 'codex') {
-      const { CodexRunner } = await import('../workers/codex.js');
-      runner = new CodexRunner();
-    } else if (args.provider === 'lmstudio') {
-      const { LmStudioRunner } = await import('../workers/lmstudio.js');
-      runner = new LmStudioRunner();
-    } else if (args.provider === 'openrouter') {
-      const { OpenRouterRunner } = await import('../workers/openrouter.js');
-      runner = new OpenRouterRunner();
-    } else if (args.provider === 'anthropic') {
-      const { AnthropicRunner } = await import('../workers/anthropic.js');
-      runner = new AnthropicRunner();
-    } else if (AGENTIC_LOCAL_PROVIDERS.has(args.provider)) {
+    const factoryOpts: RunnerFactoryOpts = {};
+    if (AGENTIC_LOCAL_PROVIDERS.has(args.provider)) {
       // 08-fix HIGH — mark this process as an agentic sandbox. shell_exec children
       // inherit it (and defaultShellExec force-injects it per child), so any `relay`
       // CLI a model shells into refuses mutating control subcommands.
       process.env[AGENTIC_SANDBOX_ENV] = '1';
-      const { LmStudioAgenticRunner } = await import('../workers/lmstudio-agentic.js');
-      const { OmlxAgenticRunner } = await import('../workers/omlx-agentic.js');
       // Phase 7 — env-gated Figma REST tools. registerFigmaTools returns null
       // when PAT is absent (FIGMA-03 graceful — model sees zero Figma tools,
       // no startup error). loadPat is the source of truth for the resolved PAT
@@ -116,18 +120,9 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
         label: task_excerpt,
       });
       const controlNamed = toNamedToolHandlers(registerControlTools(run_id));
-      runner = args.provider === 'omlx-agentic'
-        ? new OmlxAgenticRunner({ extraToolHandlers: [...figmaNamed, ...controlNamed] })
-        : new LmStudioAgenticRunner({ extraToolHandlers: [...figmaNamed, ...controlNamed] });
-    } else {
-      io.stderr(`unsupported provider: ${args.provider}\n`);
-      runStore.recordError(run_id, {
-        error_code: 'INVALID_ARGS',
-        error_message: `unsupported provider: ${args.provider}`,
-        finished_at: Date.now(),
-      });
-      return 2;
+      factoryOpts.agenticExtraToolHandlers = [...figmaNamed, ...controlNamed];
     }
+    runner = await runnerForProvider(providerConfig, factoryOpts);
   } catch (err) {
     const message = (err as Error).message;
     io.stderr(`failed to load ${args.provider} runner: ${message}\n`);
@@ -208,6 +203,8 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
       duration_ms: result.duration_ms,
       exit_code: result.exit_code,
       token_usage: result.token_usage ?? null,
+      prompt_tokens: result.prompt_tokens ?? null,
+      completion_tokens: result.completion_tokens ?? null,
       error_code: result.error?.code ?? 'UNKNOWN',
       error_message: result.error?.message ?? '',
     });
@@ -219,6 +216,8 @@ export async function executeRunCommand(args: RunCommandArgs, io: CliIO): Promis
       duration_ms: result.duration_ms,
       exit_code: result.exit_code,
       token_usage: result.token_usage ?? null,
+      prompt_tokens: result.prompt_tokens ?? null,
+      completion_tokens: result.completion_tokens ?? null,
     });
   }
 

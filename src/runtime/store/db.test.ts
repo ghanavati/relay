@@ -13,7 +13,7 @@ import * as assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import Database from 'better-sqlite3';
+import Database from 'libsql';
 
 import { applySchema } from './db.js';
 

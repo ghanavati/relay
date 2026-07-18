@@ -1,7 +1,51 @@
 import type { WorkerTask, WorkerResult } from "./types.js";
 import { makeError } from "../errors.js";
+import { redactSecrets, scrubKnownValues } from "../security/redaction.js";
 import type { WorkerRunner } from "./runner.js";
 import type { ChatTurn, RunMessagesOptions } from "./generic-http-runner.js";
+
+/**
+ * Anthropic Messages API response shape (the slice Relay reads).
+ * Shared by AnthropicRunner and the parameterized GenericHttpRunner
+ * (anthropic-type dynamic providers) — single source of the wire code.
+ */
+export interface AnthropicResponseData {
+  content?: Array<{ type: string; text?: string }>;
+  usage?: { input_tokens?: number; output_tokens?: number };
+}
+
+/**
+ * Build a single-shot Messages API body. Anthropic uses a top-level `system`
+ * field, not a system role inside `messages`. When contextPrefix is set,
+ * callers MUST pass the bare task (NOT the concatenated finalTask).
+ */
+export function buildAnthropicBody(args: {
+  model: string;
+  task: string;
+  contextPrefix?: string | undefined;
+}): Record<string, unknown> {
+  return {
+    model: args.model,
+    max_tokens: 4096,
+    ...(args.contextPrefix ? { system: args.contextPrefix } : {}),
+    messages: [{ role: "user", content: args.task }],
+  };
+}
+
+export type AnthropicParseResult =
+  | { ok: true; output: string }
+  | { ok: false; raw: string };
+
+/** Extract the text content block; `ok: false` carries the raw JSON for the error output. */
+export function parseAnthropicResponse(
+  data: AnthropicResponseData
+): AnthropicParseResult {
+  const block = data.content?.[0];
+  if (!block || block.type !== "text" || typeof block.text !== "string") {
+    return { ok: false, raw: JSON.stringify(data) };
+  }
+  return { ok: true, output: block.text };
+}
 
 /**
  * Slim Anthropic Messages API runner. Text-only (no agentic tool-loop in v0.2).
@@ -100,15 +144,11 @@ export class AnthropicRunner implements WorkerRunner {
 
     return this.post(
       apiKey,
-      {
+      buildAnthropicBody({
         model: task.model,
-        max_tokens: 4096,
-        // Anthropic Messages API uses a top-level `system` field, not a system
-        // role inside `messages`. When contextPrefix is set, callers MUST pass
-        // the bare task in `task.task` (NOT the concatenated finalTask).
-        ...(task.contextPrefix ? { system: task.contextPrefix } : {}),
-        messages: [{ role: "user", content: task.task }],
-      },
+        task: task.task,
+        contextPrefix: task.contextPrefix,
+      }),
       task.timeout_ms
     );
   }
@@ -120,6 +160,12 @@ export class AnthropicRunner implements WorkerRunner {
     timeout_ms: number
   ): Promise<WorkerResult> {
     const startedAt = Date.now();
+    // Codex round 2: scrub the exact key value we sent FIRST (a JSON echo
+    // like `"x-api-key":"short-secret"` matches no redaction pattern, and a
+    // pattern can partially consume the key and leave a fragment), then run
+    // pattern redaction for everything else.
+    const scrubText = (text: string): string =>
+      redactSecrets(scrubKnownValues(text, [apiKey]));
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout_ms);
 
@@ -139,7 +185,9 @@ export class AnthropicRunner implements WorkerRunner {
       const duration_ms = Date.now() - startedAt;
 
       if (!res.ok) {
-        const text = await res.text().catch(() => "");
+        // Review fix 2: error bodies can echo request headers (x-api-key)
+        // verbatim — redact before CLI output / run-record persistence.
+        const text = scrubText(await res.text().catch(() => ""));
         return {
           status: "error",
           output: text,
@@ -149,16 +197,14 @@ export class AnthropicRunner implements WorkerRunner {
         };
       }
 
-      const data = (await res.json()) as {
-        content?: Array<{ type: string; text?: string }>;
-        usage?: { input_tokens?: number; output_tokens?: number };
-      };
+      const data = (await res.json()) as AnthropicResponseData;
 
-      const block = data.content?.[0];
-      if (!block || block.type !== "text" || typeof block.text !== "string") {
+      const parsed = parseAnthropicResponse(data);
+      if (!parsed.ok) {
         return {
           status: "error",
-          output: JSON.stringify(data),
+          // Error-path response text — redacted; success output stays raw.
+          output: scrubText(parsed.raw),
           duration_ms,
           exit_code: null,
           error: makeError("PROVIDER_ERROR", "Anthropic response missing text content block", true),
@@ -169,7 +215,7 @@ export class AnthropicRunner implements WorkerRunner {
       const outputTokens = data.usage?.output_tokens ?? 0;
       return {
         status: "success",
-        output: block.text,
+        output: parsed.output,
         duration_ms,
         exit_code: 0,
         token_usage: inputTokens + outputTokens,
@@ -193,7 +239,12 @@ export class AnthropicRunner implements WorkerRunner {
         output: "",
         duration_ms,
         exit_code: null,
-        error: makeError("PROVIDER_ERROR", err instanceof Error ? err.message : String(err), true),
+        // Review fix 2: fetch failures can embed secrets — redact the message.
+        error: makeError(
+          "PROVIDER_ERROR",
+          scrubText(err instanceof Error ? err.message : String(err)),
+          true
+        ),
       };
     }
   }
