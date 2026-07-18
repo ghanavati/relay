@@ -16,7 +16,15 @@ curl -fsSL https://raw.githubusercontent.com/ghanavati/relay/main/scripts/instal
 relay setup --everything
 ```
 
-The installer detects Apple Silicon or Intel Macs, Linux x64, and Linux ARM64.
+On Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/ghanavati/relay/main/scripts/install-release.ps1 | iex
+relay setup --everything
+```
+
+The installer detects Apple Silicon or Intel Macs, Linux x64, Linux ARM64, and
+Windows x64.
 It downloads the matching archive, verifies its checksum, and places `relay` in
 `~/.local/bin`. Add that directory to your shell profile if it is not already
 on PATH. Re-run the command to upgrade.

@@ -66,8 +66,43 @@ jobs:
           path: release/*.tar.gz
           if-no-files-found: error
 
+  bundle-windows:
+    name: windows-x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Build Windows archive
+        shell: pwsh
+        run: |
+          $version = node -p "require('./package.json').version"
+          if ("v$version" -ne "${{ inputs.tag }}") { throw 'Tag does not match package version.' }
+          npm ci
+          npm run build
+          npm run typecheck
+          $root = "release/relay-v$version-windows-x64"
+          New-Item -ItemType Directory -Force -Path "$root/app", "$root/runtime" | Out-Null
+          Copy-Item dist "$root/app/dist" -Recurse
+          Copy-Item package.json, package-lock.json "$root/app"
+          Push-Location "$root/app"; npm ci --omit=dev --ignore-scripts; Pop-Location
+          Copy-Item (Get-Command node).Source "$root/runtime/node.exe"
+          Set-Content "$root/relay.cmd" "@echo off`r`n`"%~dp0runtime\node.exe`" `"%~dp0app\dist\cli.js`" %*"
+          Set-Content "$root/RELEASE.json" "{`"version`":`"$version`",`"platform`":`"win32`",`"arch`":`"x64`"}"
+          Compress-Archive -Path $root -DestinationPath "release/relay-v$version-windows-x64.zip"
+          & "$root/relay.cmd" --help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: relay-windows-x64
+          path: release/*.zip
+          if-no-files-found: error
+
   publish:
-    needs: bundle
+    needs: [bundle, bundle-windows]
     runs-on: ubuntu-latest
     steps:
       - name: Download release archives
@@ -79,9 +114,9 @@ jobs:
 
       - name: Generate checksums
         working-directory: release
-        run: sha256sum *.tar.gz > SHA256SUMS.txt
+        run: sha256sum *.tar.gz *.zip > SHA256SUMS.txt
 
       - name: Publish prerelease
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ inputs.tag }}" release/*.tar.gz release/SHA256SUMS.txt --prerelease --title "Relay ${{ inputs.tag }}" --generate-notes
+        run: gh release create "${{ inputs.tag }}" release/*.tar.gz release/*.zip release/SHA256SUMS.txt --prerelease --title "Relay ${{ inputs.tag }}" --generate-notes
