@@ -1,6 +1,6 @@
 {
   "name": "relay",
-  "version": "0.4.0-beta.1",
+  "version": "0.4.0-beta.2",
   "description": "Operations and control layer for AI coding agents: persistent cross-tool memory, multi-model dispatch (Codex, LM Studio, OpenRouter, Anthropic), audit trail, and steerable agentic execution. Local SQLite store.",
   "type": "module",
   "license": "AGPL-3.0-or-later",
