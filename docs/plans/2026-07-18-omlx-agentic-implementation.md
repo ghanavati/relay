@@ -10,6 +10,64 @@
 
 ---
 
+### Task 0: Reconcile Claude's dispatch baseline and repair harness prerequisites
+
+**Files:**
+- Reuse: `4dbd476` `src/control/control-e2e.test.ts`
+- Reconcile: `2f5d326`, `5e6a7d2`, `ff2b91f`, `5600c6e`, `3b90ff0`
+- Modify: `src/cli/cmd-parallel.ts`
+- Modify: `src/cli/runner-factory.ts` (when introduced by the reconciled baseline)
+- Modify: `src/cli/cmd-parallel.test.ts`
+- Modify: `src/workers/lmstudio-agentic.test.ts`
+
+**Step 1: Inventory the non-current Claude commits**
+
+Confirm the current worktree does not already contain Claude's live-grant test
+repair or Phase 9 provider-registry refactor. Do not reimplement either
+change: transplant/reconcile the existing commits in dependency order, while
+leaving unrelated Phase 9 MCP work out of the oMLX branch.
+
+**Step 2: Restore a green baseline**
+
+Use the live-clock grant test repair from `4dbd476`, then run:
+
+```bash
+npm ci
+npm run typecheck
+RELAY_ALLOWED_ROOTS= npm test
+```
+
+Expected: typecheck and all tests pass; the control E2E cases no longer create
+already-expired grants from a fixed historical timestamp.
+
+**Step 3: Make parallel agentic parity explicit**
+
+Write failing tests proving every parallel agentic run gets the same Relay
+control-session registration, default `shell_exec`, control-tool definitions,
+extra handlers, cleanup, and sandbox marker as `relay run`. Reject a parallel
+spec where two agentic tasks target the same workdir unless it explicitly opts
+into that unsafe arrangement; the compact fleet fixtures always use isolated
+workdirs.
+
+**Step 4: Implement only the missing parity/isolation layer**
+
+Build on Claude's provider registry and runner factory rather than restoring
+the old hard-coded provider switch. Add the missing control wiring at the
+shared factory/dispatch boundary, preserve every existing provider contract,
+and validate workdir isolation before dispatching subprocess tools.
+
+**Step 5: Verify and commit**
+
+```bash
+npm run build && RELAY_ALLOWED_ROOTS= npm test
+git add src/control/control-e2e.test.ts src/cli/cmd-parallel.ts src/cli/runner-factory.ts src/cli/cmd-parallel.test.ts src/workers/lmstudio-agentic.test.ts
+git commit -m "fix(parallel): align agentic dispatch and isolate workdirs"
+```
+
+Expected: full suite green. This is the gate before any oMLX fleet trial.
+
+---
+
 ### Task 1: Define validated user inference profiles
 
 **Files:**
