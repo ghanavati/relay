@@ -33,9 +33,9 @@ test('release workflow builds the supported archives and publishes a prerelease'
   const workflow = await readFile(resolve('.github/workflows/release.yml'), 'utf8');
 
   assert.match(workflow, /workflow_dispatch/);
-  assert.match(workflow, /darwin-arm64/);
-  assert.match(workflow, /darwin-x64/);
-  assert.match(workflow, /linux-x64/);
+  assert.match(workflow, /platform: darwin\s+arch: arm64/);
+  assert.match(workflow, /platform: darwin\s+arch: x64/);
+  assert.match(workflow, /platform: linux\s+arch: x64/);
   assert.match(workflow, /SHA256SUMS\.txt/);
   assert.match(workflow, /gh release create/);
   assert.match(workflow, /--prerelease/);
