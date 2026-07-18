@@ -1,8 +1,5 @@
 # Troubleshooting
 
-> Install Relay from GitHub Releases, not npm. Start with the archive and
-> checksum steps in [install.md](./install.md).
-
 Symptom-first guide for users who installed Relay and something is wrong.
 Start at the top, work down.
 
@@ -232,11 +229,6 @@ Cause: per-source-run-id write rate limit (default 10 per 5 minutes;
 
 Fix: don't pass `--source-run-id` on bulk writes , the limiter is keyed
 on it. Solo CLI users normally skip this flag.
-
-### Public installation
-Download the platform archive and `SHA256SUMS.txt` from the
-[Releases page](https://github.com/ghanavati/relay/releases), then follow the
-checksum and setup commands in [install.md](./install.md).
 
 ### Codex: "You've hit your usage limit"
 `error: You've hit your usage limit. Try again at HH:MM PM.`
