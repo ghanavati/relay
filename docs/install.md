@@ -19,10 +19,11 @@ curl -fsSL https://raw.githubusercontent.com/ghanavati/relay/main/scripts/instal
 irm https://raw.githubusercontent.com/ghanavati/relay/main/scripts/install.ps1 | iex
 ```
 
-Each command completes setup. Open a new terminal, then run `relay --help`.
-It downloads the matching archive, verifies its checksum, and places `relay` in
-`~/.local/bin`. Add that directory to your shell profile if it is not already
-on PATH. Re-run the command to upgrade.
+Open a new terminal, then run:
+
+```bash
+relay setup --everything
+```
 
 ## After Relay is provisioned
 
