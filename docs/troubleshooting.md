@@ -1,5 +1,8 @@
 # Troubleshooting
 
+> Relay has no supported public installation path yet. These notes are for a
+> pre-provisioned development or evaluation runtime, not a general installer.
+
 Symptom-first guide for users who installed Relay and something is wrong.
 Start at the top, work down.
 

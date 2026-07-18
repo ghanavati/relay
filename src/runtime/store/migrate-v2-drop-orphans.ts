@@ -1,8 +1,7 @@
 /**
  * v0.2 schema cleanup: drop 11 orphan tables left over from earlier
- * iterations that no command reads or writes (see
- * `.planning/v0.2-improvised-scrap/BUDGET-CLI-SCHEMA-MAP.md` §3 for the
- * lineage).
+ * iterations that no command reads or writes. The historical schema inventory
+ * is retained in the project's local archive.
  *
  * The drop is gated on the `schema_version` table — once version >= 2 is
  * recorded, the migration is a no-op. This makes the function safe to call

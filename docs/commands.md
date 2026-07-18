@@ -214,7 +214,10 @@ Example: `relay info --json | jq .hooks`.
 ## relay update
 
 ### relay update [--check] [--apply]
-Check for or apply updates to the Relay binary. Default `--check` (notify-only — fetches latest tag, compares to local). With `--apply`, fetches the repo into a temp dir, runs `npm install + build`, and atomically swaps the symlink. Flags: `--check`, `--apply`, `--json`. Implementation in `src/cli/cmd-update.ts`.
+Check for or apply updates to a development/evaluation runtime. Relay has no
+supported public distribution or upgrade path yet; do not treat this command as
+a public installer. Flags: `--check`, `--apply`, `--json`. Implementation in
+`src/cli/cmd-update.ts`.
 Example: `relay update --check`.
 Example: `relay update --apply`.
 
@@ -267,4 +270,3 @@ Example: `relay doctor --json`.
 ### relay completion <bash|zsh|fish>
 Emit shell completion script for the named shell.
 Example: `relay completion zsh > "${fpath[1]}/_relay"`.
-
