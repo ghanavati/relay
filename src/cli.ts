@@ -285,9 +285,9 @@ async function dispatchRun(rest: readonly string[]): Promise<number> {
     io.stderr('relay run requires a task. Try: relay run "fix the failing test"\n');
     return 2;
   }
-  const provider = (lastOption(flags, 'provider') ?? 'codex') as 'codex' | 'openrouter' | 'lmstudio' | 'anthropic' | 'lmstudio-agentic';
-  if (!['codex', 'openrouter', 'lmstudio', 'anthropic', 'lmstudio-agentic'].includes(provider)) {
-    io.stderr(`unsupported --provider: ${provider}. Try codex / openrouter / lmstudio / anthropic / lmstudio-agentic.\n`);
+  const provider = (lastOption(flags, 'provider') ?? 'codex') as 'codex' | 'openrouter' | 'lmstudio' | 'anthropic' | 'lmstudio-agentic' | 'omlx-agentic';
+  if (!['codex', 'openrouter', 'lmstudio', 'anthropic', 'lmstudio-agentic', 'omlx-agentic'].includes(provider)) {
+    io.stderr(`unsupported --provider: ${provider}. Try codex / openrouter / lmstudio / anthropic / lmstudio-agentic / omlx-agentic.\n`);
     return 2;
   }
   const timeoutMsRaw = lastOption(flags, 'timeout-ms');

@@ -33,6 +33,7 @@ import { z } from 'zod';
 
 import { makeError } from '../errors.js';
 import { getLmStudioEndpoint, getLmStudioApiKey } from '../config/providers.js';
+import type { ModelInferenceProfile } from '../config/model-profiles.js';
 import { AGENTIC_SANDBOX_ENV, isSecretEnvName } from '../security/env-sanitize.js';
 import type { WorkerRunner, WorkerCapabilities } from './runner.js';
 import type {
@@ -139,6 +140,11 @@ export interface LmStudioAgenticRunnerOpts {
    * (e.g. `registerFigmaTools(process.env)` for Figma).
    */
   extraToolHandlers?: NamedToolHandler[];
+  endpoint?: () => string | null;
+  apiKey?: () => string | null;
+  requireToolUseCapability?: boolean;
+  profileForModel?: (model: string) => Promise<ModelInferenceProfile>;
+  providerLabel?: string;
 }
 
 // ─── Pure helpers (exported for test access — PLAN §T2) ────────────────
@@ -676,12 +682,22 @@ export class LmStudioAgenticRunner implements WorkerRunner {
   private readonly shellExec: ShellExecFn;
   private readonly maxIterations: number;
   private readonly extraToolHandlers: readonly NamedToolHandler[];
+  private readonly endpoint: () => string | null;
+  private readonly apiKey: () => string | null;
+  private readonly requireToolUseCapability: boolean;
+  private readonly profileForModel: (model: string) => Promise<ModelInferenceProfile>;
+  private readonly providerLabel: string;
 
   constructor(opts: LmStudioAgenticRunnerOpts = {}) {
     this.fetchImpl = opts.fetchImpl ?? ((globalThis as { fetch: FetchFn }).fetch);
     this.shellExec = opts.shellExec ?? defaultShellExec;
     this.maxIterations = opts.maxIterations ?? DEFAULT_MAX_ITERATIONS;
     this.extraToolHandlers = opts.extraToolHandlers ?? [];
+    this.endpoint = opts.endpoint ?? getLmStudioEndpoint;
+    this.apiKey = opts.apiKey ?? getLmStudioApiKey;
+    this.requireToolUseCapability = opts.requireToolUseCapability ?? true;
+    this.profileForModel = opts.profileForModel ?? (async () => ({}));
+    this.providerLabel = opts.providerLabel ?? 'LM Studio';
   }
 
   async run(task: WorkerTask): Promise<WorkerResult> {
@@ -708,8 +724,13 @@ export class LmStudioAgenticRunner implements WorkerRunner {
       ));
     }
 
-    const endpoint = getLmStudioEndpoint();
-    const apiKey = getLmStudioApiKey();
+    const endpoint = this.endpoint();
+    if (!endpoint) {
+      return this.errorResult(startedAt, iterations, tool_call_count, makeError(
+        'PROVIDER_NOT_CONFIGURED', `${this.providerLabel} endpoint is not configured`, false
+      ));
+    }
+    const apiKey = this.apiKey();
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
 
@@ -718,10 +739,14 @@ export class LmStudioAgenticRunner implements WorkerRunner {
 
     try {
       // 2. Capability probe (PLAN §T4 case 7)
-      const probeErr = await probeCapability(endpoint, task.model, headers, this.fetchImpl, controller.signal);
-      if (probeErr) {
-        return this.errorResult(startedAt, iterations, tool_call_count, probeErr);
+      if (this.requireToolUseCapability) {
+        const probeErr = await probeCapability(endpoint, task.model, headers, this.fetchImpl, controller.signal);
+        if (probeErr) {
+          return this.errorResult(startedAt, iterations, tool_call_count, probeErr);
+        }
       }
+      const profile = await this.profileForModel(task.model);
+      const maxIterations = profile.max_iterations ?? this.maxIterations;
 
       // 3. Build initial messages — system (contextPrefix [+ LFM2 nudge]) + user
       const messages: ChatMessage[] = buildInitialMessages(task);
@@ -734,7 +759,7 @@ export class LmStudioAgenticRunner implements WorkerRunner {
       const chatUrl = `${endpoint.replace(/\/+$/, '')}/v1/chat/completions`;
       const recentTurnHashes: string[] = [];
 
-      for (iterations = 1; iterations <= this.maxIterations; iterations++) {
+      for (iterations = 1; iterations <= maxIterations; iterations++) {
         // 4. POST chat completion
         const body = {
           model: task.model,
@@ -742,7 +767,9 @@ export class LmStudioAgenticRunner implements WorkerRunner {
           tools: task.tools,
           tool_choice: 'auto',
           stream: false,
-          temperature: 0.2,
+          ...(profile.temperature === undefined ? { temperature: 0.2 } : { temperature: profile.temperature }),
+          ...(profile.max_tokens === undefined ? {} : { max_tokens: profile.max_tokens }),
+          ...(profile.chat_template_kwargs === undefined ? {} : { chat_template_kwargs: profile.chat_template_kwargs }),
         };
 
         let resp: Response;
@@ -762,12 +789,12 @@ export class LmStudioAgenticRunner implements WorkerRunner {
               exit_code: null,
               iterations,
               tool_call_count,
-              error: makeError('TIMEOUT', `lmstudio-agentic timed out after ${task.timeout_ms}ms`, true),
+              error: makeError('TIMEOUT', `${this.providerLabel} agentic run timed out after ${task.timeout_ms}ms`, true),
             };
           }
           return this.errorResult(startedAt, iterations, tool_call_count, makeError(
             'PROVIDER_ERROR',
-            `LM Studio fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+            `${this.providerLabel} fetch failed: ${err instanceof Error ? err.message : String(err)}`,
             true
           ));
         }
@@ -776,7 +803,7 @@ export class LmStudioAgenticRunner implements WorkerRunner {
           const errText = await resp.text().catch(() => '');
           return this.errorResult(startedAt, iterations, tool_call_count, makeError(
             'PROVIDER_ERROR',
-            `LM Studio returned ${resp.status}: ${errText.slice(0, 500)}`,
+            `${this.providerLabel} returned ${resp.status}: ${errText.slice(0, 500)}`,
             true
           ));
         }
@@ -791,7 +818,7 @@ export class LmStudioAgenticRunner implements WorkerRunner {
         if (!choice?.message) {
           return this.errorResult(startedAt, iterations, tool_call_count, makeError(
             'PROVIDER_ERROR',
-            'LM Studio response missing choices[0].message',
+            `${this.providerLabel} response missing choices[0].message`,
             true
           ));
         }
@@ -863,9 +890,9 @@ export class LmStudioAgenticRunner implements WorkerRunner {
       // Report `this.maxIterations` — the actual work count completed. (The for-loop
       // post-increments `iterations` to maxIterations+1 on exit, so we don't use it.)
       // Matches the timeout path which returns the in-flight iteration number.
-      return this.errorResult(startedAt, this.maxIterations, tool_call_count, makeError(
+      return this.errorResult(startedAt, maxIterations, tool_call_count, makeError(
         'UNSUPPORTED',
-        `lmstudio-agentic iteration cap hit (${this.maxIterations} iterations)`,
+        `${this.providerLabel} agentic iteration cap hit (${maxIterations} iterations)`,
         false
       ));
     } finally {
