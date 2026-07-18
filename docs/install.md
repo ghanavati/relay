@@ -1,44 +1,35 @@
-# Install
+# Distribution status
 
-Relay is a CLI plus an MCP server that gives your AI tools a shared, persistent memory. This page takes you from nothing to a memory that travels between your tools.
+Relay is a pre-release CLI and MCP server for shared, persistent AI-work memory.
 
-Requires **Node 20 or newer** and git. No compiler, no Xcode, no build tools — the SQLite driver ships prebuilt binaries for macOS and Linux (x64 and ARM).
+## Not publicly installable yet
 
-## The 2-minute path
+Relay is not currently published through a public package registry and does not
+yet have a supported end-user installation path. The repository is available
+for development and evaluation while release packaging is decided.
 
-```bash
-git clone https://github.com/ghanavati/relay.git
-cd relay
-npm install -g .
-relay init
-```
+Once Relay is distributed, this page will document the supported installation,
+upgrade, and removal process. Until then, avoid treating a source checkout as
+a stable end-user install.
 
-`npm install -g .` builds Relay and puts the `relay` command on your PATH.
+## After Relay is provisioned
 
-`relay init` is interactive (add `--auto` to accept defaults). It:
+An interactive `relay init` can:
 
-1. writes `~/.relay/config.json`,
+1. write `~/.relay/config.json`,
 2. installs the Claude Code session hooks so past lessons load automatically,
 3. detects your LLM CLIs (Codex, LM Studio, OpenRouter, Anthropic) and wires them,
 4. offers to register the Relay MCP server with every MCP client it can find — Claude Code, Claude Desktop, Cursor, Codex.
 
-Re-running it is safe; it never duplicates entries and never touches config it can't parse. `--auto` skips MCP client registration because those are global client settings; run interactive `relay init` to approve that step.
-
-## The success moment
-
-Save a memory in your terminal:
-
-```bash
-relay memory save "the staging cluster is named osprey" --type fact
-```
-
-Now open a different tool — Claude Desktop, Claude Code, Cursor — and ask it to recall. The `relay_memory_recall` tool returns the memory you just saved. Same store, any surface. (From the terminal: `relay memory recall --query "staging cluster"`.)
-
-If a client was open during `relay init`, restart it so it picks up the new MCP server.
+Re-running it is safe; it never duplicates entries and never touches config it
+can't parse. `--auto` skips MCP client registration because those are global
+client settings; run interactive `relay init` to approve that step.
 
 ## Per-client notes
 
-Interactive `relay init` handles these after your confirmation when the client is installed. The manual fallbacks below are only needed if you skipped that step or the client wasn't detected.
+Interactive `relay init` handles these after your confirmation when the client
+is installed. The manual fallbacks below are for an already provisioned Relay
+runtime.
 
 **Claude Code** — registered via `claude mcp add --scope user relay`. Manual: add to `.mcp.json` in your project or run that command yourself.
 
@@ -61,18 +52,10 @@ Interactive `relay init` handles these after your confirmation when the client i
 }
 ```
 
-`which node` and `which relay` (follow the symlink) give you the two paths.
-
-## Check your install
-
-```bash
-relay doctor
-```
-
-Reports the database, hooks, provider probes, and — per client — whether the Relay MCP server is registered. Every problem comes with the command that fixes it.
+Use the runtime's resolved executable paths for these entries; GUI clients do
+not inherit a shell PATH.
 
 ## Where your data lives, and uninstalling
 
-All memory lives in `~/.relay/relay.db`, a plain SQLite file you can copy, back up, or point at a hosted database — see [database.md](./database.md).
-
-To uninstall: `npm rm -g relay`, then delete `~/.relay/` if you also want the data gone. Hooks and MCP registrations can be removed with `relay setup --clean` before you uninstall.
+All memory lives in `~/.relay/relay.db`, a plain SQLite file you can copy, back
+up, or point at a hosted database — see [database.md](./database.md).
