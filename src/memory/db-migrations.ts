@@ -6,6 +6,7 @@
  */
 
 import type Database from 'libsql';
+import { runAddColumn } from '../runtime/store/schema-version.js';
 
 /**
  * Tables created up-front. Indexes/triggers that depend on optional columns
@@ -67,36 +68,36 @@ export function migrateMemoryTables(db: Database.Database): void {
     (db.prepare('PRAGMA table_info(memories)').all() as Array<{ name: string }>).map(r => r.name)
   );
   if (!existingCols.has('entity_key')) {
-    db.prepare('ALTER TABLE memories ADD COLUMN entity_key TEXT').run();
+    runAddColumn(db, 'ALTER TABLE memories ADD COLUMN entity_key TEXT');
   }
   if (!existingCols.has('sources_json')) {
-    db.prepare("ALTER TABLE memories ADD COLUMN sources_json TEXT NOT NULL DEFAULT '[]'").run();
+    runAddColumn(db, "ALTER TABLE memories ADD COLUMN sources_json TEXT NOT NULL DEFAULT '[]'");
   }
   if (!existingCols.has('recall_count')) {
-    db.prepare('ALTER TABLE memories ADD COLUMN recall_count INTEGER NOT NULL DEFAULT 0').run();
+    runAddColumn(db, 'ALTER TABLE memories ADD COLUMN recall_count INTEGER NOT NULL DEFAULT 0');
   }
   if (!existingCols.has('content_hash')) {
-    db.prepare('ALTER TABLE memories ADD COLUMN content_hash TEXT').run();
+    runAddColumn(db, 'ALTER TABLE memories ADD COLUMN content_hash TEXT');
     db.prepare('CREATE INDEX IF NOT EXISTS idx_memories_content_hash ON memories(content_hash, created_at DESC)').run();
   }
   if (!existingCols.has('memory_source')) {
-    db.prepare("ALTER TABLE memories ADD COLUMN memory_source TEXT NOT NULL DEFAULT 'unknown'").run();
+    runAddColumn(db, "ALTER TABLE memories ADD COLUMN memory_source TEXT NOT NULL DEFAULT 'unknown'");
   }
   if (!existingCols.has('success_recall_count')) {
-    db.prepare('ALTER TABLE memories ADD COLUMN success_recall_count INTEGER NOT NULL DEFAULT 0').run();
+    runAddColumn(db, 'ALTER TABLE memories ADD COLUMN success_recall_count INTEGER NOT NULL DEFAULT 0');
   }
   if (!existingCols.has('trust_level')) {
-    db.prepare("ALTER TABLE memories ADD COLUMN trust_level TEXT NOT NULL DEFAULT 'unverified'").run();
+    runAddColumn(db, "ALTER TABLE memories ADD COLUMN trust_level TEXT NOT NULL DEFAULT 'unverified'");
   }
   if (!existingCols.has('files_json')) {
-    db.prepare("ALTER TABLE memories ADD COLUMN files_json TEXT NOT NULL DEFAULT '[]'").run();
+    runAddColumn(db, "ALTER TABLE memories ADD COLUMN files_json TEXT NOT NULL DEFAULT '[]'");
   }
   // PLAN-4 §5 — semantic embeddings. Nullable BLOB so legacy rows keep working
   // and the word-overlap fallback path stays valid. 3072 bytes when populated
   // (768 little-endian float32). No index — cosine is computed in JS over the
   // FTS-narrowed candidate set (<=500 rows per recall).
   if (!existingCols.has('embedding_blob')) {
-    db.prepare('ALTER TABLE memories ADD COLUMN embedding_blob BLOB').run();
+    runAddColumn(db, 'ALTER TABLE memories ADD COLUMN embedding_blob BLOB');
   }
   // PLAN-4 T1 (cross-model rejection per PITFALL 2.3) — record which embedding
   // model produced `embedding_blob`. Nullable TEXT, NO DEFAULT (NULL = not yet
@@ -106,7 +107,7 @@ export function migrateMemoryTables(db: Database.Database): void {
   // semantic-similarities.ts. Without this column a silent model swap would
   // mix vector spaces and corrupt recall.
   if (!existingCols.has('embedding_model')) {
-    db.prepare('ALTER TABLE memories ADD COLUMN embedding_model TEXT').run();
+    runAddColumn(db, 'ALTER TABLE memories ADD COLUMN embedding_model TEXT');
   }
   // PLAN-5 T1 (CONFLICT-01) — write-time conflict detection stores reciprocal
   // memory_ids as a JSON array. NOT NULL DEFAULT '[]' means legacy rows read
@@ -114,7 +115,7 @@ export function migrateMemoryTables(db: Database.Database): void {
   // pre-Phase-5 behavior bit-exactly. Recall annotation only fires when a
   // memory's array is non-empty, so v0.1.2 → v0.2 upgrade observes no change.
   if (!existingCols.has('conflicts_with_json')) {
-    db.prepare("ALTER TABLE memories ADD COLUMN conflicts_with_json TEXT NOT NULL DEFAULT '[]'").run();
+    runAddColumn(db, "ALTER TABLE memories ADD COLUMN conflicts_with_json TEXT NOT NULL DEFAULT '[]'");
   }
 
   // 3. Indexes/triggers that depend on the columns added in step 2.
