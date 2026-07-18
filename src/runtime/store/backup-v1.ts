@@ -1,10 +1,10 @@
 /**
  * Online `.v1-backup` writer for the v0.2 schema cleanup migration.
  *
- * better-sqlite3's `Database.backup(destPath)` uses SQLite's online backup
- * API — it streams pages from the live connection to a new file via the
- * SQLite VFS, so it's safe to invoke while the source DB is open. The output
- * is a complete, independent SQLite file usable for recovery.
+ * Uses `VACUUM INTO` (SQLite ≥3.27) from the live connection — libsql does
+ * not implement better-sqlite3's `Database.backup()`, and VACUUM INTO gives
+ * the same guarantee: a complete, independent, internally-consistent SQLite
+ * file written while the source DB is open.
  *
  * The backup is the SINGLE recovery artifact for R-01-03 (DROP irreversible).
  * `prepareDatabase` calls this BEFORE the destructive v2 migration runs, and
@@ -24,7 +24,7 @@
  */
 import { existsSync, statSync, copyFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type Database from 'better-sqlite3';
+import type Database from 'libsql';
 
 import { readSchemaVersion, EXPECTED_SCHEMA_VERSION } from './schema-version.js';
 
@@ -87,7 +87,7 @@ export async function writeV1Backup(
   }
 
   try {
-    await db.backup(backupPath);
+    db.prepare('VACUUM INTO ?').run(backupPath);
     return { skipped: false, backupPath };
   } catch {
     // Caller treats absent backupPath as failure.

@@ -138,3 +138,36 @@ mailbox-queueable but NOT real-time controllable; delivery is turn-gated at hook
 fleet session ↔ inspo-library session), make registration robust: emit on SessionStart AND a
 per-turn hook, add a `relay session register` explicit command for mid-life registration, and
 document the turn-gated-delivery reality so users don't expect real-time puppeteering.
+
+## B-13: offline WRITES in remote-DB mode (queue + replay)
+
+**What:** With `RELAY_DB_URL` set and the server unreachable, saves are refused with a clear
+message (reads keep serving from the embedded replica). A real offline-write story would queue
+saves locally and replay them on reconnect.
+
+**Why refused instead of queued (2026-07-18):** verified against a live sqld: a write made to
+the replica file OUTSIDE the replication protocol is silently discarded when the next reachable
+open re-clones. Silent data loss beats no feature — so v1 pauses saves honestly. Queue+replay
+needs its own storage (a side table or file), conflict policy, and replay tests.
+
+**Trigger:** a real user works offline-first against a hosted DB and the refusal hurts more
+than twice. Also revisit if libsql's own offline-writes support (client `offline: true`)
+stabilizes — that would make this a config flag instead of a subsystem.
+
+## B-14: libsql quirk watchlist — re-verify on every driver upgrade
+
+**What:** The libsql 0.5.29 swap ships four load-bearing shims. On ANY libsql version bump,
+re-run the full suite plus the sqld cross-machine scenario and check whether these are fixed
+upstream (then delete the shim):
+1. `transaction()` throws on nesting (no savepoint downgrade) → `installNestableTransactions`
+   in runtime/store/db.ts. NOTE: builtin `transaction()` also SILENTLY DISCARDS delegated
+   writes on replicas — the exec-BEGIN wrapper is correctness-critical there, not just nesting.
+2. Buffer/Uint8Array POSITIONAL params mis-bind (NULL in multi-arg, native panic single-arg)
+   → the one blob write uses named params (memory-store updateEmbedding).
+3. BLOB columns read back as ArrayBuffer on file-backed DBs (Buffer on :memory:) →
+   `blobAsBuffer` normalization in memory-store.
+4. Replica write-delegation: one REJECTED delegated write permanently stops local write-through
+   for the session → schema/migrations run on a direct remote connection first (openReplica),
+   never through delegation; `runAddColumn` tolerates duplicate-column for stale-guard re-fires.
+
+**Trigger:** any change to the `libsql` version in package.json.

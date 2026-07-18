@@ -1,5 +1,5 @@
 import { getDb } from './db.js';
-import type Database from 'better-sqlite3';
+import type Database from 'libsql';
 import { SqlFilterBuilder } from './query-utils.js';
 
 export type RunRow = {

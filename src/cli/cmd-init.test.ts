@@ -244,6 +244,7 @@ describe('executeInitCommand', () => {
     assert.strictEqual(parsed.session_end_hook_installed, false);
     assert.strictEqual(parsed.lm_model, null);
     assert.strictEqual(parsed.auto_extract_enabled, false);
+    assert.deepEqual((parsed as { mcp_clients?: unknown }).mcp_clients, []);
     assert.ok(typeof parsed.verify.ok === 'boolean');
     assert.ok(typeof parsed.verify.detail === 'string');
   });
@@ -527,4 +528,3 @@ describe('executeInitCommand', () => {
     assert.match(out, /setup-llm anthropic/);
   });
 });
-

@@ -11,7 +11,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import Database from 'better-sqlite3';
+import Database from 'libsql';
 
 import { writeV1Backup, shouldSkipBackup, BACKUP_FILENAME } from './backup-v1.js';
 import { writeSchemaVersion, EXPECTED_SCHEMA_VERSION } from './schema-version.js';

@@ -28,3 +28,25 @@ A local-first, **model-agnostic delegation + cross-tool memory** layer. Its one 
 - LLM lesson-extraction self-distill (keep only the free outcome-trust half).
 - Operator/worker promotion ladder (ceremony for solo; cheap source-tag + unverified covers it; revisit for multi-actor).
 - v2 remote MCP transport + OAuth (ChatGPT).
+
+## Addendum 2026-07-18 — productization + bring-your-own-database (shipped)
+
+Trigger: owner brief 2026-07-17 ("make Relay installable for strangers; memory must travel
+across sessions, models, suppliers, and the user's choice of database"). Direct user demand —
+passes the anti-bloat gate.
+
+Shipped on branch `productize` (grounding: `.planning/productize/`):
+- Driver: better-sqlite3 → libsql. Same sync API, same file format, FTS5 kept, prebuilt
+  binaries for 9 platforms (no compiler requirement anywhere). NOT a driver registry — one
+  driver, two targets.
+- BYO-DB: `RELAY_DB_URL` (+ `RELAY_DB_AUTH_TOKEN`) selects an embedded replica synced against
+  Turso or any libsql server. Local default unchanged. One schema, one code path. Verified
+  cross-machine against a live sqld. Offline: reads from replica, saves refused (B-13).
+- Install: `relay init` now also registers the MCP server with Claude Code/Desktop, Cursor,
+  Codex; doctor gains per-client registration checks. Tarball stripped of tests/fixtures.
+  Author-machine migration script removed.
+- Distribution: npm REGISTRY publishing is parked by owner decision — install is git clone or
+  a release tarball. The `relay`-name-is-taken problem is deferred with it.
+
+Kill list unchanged and still binding. hosted-Relay ≠ hosted-DB: Relay still runs only on the
+user's machine; only the database moved.

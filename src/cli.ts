@@ -9,6 +9,8 @@
 
 import { argv, exit, cwd } from 'node:process';
 import { readFileSync } from 'node:fs';
+import { formatFatal } from './errors.js';
+import { syncDbIfRemote } from './runtime/store/db.js';
 import type { CliIO } from './cli/commands.js';
 import { c, setColorMode, type ColorMode } from './cli/colors.js';
 // T50: env-driven cwd default for `relay memory recall` / `show-context`.
@@ -330,7 +332,9 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     return 2;
   }
 
-  if (action === 'remember') {
+  // `save` aliases `remember` — the MCP tool is named relay_memory_save, so
+  // muscle memory from either surface works on the CLI.
+  if (action === 'remember' || action === 'save') {
     const content = flags.positionals.slice(1).join(' ').trim();
     if (!content) {
       io.stderr('relay memory remember requires <content>\n');
@@ -618,7 +622,7 @@ async function dispatchMemory(rest: readonly string[]): Promise<number> {
     }, io);
   }
 
-  io.stderr(`relay memory: unknown action '${action}'. Try: remember, recall, search, show-context, get, hook, to-rules, auto-extract, wipe, tail, recent, why, forget, rollback, consolidate, diff, chain, tag-stats\n`);
+  io.stderr(`relay memory: unknown action '${action}'. Try: remember (alias: save), recall, search, show-context, get, hook, to-rules, auto-extract, wipe, tail, recent, why, forget, rollback, consolidate, diff, chain, tag-stats\n`);
   return 2;
 }
 
@@ -992,10 +996,18 @@ async function main(): Promise<number> {
 }
 
 main().then(
-  code => exit(code),
+  async code => {
+    // Remote-DB mode: flush this invocation's writes to the remote before the
+    // process exits. 'failed' = offline; the data is durable locally.
+    if ((await syncDbIfRemote()) === 'failed') {
+      io.stderr(
+        'relay: warning: could not sync to the remote database — changes are saved locally and will sync when it is reachable\n'
+      );
+    }
+    exit(code);
+  },
   err => {
-    io.stderr(`FATAL: ${(err as Error).message}\n`);
-    if ((err as Error).stack) io.stderr(`${(err as Error).stack}\n`);
+    io.stderr(formatFatal(err, process.env['RELAY_DEBUG'] === '1'));
     exit(2);
   }
 );

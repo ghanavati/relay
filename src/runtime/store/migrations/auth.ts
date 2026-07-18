@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3';
+import type Database from 'libsql';
 
 export function migrateAuthTables(db: Database.Database): void {
   db.prepare(`
