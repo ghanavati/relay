@@ -17,6 +17,28 @@ Relay reads config from three sources, in order of precedence (most specific win
 | `RELAY_RECALLED_LESSONS` | (unset) | Set to `1` to enable the recalled_lessons context layer for delegated tasks. |
 | `RELAY_RUN_HISTORY_LAYERS` | (unset) | Set to `1` to inject last 5 successful runs as context for delegated tasks. |
 | `RELAY_COLOR` | (unset) | `auto`, `always`, or `never`. CLI flag `--color=...` overrides. |
+| `RELAY_INFERENCE_PROFILES_PATH` | (unset) | Optional JSON file of exact model-ID inference profiles: sampling, output/iteration limits, and model-specific chat-template kwargs. Invalid files fail dispatch with `CONFIG_ERROR`; absent file means no profile. |
+
+### Model inference profiles
+
+Profiles are user-owned and model-agnostic in Relay source. They are keyed by
+the model ID served by the endpoint; only exact matches apply.
+
+```json
+{
+  "models": {
+    "gemma-4-31b-it-UD-MLX-4bit": {
+      "temperature": 0.2,
+      "max_tokens": 4096,
+      "max_iterations": 8,
+      "chat_template_kwargs": { "enable_thinking": false }
+    }
+  }
+}
+```
+
+`chat_template_kwargs` are intentionally per-model: Relay does not assume a
+universal thinking flag.
 
 ### Auto-extract pipeline
 
