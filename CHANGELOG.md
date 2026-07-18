@@ -10,12 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Public documentation cleanup** — replaced the README with the current
-  control-layer positioning and pre-release distribution status; removed
+  control-layer positioning and GitHub Releases distribution direction; removed
   historical planning, findings, and obsolete recipes from the public tree.
   The removed material is preserved in the local project archive.
 - **Product positioning** — refreshed the GitHub About text and public
   distribution language around Relay's memory, delegation, and observable
   multi-model work.
+- **GitHub-first installation language** — documented GitHub Releases as the
+  future public installation channel and clarified that npm remains contributor
+  tooling, not the public product path.
 
 ### Added — MCP memory server (Phase 9, v0.4 lean core)
 

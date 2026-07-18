@@ -1,17 +1,17 @@
-# Distribution status
+# Install Relay from GitHub Releases
 
-Relay is the pre-release control layer for AI coding: shared memory, deliberate
-delegation, and visible multi-model work.
+Relay is the control layer for AI coding: shared memory, deliberate delegation,
+and visible multi-model work.
 
-## Public packaging is next
+## The public installation path
 
-Relay is not yet published through a public package registry. The core is ready
-for maintained development and evaluation environments while public packaging
-is prepared.
+Relay will be distributed through [GitHub Releases](https://github.com/ghanavati/relay/releases),
+not through a public npm package. Each release will provide a platform-specific
+archive, a checksum, and exact installation and upgrade instructions.
 
-Once Relay is distributed, this page will document the supported installation,
-upgrade, and removal process. Until then, use a provisioned runtime rather than
-treating a source checkout as a general end-user installer.
+The release bundle and installer are now being prepared. Until the first bundle
+is published, do not treat a source checkout as a general end-user installer.
+The contributor workflow remains in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## After Relay is provisioned
 
