@@ -23,6 +23,15 @@ Verified facts a resumer must not re-derive:
 - Fresh-user roundtrip (tarball → clean prefix → scrubbed HOME/env → remember → recall)
   WORKS today. Workdir gate is opt-in (off when RELAY_MEMORY_ALLOWED_WORKDIRS unset).
 
+STATUS 2026-07-18: ALL ELEVEN STEPS DONE — sequence below is complete, suite 2004/2004 green,
+typecheck clean. Deviations from the original plan, each deliberate:
+- ink/react NOT removed (gap row 2 was wrong — `relay tui` loads them via dynamic import).
+- Offline remote mode refuses SAVES instead of queueing (observed silent data loss with
+  out-of-protocol replica writes; see BACKLOG B-13). Reads work offline.
+- npm registry publishing parked by owner decision; distribution = clone or release tarball.
+Remaining for the owner: paste the Codex audit for re-verification against this branch; decide
+distribution channel (release workflow); merge.
+
 Commit sequence (mark by looking at `git log --oneline` on this branch):
  0. docs(planning): this checkpoint
  1. fix(init): remove author-machine migrate-cc-memory script + its doc surface
