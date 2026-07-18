@@ -9,8 +9,7 @@
 #   ./scripts/install.sh [--yes] [--prefix <dir>] [--dry-run] [--reinstall]
 #
 # Behavior: clones (or updates) the Relay repo, installs deps, builds,
-# npm-links the `relay` binary, runs `relay setup --everything --yes`, then
-# `relay verify --json` to confirm install integrity.
+# npm-links the `relay` binary, then verifies install integrity.
 # Idempotent: re-running detects existing install and updates in place.
 
 set -euo pipefail
@@ -85,8 +84,7 @@ Plan:
   1. Verify Node.js ${MIN_NODE_MAJOR}+, git, npm, and a writable npm prefix.
   2. ${REINSTALL_TAG}Clone (or update) ${REPO_URL} into ${PREFIX}.
   3. npm install  ->  npm run build  ->  npm link.
-  4. Run 'relay setup --everything --yes' (skipped if not yet shipped).
-  5. Run 'relay verify --json' to confirm install integrity.
+  4. Run 'relay verify --json' to confirm install integrity.
 EOF
 if [[ "${DRY_RUN}" -eq 1 ]]; then log ""; log "  (dry-run mode: no changes will be made)"; fi
 
@@ -181,19 +179,6 @@ if [[ "${DRY_RUN}" -ne 1 ]]; then cd "${PREFIX}"; fi
 STAGE="install"; log "[2/5] Installing dependencies...";   run npm install --silent
 STAGE="build";   log "[3/5] Building...";                  run npm run build --silent
 STAGE="link";    log "[4/5] Linking 'relay' onto PATH..."; run npm link --silent
-
-# -----------------------------------------------------------------------------
-# Stage 6: post-install setup (graceful if missing)
-# -----------------------------------------------------------------------------
-STAGE="setup"
-log ""
-if [[ "${DRY_RUN}" -eq 1 ]]; then
-  echo "  [dry-run] relay setup --everything --yes"
-elif relay setup --everything --yes 2>/dev/null; then
-  :
-else
-  log "Note: 'relay setup --everything --yes' is not available in this build — skipping."
-fi
 
 # -----------------------------------------------------------------------------
 # Stage 7: verify install integrity (T16 smoke command)
