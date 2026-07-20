@@ -6,12 +6,12 @@
 # Idempotent — safe to re-run.
 #
 # Usage:
-#   ./scripts/extract-from-relay-mcp.sh [SOURCE_REPO]
-#   default SOURCE_REPO: /Users/ghanavati/ai-stack/Projects/relay-mcp
+#   ./scripts/extract-from-relay-mcp.sh SOURCE_REPO
+#   SOURCE_REPO: path to your relay-mcp checkout
 
 set -euo pipefail
 
-SRC="${1:-/Users/ghanavati/ai-stack/Projects/relay-mcp}"
+SRC="${1:?usage: $0 SOURCE_REPO (path to your relay-mcp checkout)}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)"
 
 if [[ ! -d "$SRC/src" ]]; then
